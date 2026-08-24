@@ -1,0 +1,1089 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI原生Enterprise Architect</title>
+  <!-- Element Plus CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css">
+  <!-- Font Awesome -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 40px;
+      color: white;
+    }
+    .header h1 {
+      font-size: 36px;
+      margin-bottom: 10px;
+    }
+    .header p {
+      font-size: 16px;
+      opacity: 0.9;
+    }
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 20px;
+    }
+    .card {
+      background: white;
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+      transition: transform 0.3s, box-shadow 0.3s;
+    }
+    .card:hover {
+      transform: translateY(-5px);
+      box-shadow: 0 15px 50px rgba(0,0,0,0.15);
+    }
+    .card-icon {
+      width: 60px;
+      height: 60px;
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 16px;
+      font-size: 28px;
+    }
+    .card-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: #333;
+      margin-bottom: 8px;
+    }
+    .card-desc {
+      font-size: 14px;
+      color: #666;
+      margin-bottom: 16px;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 20px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      transition: all 0.3s;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+    .btn-primary:hover {
+      opacity: 0.9;
+      transform: scale(1.02);
+    }
+    .btn-outline {
+      background: transparent;
+      border: 2px solid #667eea;
+      color: #667eea;
+    }
+    .btn-outline:hover {
+      background: #667eea;
+      color: white;
+    }
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 20px;
+      margin-bottom: 30px;
+    }
+    .stat-card {
+      background: white;
+      border-radius: 12px;
+      padding: 20px;
+      text-align: center;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+    }
+    .stat-value {
+      font-size: 32px;
+      font-weight: bold;
+      color: #667eea;
+      margin-bottom: 5px;
+    }
+    .stat-label {
+      font-size: 14px;
+      color: #999;
+    }
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0,0,0,0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+    .modal-content {
+      background: white;
+      border-radius: 16px;
+      padding: 30px;
+      width: 90%;
+      max-width: 500px;
+      position: relative;
+    }
+    .modal-close {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      font-size: 24px;
+      cursor: pointer;
+      color: #999;
+    }
+    .modal-close:hover {
+      color: #333;
+    }
+    .form-group {
+      margin-bottom: 20px;
+    }
+    .form-group label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 500;
+      color: #333;
+    }
+    .form-group input,
+    .form-group textarea {
+      width: 100%;
+      padding: 12px;
+      border: 2px solid #e8ecf0;
+      border-radius: 8px;
+      font-size: 14px;
+      transition: border-color 0.3s;
+    }
+    .form-group input:focus,
+    .form-group textarea:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+    .form-group textarea {
+      resize: vertical;
+      min-height: 100px;
+    }
+    .model-list {
+      margin-top: 20px;
+    }
+    .model-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px;
+      background: #f8f9fa;
+      border-radius: 10px;
+      margin-bottom: 10px;
+    }
+    .model-info h4 {
+      margin-bottom: 4px;
+      color: #333;
+    }
+    .model-info p {
+      font-size: 12px;
+      color: #999;
+    }
+    .model-actions {
+      display: flex;
+      gap: 10px;
+    }
+    .model-actions button {
+      padding: 6px 12px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .model-actions .btn-edit {
+      background: #e3f2fd;
+      color: #1976d2;
+    }
+    .model-actions .btn-delete {
+      background: #ffebee;
+      color: #c62828;
+    }
+    .canvas-container {
+      background: #f8f9fa;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .canvas-toolbar {
+      padding: 15px;
+      background: white;
+      border-bottom: 1px solid #e8ecf0;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .toolbar-btn {
+      padding: 8px 16px;
+      border: 1px solid #e8ecf0;
+      background: white;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s;
+    }
+    .toolbar-btn:hover {
+      background: #f5f5f5;
+    }
+    .toolbar-btn.active {
+      background: #667eea;
+      color: white;
+      border-color: #667eea;
+    }
+    #canvas {
+      display: block;
+      cursor: crosshair;
+    }
+    .ai-chat {
+      display: flex;
+      flex-direction: column;
+      height: 400px;
+    }
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 15px;
+      background: #f8f9fa;
+      border-radius: 8px;
+      margin-bottom: 15px;
+    }
+    .chat-message {
+      margin-bottom: 15px;
+    }
+    .chat-message.user {
+      text-align: right;
+    }
+    .chat-message.bot {
+      text-align: left;
+    }
+    .chat-bubble {
+      display: inline-block;
+      padding: 12px 18px;
+      border-radius: 20px;
+      max-width: 70%;
+      font-size: 14px;
+    }
+    .user .chat-bubble {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border-bottom-right-radius: 5px;
+    }
+    .bot .chat-bubble {
+      background: white;
+      color: #333;
+      border-bottom-left-radius: 5px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+    }
+    .chat-input {
+      display: flex;
+      gap: 10px;
+    }
+    .chat-input input {
+      flex: 1;
+      padding: 12px;
+      border: 2px solid #e8ecf0;
+      border-radius: 25px;
+      font-size: 14px;
+    }
+    .chat-input input:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+    .chat-input button {
+      padding: 12px 24px;
+      border: none;
+      border-radius: 25px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .code-preview {
+      background: #2d2d2d;
+      color: #f8f8f2;
+      padding: 20px;
+      border-radius: 10px;
+      font-family: 'Monaco', 'Consolas', monospace;
+      font-size: 13px;
+      overflow-x: auto;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    .nav-tabs {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .nav-tab {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      background: white;
+      color: #666;
+      transition: all 0.3s;
+    }
+    .nav-tab.active {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+    .table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 20px;
+    }
+    .table th,
+    .table td {
+      padding: 12px;
+      text-align: left;
+      border-bottom: 1px solid #e8ecf0;
+    }
+    .table th {
+      background: #f8f9fa;
+      font-weight: 600;
+      color: #666;
+    }
+    .badge {
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .badge-success {
+      background: #e8f5e9;
+      color: #2e7d32;
+    }
+    .badge-warning {
+      background: #fff3e0;
+      color: #e65100;
+    }
+    .badge-danger {
+      background: #ffebee;
+      color: #c62828;
+    }
+    .badge-info {
+      background: #e3f2fd;
+      color: #1565c0;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div class="container">
+      <!-- Header -->
+      <div class="header">
+        <h1><i class="fas fa-project-diagram"></i> AI原生Enterprise Architect</h1>
+        <p>智能企业架构建模平台</p>
+      </div>
+
+      <!-- Stats -->
+      <div class="stats-row">
+        <div class="stat-card">
+          <div class="stat-value">{{ stats.models }}</div>
+          <div class="stat-label">项目模型</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">{{ stats.elements }}</div>
+          <div class="stat-label">架构元素</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">{{ stats.relationships }}</div>
+          <div class="stat-label">关系连接</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">{{ stats.views }}</div>
+          <div class="stat-label">视图数量</div>
+        </div>
+      </div>
+
+      <!-- Navigation Tabs -->
+      <div class="nav-tabs">
+        <button 
+          v-for="tab in tabs" 
+          :key="tab.id" 
+          :class="['nav-tab', { active: activeTab === tab.id }]"
+          @click="activeTab = tab.id"
+        >
+          {{ tab.name }}
+        </button>
+      </div>
+
+      <!-- Dashboard Content -->
+      <div v-if="activeTab === 'dashboard'" class="dashboard-grid">
+        <div class="card">
+          <div class="card-icon" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+            <i class="fas fa-folder-open"></i>
+          </div>
+          <h3 class="card-title">项目管理</h3>
+          <p class="card-desc">创建、管理和组织您的企业架构项目</p>
+          <button class="btn btn-primary" @click="activeTab = 'projects'">
+            <i class="fas fa-arrow-right"></i> 进入
+          </button>
+        </div>
+
+        <div class="card">
+          <div class="card-icon" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
+            <i class="fas fa-sitemap"></i>
+          </div>
+          <h3 class="card-title">UML建模</h3>
+          <p class="card-desc">创建类图、序列图、活动图等UML图表</p>
+          <button class="btn btn-primary" @click="activeTab = 'uml'">
+            <i class="fas fa-arrow-right"></i> 进入
+          </button>
+        </div>
+
+        <div class="card">
+          <div class="card-icon" style="background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);">
+            <i class="fas fa-building"></i>
+          </div>
+          <h3 class="card-title">ArchiMate建模</h3>
+          <p class="card-desc">企业架构可视化与分析</p>
+          <button class="btn btn-primary" @click="activeTab = 'archimate'">
+            <i class="fas fa-arrow-right"></i> 进入
+          </button>
+        </div>
+
+        <div class="card">
+          <div class="card-icon" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
+            <i class="fas fa-database"></i>
+          </div>
+          <h3 class="card-title">数据建模</h3>
+          <p class="card-desc">设计ER图和数据库模型</p>
+          <button class="btn btn-primary" @click="activeTab = 'data'">
+            <i class="fas fa-arrow-right"></i> 进入
+          </button>
+        </div>
+
+        <div class="card">
+          <div class="card-icon" style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);">
+            <i class="fas fa-code"></i>
+          </div>
+          <h3 class="card-title">代码生成</h3>
+          <p class="card-desc">从模型自动生成代码</p>
+          <button class="btn btn-primary" @click="activeTab = 'code'">
+            <i class="fas fa-arrow-right"></i> 进入
+          </button>
+        </div>
+
+        <div class="card">
+          <div class="card-icon" style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);">
+            <i class="fas fa-robot"></i>
+          </div>
+          <h3 class="card-title">AI助手</h3>
+          <p class="card-desc">智能分析和建议</p>
+          <button class="btn btn-primary" @click="activeTab = 'ai'">
+            <i class="fas fa-arrow-right"></i> 进入
+          </button>
+        </div>
+      </div>
+
+      <!-- Projects Tab -->
+      <div v-if="activeTab === 'projects'" class="card">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+          <h3 class="card-title" style="margin: 0;">项目列表</h3>
+          <button class="btn btn-primary" @click="showCreateModal = true">
+            <i class="fas fa-plus"></i> 新建项目
+          </button>
+        </div>
+        
+        <div class="model-list">
+          <div v-for="model in models" :key="model.id" class="model-item">
+            <div class="model-info">
+              <h4>{{ model.name }}</h4>
+              <p>{{ model.description || '暂无描述' }}</p>
+              <p style="font-size: 11px; margin-top: 4px;">
+                <span style="margin-right: 15px;">元素: {{ model.elements_count }}</span>
+                <span>关系: {{ model.relationships_count }}</span>
+              </p>
+            </div>
+            <div class="model-actions">
+              <button class="btn-edit" @click="openModel(model)">
+                <i class="fas fa-eye"></i> 打开
+              </button>
+              <button class="btn-delete" @click="deleteModel(model.id)">
+                <i class="fas fa-trash"></i> 删除
+              </button>
+            </div>
+          </div>
+          <div v-if="models.length === 0" style="text-align: center; padding: 40px; color: #999;">
+            暂无项目，请创建一个新项目
+          </div>
+        </div>
+      </div>
+
+      <!-- UML Editor Tab -->
+      <div v-if="activeTab === 'uml'" class="card canvas-container">
+        <div class="canvas-toolbar">
+          <button 
+            v-for="tool in tools" 
+            :key="tool.id" 
+            :class="['toolbar-btn', { active: selectedTool === tool.id }]"
+            @click="selectedTool = tool.id"
+            :title="tool.name"
+          >
+            <i :class="tool.icon"></i> {{ tool.name }}
+          </button>
+          <div style="flex: 1;"></div>
+          <button class="toolbar-btn" @click="clearCanvas">
+            <i class="fas fa-trash"></i> 清空
+          </button>
+        </div>
+        <canvas 
+          id="canvas" 
+          width="1150" 
+          height="600"
+          @click="handleCanvasClick"
+          @mousedown="handleMouseDown"
+          @mousemove="handleMouseMove"
+          @mouseup="handleMouseUp"
+        ></canvas>
+      </div>
+
+      <!-- ArchiMate Tab -->
+      <div v-if="activeTab === 'archimate'" class="card">
+        <h3 class="card-title">ArchiMate企业架构建模</h3>
+        <p class="card-desc">支持业务层、应用层、技术层和物理层的企业架构建模</p>
+        <div style="margin-top: 20px;">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>层级</th>
+                <th>元素类型</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="badge badge-info">业务层</span></td>
+                <td>BusinessActor, BusinessProcess, BusinessService</td>
+                <td>表示业务职能和流程</td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-success">应用层</span></td>
+                <td>ApplicationComponent, ApplicationService</td>
+                <td>表示应用系统和服务</td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-warning">技术层</span></td>
+                <td>Node, Device, Artifact</td>
+                <td>表示技术基础设施</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <button class="btn btn-primary" style="margin-top: 20px;" @click="activeTab = 'uml'">
+          <i class="fas fa-edit"></i> 进入编辑器
+        </button>
+      </div>
+
+      <!-- Data Modeling Tab -->
+      <div v-if="activeTab === 'data'" class="card">
+        <h3 class="card-title">ER图编辑器</h3>
+        <p class="card-desc">设计数据库实体关系模型</p>
+        <div class="canvas-container" style="margin-top: 20px;">
+          <div class="canvas-toolbar">
+            <button class="toolbar-btn" @click="selectedTool = 'table'">
+              <i class="fas fa-table"></i> 表
+            </button>
+            <button class="toolbar-btn" @click="selectedTool = 'relationship'">
+              <i class="fas fa-link"></i> 关系
+            </button>
+          </div>
+          <canvas 
+            id="dataCanvas" 
+            width="1150" 
+            height="400"
+            style="background: #f8f9fa;"
+          ></canvas>
+        </div>
+      </div>
+
+      <!-- Code Generation Tab -->
+      <div v-if="activeTab === 'code'" class="card">
+        <h3 class="card-title">代码生成</h3>
+        <p class="card-desc">从模型自动生成代码</p>
+        
+        <div style="margin-top: 20px;">
+          <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+            <select 
+              v-model="codeConfig.language" 
+              style="padding: 10px; border-radius: 8px; border: 2px solid #e8ecf0;"
+            >
+              <option value="java">Java</option>
+              <option value="python">Python</option>
+              <option value="typescript">TypeScript</option>
+              <option value="csharp">C#</option>
+            </select>
+            <select 
+              v-model="codeConfig.framework" 
+              style="padding: 10px; border-radius: 8px; border: 2px solid #e8ecf0;"
+            >
+              <option value="spring">Spring Boot</option>
+              <option value="django">Django</option>
+              <option value="nestjs">NestJS</option>
+              <option value="none">无框架</option>
+            </select>
+            <button class="btn btn-primary" @click="generateCode">
+              <i class="fas fa-code"></i> 生成代码
+            </button>
+          </div>
+          
+          <div class="code-preview">
+            <pre>{{ generatedCode }}</pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- AI Assistant Tab -->
+      <div v-if="activeTab === 'ai'" class="card">
+        <h3 class="card-title">AI助手</h3>
+        <p class="card-desc">智能分析和建议</p>
+        
+        <div class="ai-chat">
+          <div class="chat-messages">
+            <div class="chat-message bot">
+              <div class="chat-bubble">
+                <i class="fas fa-robot" style="margin-right: 8px;"></i>
+                您好！我是AI助手，我可以帮助您分析模型、生成建议和代码。
+              </div>
+            </div>
+            <div v-for="msg in chatMessages" :key="msg.id" :class="['chat-message', msg.type]">
+              <div class="chat-bubble">{{ msg.content }}</div>
+            </div>
+            <div v-if="isTyping" class="chat-message bot">
+              <div class="chat-bubble">
+                <i class="fas fa-spinner fa-spin"></i> 思考中...
+              </div>
+            </div>
+          </div>
+          <div class="chat-input">
+            <input 
+              v-model="aiInput" 
+              placeholder="请输入您的问题..." 
+              @keyup.enter="sendMessage"
+            />
+            <button @click="sendMessage">
+              <i class="fas fa-paper-plane"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Create Modal -->
+    <div v-if="showCreateModal" class="modal-overlay" @click.self="showCreateModal = false">
+      <div class="modal-content">
+        <span class="modal-close" @click="showCreateModal = false">&times;</span>
+        <h3 style="margin-bottom: 20px;">创建新项目</h3>
+        <div class="form-group">
+          <label>项目名称</label>
+          <input v-model="newModel.name" placeholder="请输入项目名称" />
+        </div>
+        <div class="form-group">
+          <label>项目描述</label>
+          <textarea v-model="newModel.description" placeholder="请输入项目描述"></textarea>
+        </div>
+        <div style="display: flex; justify-content: flex-end; gap: 10px;">
+          <button class="btn btn-outline" @click="showCreateModal = false">取消</button>
+          <button class="btn btn-primary" @click="createModel">创建</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Vue 3 -->
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <!-- Element Plus -->
+  <script src="https://unpkg.com/element-plus/dist/index.full.js"></script>
+
+  <script>
+    const { createApp, ref, onMounted } = Vue
+
+    createApp({
+      setup() {
+        // State
+        const activeTab = ref('dashboard')
+        const showCreateModal = ref(false)
+        const selectedTool = ref('select')
+        const aiInput = ref('')
+        const isTyping = ref(false)
+        const stats = ref({
+          models: 0,
+          elements: 0,
+          relationships: 0,
+          views: 0
+        })
+
+        // Tabs
+        const tabs = [
+          { id: 'dashboard', name: '仪表盘' },
+          { id: 'projects', name: '项目管理' },
+          { id: 'uml', name: 'UML建模' },
+          { id: 'archimate', name: 'ArchiMate' },
+          { id: 'data', name: '数据建模' },
+          { id: 'code', name: '代码生成' },
+          { id: 'ai', name: 'AI助手' }
+        ]
+
+        // Tools
+        const tools = [
+          { id: 'select', name: '选择', icon: 'fas fa-mouse-pointer' },
+          { id: 'class', name: '类', icon: 'fas fa-box' },
+          { id: 'interface', name: '接口', icon: 'fas fa-plug' },
+          { id: 'association', name: '关联', icon: 'fas fa-link' },
+          { id: 'inheritance', name: '继承', icon: 'fas fa-arrow-up' },
+          { id: 'composition', name: '组合', icon: 'fas fa-layer-group' }
+        ]
+
+        // Models
+        const models = ref([])
+        const newModel = ref({ name: '', description: '' })
+
+        // Chat
+        const chatMessages = ref([])
+
+        // Code
+        const codeConfig = ref({ language: 'java', framework: 'spring' })
+        const generatedCode = ref('// 选择模型并点击生成代码按钮')
+
+        // Canvas
+        let canvas = null
+        let ctx = null
+        let elements = []
+        let selectedElement = null
+        let isDragging = false
+        let dragOffset = { x: 0, y: 0 }
+        let connecting = false
+        let connectStart = null
+
+        // Methods
+        const loadModels = async () => {
+          try {
+            const res = await fetch('/api/models')
+            const data = await res.json()
+            models.value = data.models
+            updateStats()
+          } catch (e) {
+            console.error('Failed to load models:', e)
+          }
+        }
+
+        const updateStats = () => {
+          stats.value.models = models.value.length
+          stats.value.elements = models.value.reduce((acc, m) => acc + m.elements_count, 0)
+          stats.value.relationships = models.value.reduce((acc, m) => acc + m.relationships_count, 0)
+          stats.value.views = models.value.reduce((acc, m) => acc + m.views_count, 0)
+        }
+
+        const createModel = async () => {
+          if (!newModel.value.name) {
+            alert('请输入项目名称')
+            return
+          }
+          try {
+            const res = await fetch('/api/models', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(newModel.value)
+            })
+            const data = await res.json()
+            showCreateModal.value = false
+            newModel.value = { name: '', description: '' }
+            await loadModels()
+            alert('项目创建成功')
+          } catch (e) {
+            console.error('Failed to create model:', e)
+          }
+        }
+
+        const deleteModel = async (id) => {
+          if (!confirm('确定要删除这个项目吗？')) return
+          try {
+            await fetch(`/api/models/${id}`, { method: 'DELETE' })
+            await loadModels()
+          } catch (e) {
+            console.error('Failed to delete model:', e)
+          }
+        }
+
+        const openModel = (model) => {
+          activeTab.value = 'uml'
+        }
+
+        const sendMessage = async () => {
+          if (!aiInput.value.trim()) return
+          
+          chatMessages.value.push({
+            id: Date.now(),
+            type: 'user',
+            content: aiInput.value
+          })
+          
+          const input = aiInput.value
+          aiInput.value = ''
+          isTyping.value = true
+          
+          // Simulated AI response
+          setTimeout(() => {
+            isTyping.value = false
+            chatMessages.value.push({
+              id: Date.now() + 1,
+              type: 'bot',
+              content: `您的问题是: "${input}"\n\nAI分析结果:\n\n1. 模型复杂度评估\n2. 架构优化建议\n3. 最佳实践推荐\n\n如需详细分析，请上传或创建一个模型。`
+            })
+          }, 1500)
+        }
+
+        const generateCode = () => {
+          const templates = {
+            java: `package com.example.app;\n\npublic class Sample {\n    private String name;\n    \n    public Sample(String name) {\n        this.name = name;\n    }\n    \n    public String getName() {\n        return name;\n    }\n}`,
+            python: `class Sample:\n    def __init__(self, name):\n        self.name = name\n    \n    def get_name(self):\n        return self.name`,
+            typescript: `export class Sample {\n    private name: string;\n    \n    constructor(name: string) {\n        this.name = name;\n    }\n    \n    getName(): string {\n        return this.name;\n    }\n}`,
+            csharp: `namespace Example.App {\n    public class Sample {\n        private string name;\n        \n        public Sample(string name) {\n            this.name = name;\n        }\n        \n        public string GetName() {\n            return name;\n        }\n    }\n}`
+          }
+          generatedCode.value = templates[codeConfig.value.language] || templates.java
+        }
+
+        const initCanvas = () => {
+          canvas = document.getElementById('canvas')
+          if (canvas) {
+            ctx = canvas.getContext('2d')
+            drawGrid()
+          }
+        }
+
+        const drawGrid = () => {
+          if (!ctx) return
+          ctx.strokeStyle = '#e0e0e0'
+          ctx.lineWidth = 0.5
+          const gridSize = 20
+          
+          for (let x = 0; x < canvas.width; x += gridSize) {
+            ctx.beginPath()
+            ctx.moveTo(x, 0)
+            ctx.lineTo(x, canvas.height)
+            ctx.stroke()
+          }
+          
+          for (let y = 0; y < canvas.height; y += gridSize) {
+            ctx.beginPath()
+            ctx.moveTo(0, y)
+            ctx.lineTo(canvas.width, y)
+            ctx.stroke()
+          }
+        }
+
+        const drawElement = (elem) => {
+          if (!ctx) return
+          
+          ctx.fillStyle = elem.color || '#ffffff'
+          ctx.strokeStyle = '#333'
+          ctx.lineWidth = 2
+          
+          ctx.beginPath()
+          ctx.roundRect(elem.x, elem.y, elem.width, elem.height, 8)
+          ctx.fill()
+          ctx.stroke()
+          
+          // Title bar
+          ctx.fillStyle = elem.headerColor || '#667eea'
+          ctx.beginPath()
+          ctx.roundRect(elem.x, elem.y, elem.width, 25, [8, 8, 0, 0])
+          ctx.fill()
+          
+          // Title text
+          ctx.fillStyle = '#ffffff'
+          ctx.font = 'bold 12px Arial'
+          ctx.textAlign = 'center'
+          ctx.fillText(elem.name, elem.x + elem.width / 2, elem.y + 17)
+          
+          // Content
+          ctx.fillStyle = '#333'
+          ctx.font = '11px Arial'
+          ctx.textAlign = 'left'
+          let y = elem.y + 35
+          elem.attributes.forEach(attr => {
+            ctx.fillText(attr, elem.x + 8, y)
+            y += 14
+          })
+        }
+
+        const drawLine = (line) => {
+          if (!ctx) return
+          
+          ctx.strokeStyle = '#333'
+          ctx.lineWidth = 2
+          ctx.beginPath()
+          ctx.moveTo(line.x1, line.y1)
+          ctx.lineTo(line.x2, line.y2)
+          ctx.stroke()
+          
+          // Arrowhead
+          const angle = Math.atan2(line.y2 - line.y1, line.x2 - line.x1)
+          const arrowSize = 10
+          ctx.beginPath()
+          ctx.moveTo(line.x2, line.y2)
+          ctx.lineTo(
+            line.x2 - arrowSize * Math.cos(angle - Math.PI / 6),
+            line.y2 - arrowSize * Math.sin(angle - Math.PI / 6)
+          )
+          ctx.moveTo(line.x2, line.y2)
+          ctx.lineTo(
+            line.x2 - arrowSize * Math.cos(angle + Math.PI / 6),
+            line.y2 - arrowSize * Math.sin(angle + Math.PI / 6)
+          )
+          ctx.stroke()
+        }
+
+        const handleCanvasClick = (e) => {
+          if (!canvas) return
+          const rect = canvas.getBoundingClientRect()
+          const x = e.clientX - rect.left
+          const y = e.clientY - rect.top
+          
+          if (selectedTool.value === 'class') {
+            elements.push({
+              id: Date.now(),
+              type: 'class',
+              name: 'NewClass',
+              x,
+              y,
+              width: 120,
+              height: 100,
+              color: '#ffffff',
+              headerColor: '#667eea',
+              attributes: ['- name: String', '- age: int']
+            })
+            redraw()
+          } else if (selectedTool.value === 'interface') {
+            elements.push({
+              id: Date.now(),
+              type: 'interface',
+              name: 'NewInterface',
+              x,
+              y,
+              width: 120,
+              height: 80,
+              color: '#e8f5e9',
+              headerColor: '#4caf50',
+              attributes: ['+ method(): void']
+            })
+            redraw()
+          }
+        }
+
+        const handleMouseDown = (e) => {
+          if (!canvas || selectedTool.value === 'association') return
+          
+          const rect = canvas.getBoundingClientRect()
+          const x = e.clientX - rect.left
+          const y = e.clientY - rect.top
+          
+          // Check if clicking on an element
+          for (let i = elements.length - 1; i >= 0; i--) {
+            const elem = elements[i]
+            if (x >= elem.x && x <= elem.x + elem.width &&
+                y >= elem.y && y <= elem.y + elem.height) {
+              selectedElement = elem
+              isDragging = true
+              dragOffset = { x: x - elem.x, y: y - elem.y }
+              return
+            }
+          }
+          
+          selectedElement = null
+        }
+
+        const handleMouseMove = (e) => {
+          if (!canvas) return
+          const rect = canvas.getBoundingClientRect()
+          const x = e.clientX - rect.left
+          const y = e.clientY - rect.top
+          
+          if (isDragging && selectedElement) {
+            selectedElement.x = x - dragOffset.x
+            selectedElement.y = y - dragOffset.y
+            redraw()
+          }
+        }
+
+        const handleMouseUp = () => {
+          isDragging = false
+        }
+
+        const redraw = () => {
+          if (!ctx) return
+          ctx.clearRect(0, 0, canvas.width, canvas.height)
+          drawGrid()
+          elements.forEach(drawElement)
+        }
+
+        const clearCanvas = () => {
+          elements = []
+          redraw()
+        }
+
+        onMounted(() => {
+          loadModels()
+          initCanvas()
+        })
+
+        return {
+          activeTab,
+          tabs,
+          tools,
+          selectedTool,
+          models,
+          newModel,
+          showCreateModal,
+          stats,
+          aiInput,
+          chatMessages,
+          isTyping,
+          codeConfig,
+          generatedCode,
+          createModel,
+          deleteModel,
+          openModel,
+          sendMessage,
+          generateCode,
+          handleCanvasClick,
+          handleMouseDown,
+          handleMouseMove,
+          handleMouseUp,
+          clearCanvas
+        }
+      }
+    }).use(ElementPlus).mount('#app')
+  </script>
+</body>
+</html>

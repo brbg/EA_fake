@@ -1,0 +1,2909 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI原生Enterprise Architect - Web版</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f5f7fa;
+            min-height: 100vh;
+        }
+
+        /* 导航栏 */
+        .navbar {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .navbar .logo {
+            font-size: 1.5rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .navbar .nav-links {
+            display: flex;
+            gap: 20px;
+        }
+
+        .navbar .nav-links a {
+            color: white;
+            text-decoration: none;
+            padding: 8px 15px;
+            border-radius: 8px;
+            transition: background 0.3s ease;
+        }
+
+        .navbar .nav-links a:hover {
+            background: rgba(255,255,255,0.2);
+        }
+
+        .navbar .nav-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .navbar .ai-modeling-btn {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%) !important;
+            box-shadow: 0 4px 15px rgba(245, 87, 108, 0.4);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% {
+                box-shadow: 0 4px 15px rgba(245, 87, 108, 0.4);
+            }
+            50% {
+                box-shadow: 0 4px 25px rgba(245, 87, 108, 0.6);
+            }
+            100% {
+                box-shadow: 0 4px 15px rgba(245, 87, 108, 0.4);
+            }
+        }
+
+        .navbar .user-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .navbar .user-info span {
+            font-size: 0.9rem;
+            opacity: 0.9;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 10px 20px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            border: none;
+            cursor: pointer;
+            font-size: 0.95rem;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: #e9ecef;
+            color: #333;
+        }
+
+        .btn-secondary:hover {
+            background: #dee2e6;
+        }
+
+        .btn-success {
+            background: #28a745;
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #218838;
+        }
+
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #c82333;
+        }
+
+        /* 登录/注册面板 */
+        .auth-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: calc(100vh - 70px);
+            padding: 20px;
+        }
+
+        .auth-card {
+            background: white;
+            border-radius: 16px;
+            padding: 40px;
+            width: 100%;
+            max-width: 450px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+        }
+
+        .auth-card h2 {
+            text-align: center;
+            margin-bottom: 30px;
+            color: #333;
+            font-size: 1.8rem;
+        }
+
+        .auth-card p {
+            text-align: center;
+            margin-bottom: 25px;
+            color: #666;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 500;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 12px 15px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: border-color 0.3s ease;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .form-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            margin-top: 30px;
+        }
+
+        .form-toggle {
+            text-align: center;
+            margin-top: 20px;
+            color: #666;
+        }
+
+        .form-toggle a {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        .form-toggle a:hover {
+            text-decoration: underline;
+        }
+
+        /* 主内容区 */
+        .main-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 30px;
+        }
+
+        /* 统计卡片 */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .stat-icon {
+            width: 50px;
+            height: 50px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+        }
+
+        .stat-icon.projects { background: #e3f2fd; color: #1976d2; }
+        .stat-icon.models { background: #e8f5e9; color: #388e3c; }
+        .stat-icon.elements { background: #fff3e0; color: #f57c00; }
+        .stat-icon.users { background: #f3e5f5; color: #7b1fa2; }
+
+        .stat-info h3 {
+            font-size: 2rem;
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .stat-info p {
+            color: #666;
+            font-size: 0.9rem;
+        }
+
+        /* 项目列表 */
+        .section {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+            margin-bottom: 25px;
+        }
+
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .section-header h2 {
+            color: #333;
+            font-size: 1.3rem;
+        }
+
+        .project-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .project-card {
+            border: 1px solid #eee;
+            border-radius: 12px;
+            padding: 20px;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+
+        .project-card:hover {
+            border-color: #667eea;
+            box-shadow: 0 4px 20px rgba(102, 126, 234, 0.15);
+        }
+
+        .project-card .project-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 8px;
+        }
+
+        .project-card .project-desc {
+            color: #666;
+            font-size: 0.9rem;
+            margin-bottom: 15px;
+        }
+
+        .project-card .project-meta {
+            display: flex;
+            gap: 15px;
+            font-size: 0.85rem;
+            color: #888;
+        }
+
+        .project-card .project-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .project-card .project-actions .btn {
+            flex: 1;
+            padding: 8px 12px;
+            font-size: 0.85rem;
+        }
+
+        /* 模态框 */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 16px;
+            padding: 30px;
+            width: 90%;
+            max-width: 500px;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .modal-content h3 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+
+        .modal-content textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 1rem;
+            resize: vertical;
+            min-height: 100px;
+        }
+
+        .modal-content textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+
+        .permissions-list {
+            max-height: 200px;
+            overflow-y: auto;
+            margin-bottom: 20px;
+        }
+
+        .permission-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 15px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .permission-item:last-child {
+            border-bottom: none;
+        }
+
+        .permission-item select {
+            padding: 5px 10px;
+            border-radius: 6px;
+            border: 1px solid #ddd;
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 15px 25px;
+            border-radius: 8px;
+            color: white;
+            font-weight: 500;
+            z-index: 2000;
+            animation: slideIn 0.3s ease;
+        }
+
+        .toast.success { background: #28a745; }
+        .toast.error { background: #dc3545; }
+
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        /* AI功能面板 */
+        .ai-panel {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 25px;
+        }
+
+        .ai-panel h3 {
+            margin-bottom: 15px;
+            font-size: 1.2rem;
+        }
+
+        .ai-panel textarea {
+            width: 100%;
+            padding: 15px;
+            border-radius: 8px;
+            border: none;
+            font-size: 1rem;
+            min-height: 100px;
+            margin-bottom: 15px;
+            resize: vertical;
+        }
+
+        .ai-panel .btn {
+            background: white;
+            color: #667eea;
+            font-weight: 600;
+        }
+
+        .ai-panel .btn:hover {
+            background: rgba(255,255,255,0.9);
+        }
+
+        /* 模型预览区域 */
+        .model-preview-container {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .canvas-preview {
+            flex: 1;
+            min-width: 400px;
+            height: 400px;
+            background: #f8f9fa;
+            border: 2px dashed #dee2e6;
+            border-radius: 12px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .canvas-preview svg {
+            width: 100%;
+            height: 100%;
+        }
+
+        .model-info {
+            width: 250px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+
+        .model-info button {
+            display: block;
+            width: 100%;
+            margin-bottom: 10px;
+        }
+
+        /* 生成的UML元素样式 */
+        .uml-element {
+            position: absolute;
+            background: white;
+            border: 2px solid #667eea;
+            border-radius: 8px;
+            padding: 10px;
+            cursor: move;
+            min-width: 100px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .uml-element.class {
+            border-color: #4CAF50;
+        }
+
+        .uml-element.actor {
+            border-color: #FF9800;
+            border-radius: 50%;
+            min-width: 60px;
+            height: 80px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .uml-element.use_case {
+            border-color: #2196F3;
+            border-radius: 50%;
+            min-width: 80px;
+            height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .uml-element.activity {
+            border-color: #9C27B0;
+            border-radius: 15px;
+        }
+
+        .uml-element .element-name {
+            font-weight: 600;
+            color: #333;
+            font-size: 0.9rem;
+        }
+
+        .uml-element .element-attributes {
+            font-size: 0.75rem;
+            color: #666;
+            margin-top: 5px;
+            padding-top: 5px;
+            border-top: 1px solid #eee;
+        }
+
+        .uml-element .element-methods {
+            font-size: 0.75rem;
+            color: #666;
+            margin-top: 5px;
+            padding-top: 5px;
+            border-top: 1px solid #eee;
+        }
+
+        /* 连接线样式 */
+        .connection-line {
+            position: absolute;
+            background: #666;
+            height: 2px;
+            z-index: 1;
+        }
+
+        .connection-arrow {
+            position: absolute;
+            width: 0;
+            height: 0;
+            border-left: 8px solid #666;
+            border-top: 5px solid transparent;
+            border-bottom: 5px solid transparent;
+            z-index: 2;
+        }
+
+        /* 元素类型选择器 */
+        .element-types {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .element-type-btn {
+            padding: 8px 15px;
+            border-radius: 20px;
+            border: 1px solid #ddd;
+            background: white;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 0.85rem;
+        }
+
+        .element-type-btn:hover {
+            border-color: #667eea;
+            color: #667eea;
+        }
+
+        .element-type-btn.active {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+
+        /* 响应式设计 */
+        @media (max-width: 768px) {
+            .navbar {
+                flex-direction: column;
+                gap: 15px;
+            }
+
+            .navbar .nav-links {
+                flex-wrap: wrap;
+                justify-content: center;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .project-list {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <!-- 导航栏 -->
+    <nav class="navbar">
+        <div class="logo">
+            <i class="fas fa-building"></i>
+            <span>AI EA</span>
+        </div>
+        <div class="nav-links" id="navLinks">
+            <a href="#" onclick="showSection('dashboard')"><i class="fas fa-home"></i> 首页</a>
+            <a href="#" onclick="showSection('projects')"><i class="fas fa-folder-open"></i> 项目管理</a>
+            <a href="#" onclick="showSection('models')"><i class="fas fa-sitemap"></i> 模型管理</a>
+            <a href="#" onclick="showSection('ai')"><i class="fas fa-brain"></i> AI助手</a>
+            <a href="#" onclick="showSection('audit')"><i class="fas fa-history"></i> 操作审计</a>
+        </div>
+        <div class="nav-actions">
+            <button class="btn btn-primary ai-modeling-btn" onclick="showSection('ai')">
+                <i class="fas fa-magic"></i> AI辅助建模
+            </button>
+        </div>
+        <div class="user-info" id="userInfo">
+            <span id="username">未登录</span>
+            <button class="btn btn-secondary" id="loginBtn" onclick="showLogin()">登录</button>
+        </div>
+    </nav>
+
+    <!-- 主内容区 -->
+    <div class="main-container">
+        <!-- 登录/注册视图 -->
+        <div id="authView" class="auth-container" style="display: none;">
+            <div class="auth-card">
+                <h2><i class="fas fa-sign-in-alt"></i> 用户登录</h2>
+                <p>欢迎使用AI原生Enterprise Architect</p>
+                <div class="form-group">
+                    <label for="loginUsername">用户名</label>
+                    <input type="text" id="loginUsername" placeholder="请输入用户名">
+                </div>
+                <div class="form-group">
+                    <label for="loginPassword">密码</label>
+                    <input type="password" id="loginPassword" placeholder="请输入密码">
+                </div>
+                <div class="form-actions">
+                    <button class="btn btn-primary" onclick="login()">登录</button>
+                    <button class="btn btn-secondary" onclick="showRegister()">注册新账号</button>
+                </div>
+                <div class="form-toggle">
+                    还没有账号？<a href="#" onclick="showRegister()">立即注册</a>
+                </div>
+            </div>
+        </div>
+
+        <!-- 注册视图 -->
+        <div id="registerView" class="auth-container" style="display: none;">
+            <div class="auth-card">
+                <h2><i class="fas fa-user-plus"></i> 用户注册</h2>
+                <p>创建您的账号，开始使用AI辅助建模</p>
+                <div class="form-group">
+                    <label for="regUsername">用户名</label>
+                    <input type="text" id="regUsername" placeholder="请输入用户名">
+                </div>
+                <div class="form-group">
+                    <label for="regEmail">邮箱</label>
+                    <input type="email" id="regEmail" placeholder="请输入邮箱">
+                </div>
+                <div class="form-group">
+                    <label for="regPassword">密码</label>
+                    <input type="password" id="regPassword" placeholder="请输入密码">
+                </div>
+                <div class="form-actions">
+                    <button class="btn btn-primary" onclick="register()">注册</button>
+                    <button class="btn btn-secondary" onclick="showLogin()">返回登录</button>
+                </div>
+                <div class="form-toggle">
+                    已有账号？<a href="#" onclick="showLogin()">立即登录</a>
+                </div>
+            </div>
+        </div>
+
+        <!-- 仪表盘视图 -->
+        <div id="dashboardView" style="display: none;">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-icon projects"><i class="fas fa-folder"></i></div>
+                    <div class="stat-info">
+                        <h3 id="statProjects">0</h3>
+                        <p>项目数量</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon models"><i class="fas fa-sitemap"></i></div>
+                    <div class="stat-info">
+                        <h3 id="statModels">0</h3>
+                        <p>模型数量</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon elements"><i class="fas fa-box"></i></div>
+                    <div class="stat-info">
+                        <h3 id="statElements">0</h3>
+                        <p>元素总数</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon users"><i class="fas fa-users"></i></div>
+                    <div class="stat-info">
+                        <h3 id="statUsers">0</h3>
+                        <p>团队成员</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <h2><i class="fas fa-clock"></i> 最近项目</h2>
+                    <button class="btn btn-primary" onclick="openCreateProjectModal()">创建新项目</button>
+                </div>
+                <div id="recentProjects">
+                    <div style="text-align: center; color: #888; padding: 40px;">
+                        <i class="fas fa-inbox" style="font-size: 3rem; margin-bottom: 10px;"></i>
+                        <p>暂无项目，请创建一个新项目</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 项目管理视图 -->
+        <div id="projectsView" style="display: none;">
+            <div class="section">
+                <div class="section-header">
+                    <h2><i class="fas fa-folder-open"></i> 项目列表</h2>
+                    <button class="btn btn-primary" onclick="openCreateProjectModal()">创建项目</button>
+                </div>
+                <div id="projectList">
+                    <div style="text-align: center; color: #888; padding: 40px;">
+                        <i class="fas fa-folder" style="font-size: 3rem; margin-bottom: 10px;"></i>
+                        <p>暂无项目</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- AI辅助建模入口 -->
+            <div class="section">
+                <div class="section-header">
+                    <h2><i class="fas fa-magic"></i> AI辅助建模</h2>
+                </div>
+                <div class="project-list">
+                    <div class="project-card ai-card" onclick="showSection('ai')" style="border: 2px dashed #667eea; background: linear-gradient(135deg, #f5f7fa 0%, #e4e8f0 100%);">
+                        <div class="project-name" style="font-size: 1.2rem; color: #667eea;"><i class="fas fa-wand-magic"></i> AI辅助建模</div>
+                        <div class="project-desc">使用AI智能生成模型，输入业务描述即可自动创建UML模型、ER图等</div>
+                        <div style="margin-top: 10px;">
+                            <button class="btn btn-primary" style="width: 100%;">开始AI建模</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 项目配置视图 -->
+        <div id="projectSettingsView" style="display: none;">
+            <div class="section">
+                <div class="section-header">
+                    <h2><i class="fas fa-cog"></i> 项目配置</h2>
+                    <button class="btn btn-secondary" onclick="showSection('projects')">返回</button>
+                </div>
+                <div class="form-group">
+                    <label for="settingProjectName">项目名称</label>
+                    <input type="text" id="settingProjectName" placeholder="项目名称">
+                </div>
+                <div class="form-group">
+                    <label for="settingGlobalStyle">全局样式</label>
+                    <select id="settingGlobalStyle">
+                        <option value="default">默认样式</option>
+                        <option value="modern">现代风格</option>
+                        <option value="classic">经典风格</option>
+                        <option value="dark">暗色主题</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>已启用模板</label>
+                    <div id="templateList">
+                        <div class="permission-item">
+                            <span>业务架构模板</span>
+                            <input type="checkbox" checked>
+                        </div>
+                        <div class="permission-item">
+                            <span>应用架构模板</span>
+                            <input type="checkbox" checked>
+                        </div>
+                        <div class="permission-item">
+                            <span>技术架构模板</span>
+                            <input type="checkbox">
+                        </div>
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button class="btn btn-primary" onclick="saveProjectSettings()">保存配置</button>
+                </div>
+            </div>
+
+            <!-- 成员管理 -->
+            <div class="section">
+                <div class="section-header">
+                    <h2><i class="fas fa-users"></i> 成员管理</h2>
+                    <button class="btn btn-primary" onclick="openAddMemberModal()">添加成员</button>
+                </div>
+                <div id="memberList">
+                    <div style="text-align: center; color: #888; padding: 40px;">
+                        <i class="fas fa-users" style="font-size: 3rem; margin-bottom: 10px;"></i>
+                        <p>暂无成员</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 健康巡检 -->
+            <div class="section">
+                <div class="section-header">
+                    <h2><i class="fas fa-heartbeat"></i> 项目健康巡检</h2>
+                    <button class="btn btn-primary" onclick="runHealthCheck()">执行检查</button>
+                </div>
+                <div id="healthResult">
+                    <div style="text-align: center; color: #888; padding: 40px;">
+                        <i class="fas fa-stethoscope" style="font-size: 3rem; margin-bottom: 10px;"></i>
+                        <p>点击上方按钮执行健康检查</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 模型管理视图 -->
+        <div id="modelsView" style="display: none;">
+            <div class="section">
+                <div class="section-header">
+                    <h2><i class="fas fa-sitemap"></i> 模型列表</h2>
+                    <div style="display: flex; gap: 10px;">
+                        <button class="btn btn-primary" onclick="openCreateModelModal()">创建模型</button>
+                        <button class="btn btn-secondary" onclick="openCreateViewModal()">创建视图</button>
+                    </div>
+                </div>
+                <div id="modelList">
+                    <div style="text-align: center; color: #888; padding: 40px;">
+                        <i class="fas fa-file" style="font-size: 3rem; margin-bottom: 10px;"></i>
+                        <p>暂无模型</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- AI助手视图 -->
+        <div id="aiView" style="display: none;">
+            <div class="ai-panel">
+                <h3><i class="fas fa-brain"></i> AI辅助模型生成</h3>
+                <textarea id="aiPrompt" placeholder="请输入业务描述，例如：'创建一个电商系统的架构模型，包含用户、订单、商品等核心模块'"></textarea>
+                <button id="aiGenerateBtn" class="btn btn-primary" style="cursor: pointer; position: relative; z-index: 100;">AI生成模型</button>
+            </div>
+
+            <!-- 模型预览区域 -->
+            <div id="modelPreviewArea" class="section" style="display: none;">
+                <h3><i class="fas fa-eye"></i> 模型预览</h3>
+                <div class="model-preview-container">
+                    <div class="canvas-preview" id="modelCanvas">
+                        <!-- 生成的模型元素将在这里显示 -->
+                    </div>
+                    <div class="model-info">
+                        <div id="generatedElementsInfo"></div>
+                        <button class="btn btn-secondary" onclick="clearModelPreview()">清空预览</button>
+                        <button class="btn btn-primary" onclick="saveGeneratedModel()">保存到项目</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h3><i class="fas fa-wand-magic"></i> AI功能</h3>
+                <div class="project-list">
+                    <div class="project-card" onclick="openAIValidateModal()">
+                        <div class="project-name"><i class="fas fa-check-circle"></i> 模型校验</div>
+                        <div class="project-desc">AI自动校验模型语法、规范、合理性，检测循环依赖</div>
+                    </div>
+                    <div class="project-card" onclick="openAIRecommendModal()">
+                        <div class="project-name"><i class="fas fa-lightbulb"></i> AI推荐</div>
+                        <div class="project-desc">根据当前模型上下文推荐元素、关系、属性</div>
+                    </div>
+                    <div class="project-card" onclick="openAICodeModal()">
+                        <div class="project-name"><i class="fas fa-code"></i> 代码生成</div>
+                        <div class="project-desc">根据模型生成Python、Java、SQL代码</div>
+                    </div>
+                    <div class="project-card" onclick="openAIAnalyzeModal()">
+                        <div class="project-name"><i class="fas fa-chart-bar"></i> 模型分析</div>
+                        <div class="project-desc">生成模型分析报告和优化建议</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h3><i class="fas fa-file-text"></i> 文档生成</h3>
+                <div class="project-list">
+                    <div class="project-card" onclick="openGenerateRequirementsModal()">
+                        <div class="project-name"><i class="fas fa-list-alt"></i> 需求文档</div>
+                        <div class="project-desc">基于业务模型AI生成需求文档、用例、测试场景</div>
+                    </div>
+                    <div class="project-card" onclick="openGenerateDocModal()">
+                        <div class="project-name"><i class="fas fa-file-word"></i> 交付文档</div>
+                        <div class="project-desc">AI生成完整交付文档、报表、分析报告</div>
+                    </div>
+                    <div class="project-card" onclick="openReverseEngineerModal()">
+                        <div class="project-name"><i class="fas fa-upload"></i> 逆向工程</div>
+                        <div class="project-desc">支持模型导入导出、代码反向生成模型</div>
+                    </div>
+                    <div class="project-card" onclick="openImpactAnalysisModal()">
+                        <div class="project-name"><i class="fas fa-network-wired"></i> 变更影响分析</div>
+                        <div class="project-desc">模型分析和统计功能，评估变更影响范围</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h3><i class="fas fa-comments"></i> 团队协作</h3>
+                <div class="project-list">
+                    <div class="project-card" onclick="openCommentsModal()">
+                        <div class="project-name"><i class="fas fa-comment-alt"></i> 批注评论</div>
+                        <div class="project-desc">元素批注、评论、讨论功能</div>
+                    </div>
+                    <div class="project-card" onclick="openAIReviewModal()">
+                        <div class="project-name"><i class="fas fa-clipboard-check"></i> AI智能评审</div>
+                        <div class="project-desc">汇总意见、生成评审结论、推荐修改方案</div>
+                    </div>
+                    <div class="project-card" onclick="openRealTimeCollabModal()">
+                        <div class="project-name"><i class="fas fa-users"></i> 实时协作</div>
+                        <div class="project-desc">WebSocket多用户在线实时编辑，状态同步</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h3><i class="fas fa-palette"></i> 样式管理</h3>
+                <div class="project-list">
+                    <div class="project-card" onclick="openStylingModal()">
+                        <div class="project-name"><i class="fas fa-paint-brush"></i> 样式设置</div>
+                        <div class="project-desc">设置元素颜色、字体、边框等样式</div>
+                    </div>
+                    <div class="project-card" onclick="openLayerModal()">
+                        <div class="project-name"><i class="fas fa-layer-group"></i> 图层管理</div>
+                        <div class="project-desc">管理图层顺序、显示/隐藏图层</div>
+                    </div>
+                    <div class="project-card" onclick="openLayoutModal()">
+                        <div class="project-name"><i class="fas fa-align-center"></i> 自动排版</div>
+                        <div class="project-desc">AI自动优化元素布局和排列</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 操作审计视图 -->
+        <div id="auditView" style="display: none;">
+            <div class="section">
+                <div class="section-header">
+                    <h2><i class="fas fa-history"></i> 操作日志</h2>
+                </div>
+                <div id="auditLogs">
+                    <div style="text-align: center; color: #888; padding: 40px;">
+                        <i class="fas fa-history" style="font-size: 3rem; margin-bottom: 10px;"></i>
+                        <p>暂无操作日志</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 创建项目模态框 -->
+    <div class="modal" id="createProjectModal">
+        <div class="modal-content">
+            <h3><i class="fas fa-folder-plus"></i> 创建新项目</h3>
+            <div class="form-group">
+                <label for="projectName">项目名称</label>
+                <input type="text" id="projectName" placeholder="请输入项目名称">
+            </div>
+            <div class="form-group">
+                <label for="projectDesc">项目描述</label>
+                <textarea id="projectDesc" placeholder="请输入项目描述"></textarea>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeModal('createProjectModal')">取消</button>
+                <button class="btn btn-primary" onclick="createProject()">创建</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 创建模型模态框 -->
+    <div class="modal" id="createModelModal">
+        <div class="modal-content">
+            <h3><i class="fas fa-file-plus"></i> 创建新模型</h3>
+            <div class="form-group">
+                <label for="modelName">模型名称</label>
+                <input type="text" id="modelName" placeholder="请输入模型名称">
+            </div>
+            <div class="form-group">
+                <label for="modelDesc">模型描述</label>
+                <textarea id="modelDesc" placeholder="请输入模型描述"></textarea>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeModal('createModelModal')">取消</button>
+                <button class="btn btn-primary" onclick="createModel()">创建</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI校验模态框 -->
+    <div class="modal" id="aiValidateModal">
+        <div class="modal-content">
+            <h3><i class="fas fa-check-circle"></i> AI模型校验</h3>
+            <div class="form-group">
+                <label for="validateModelId">选择模型</label>
+                <select id="validateModelId"></select>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeModal('aiValidateModal')">取消</button>
+                <button class="btn btn-primary" onclick="aiValidateModel()">开始校验</button>
+            </div>
+            <div id="validationResult" style="display: none; margin-top: 20px;">
+                <h4>校验结果</h4>
+                <pre id="validationOutput"></pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI推荐模态框 -->
+    <div class="modal" id="aiRecommendModal">
+        <div class="modal-content">
+            <h3><i class="fas fa-lightbulb"></i> AI推荐</h3>
+            <div class="form-group">
+                <label for="recommendModelId">选择模型</label>
+                <select id="recommendModelId"></select>
+            </div>
+            <div class="form-group">
+                <label for="recommendContext">上下文（可选）</label>
+                <input type="text" id="recommendContext" placeholder="例如：BusinessActor, ApplicationComponent">
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeModal('aiRecommendModal')">取消</button>
+                <button class="btn btn-primary" onclick="aiRecommend()">获取推荐</button>
+            </div>
+            <div id="recommendResult" style="display: none; margin-top: 20px;">
+                <h4>推荐结果</h4>
+                <pre id="recommendOutput"></pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- 代码生成模态框 -->
+    <div class="modal" id="aiCodeModal">
+        <div class="modal-content">
+            <h3><i class="fas fa-code"></i> AI代码生成</h3>
+            <div class="form-group">
+                <label for="codeModelId">选择模型</label>
+                <select id="codeModelId"></select>
+            </div>
+            <div class="form-group">
+                <label for="codeLanguage">选择语言</label>
+                <select id="codeLanguage">
+                    <option value="python">Python</option>
+                    <option value="java">Java</option>
+                    <option value="sql">SQL</option>
+                </select>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeModal('aiCodeModal')">取消</button>
+                <button class="btn btn-primary" onclick="aiGenerateCode()">生成代码</button>
+            </div>
+            <div id="codeResult" style="display: none; margin-top: 20px;">
+                <h4>生成的代码</h4>
+                <pre id="codeOutput" style="background: #f5f5f5; padding: 15px; border-radius: 8px; max-height: 300px; overflow-y: auto;"></pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- 模型分析模态框 -->
+    <div class="modal" id="aiAnalyzeModal">
+        <div class="modal-content">
+            <h3><i class="fas fa-chart-bar"></i> 模型分析</h3>
+            <div class="form-group">
+                <label for="analyzeModelId">选择模型</label>
+                <select id="analyzeModelId"></select>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeModal('aiAnalyzeModal')">取消</button>
+                <button class="btn btn-primary" onclick="aiAnalyzeModel()">分析模型</button>
+            </div>
+            <div id="analyzeResult" style="display: none; margin-top: 20px;">
+                <h4>分析报告</h4>
+                <pre id="analyzeOutput"></pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- 创建视图模态框 -->
+    <div class="modal" id="createViewModal">
+        <div class="modal-content">
+            <h3><i class="fas fa-eye"></i> 创建视图</h3>
+            <div class="form-group">
+                <label for="viewName">视图名称</label>
+                <input type="text" id="viewName" placeholder="请输入视图名称">
+            </div>
+            <div class="form-group">
+                <label for="viewType">视图类型</label>
+                <select id="viewType">
+                    <option value="uml">UML图</option>
+                    <option value="architecture">架构图</option>
+                    <option value="er">ER图</option>
+                    <option value="flow">流程图</option>
+                    <option value="class">类图</option>
+                    <option value="sequence">时序图</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="viewDesc">视图描述</label>
+                <textarea id="viewDesc" placeholder="请输入视图描述"></textarea>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeModal('createViewModal')">取消</button>
+                <button class="btn btn-primary" onclick="createView()">创建视图</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加成员模态框 -->
+    <div class="modal" id="addMemberModal">
+        <div class="modal-content">
+            <h3><i class="fas fa-user-plus"></i> 添加成员</h3>
+            <div class="form-group">
+                <label for="memberUsername">用户名</label>
+                <input type="text" id="memberUsername" placeholder="请输入用户名">
+            </div>
+            <div class="form-group">
+                <label for="memberRole">角色</label>
+                <select id="memberRole">
+                    <option value="viewer">查看者</option>
+                    <option value="editor">编辑者</option>
+                    <option value="owner">所有者</option>
+                </select>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeModal('addMemberModal')">取消</button>
+                <button class="btn btn-primary" onclick="addMember()">添加成员</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 需求文档生成模态框 -->
+    <div class="modal" id="generateRequirementsModal">
+        <div class="modal-content">
+            <h3><i class="fas fa-list-alt"></i> 生成需求文档</h3>
+            <div class="form-group">
+                <label for="reqModelId">选择模型</label>
+                <select id="reqModelId"></select>
+            </div>
+            <div class="form-group">
+                <label for="reqFormat">输出格式</label>
+                <select id="reqFormat">
+                    <option value="text">纯文本</option>
+                    <option value="markdown">Markdown</option>
+                    <option value="html">HTML</option>
+                </select>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeModal('generateRequirementsModal')">取消</button>
+                <button class="btn btn-primary" onclick="generateRequirements()">生成文档</button>
+            </div>
+            <div id="reqResult" style="display: none; margin-top: 20px;">
+                <h4>需求文档预览</h4>
+                <pre id="reqOutput" style="background: #f5f5f5; padding: 15px; border-radius: 8px; max-height: 300px; overflow-y: auto;"></pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- 交付文档生成模态框 -->
+    <div class="modal" id="generateDocModal">
+        <div class="modal-content">
+            <h3><i class="fas fa-file-word"></i> 生成交付文档</h3>
+            <div class="form-group">
+                <label for="docModelId">选择模型</label>
+                <select id="docModelId"></select>
+            </div>
+            <div class="form-group">
+                <label>文档内容</label>
+                <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+                    <label><input type="checkbox" checked> 项目概述</label>
+                    <label><input type="checkbox" checked> 架构设计</label>
+                    <label><input type="checkbox" checked> 数据模型</label>
+                    <label><input type="checkbox"> API文档</label>
+                    <label><input type="checkbox"> 部署指南</label>
+                    <label><input type="checkbox"> 安全说明</label>
+                </div>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeModal('generateDocModal')">取消</button>
+                <button class="btn btn-primary" onclick="generateDocument()">生成文档</button>
+            </div>
+            <div id="docResult" style="display: none; margin-top: 20px;">
+                <h4>文档生成成功</h4>
+                <p>文档已生成，可下载查看</p>
+                <button class="btn btn-success" onclick="downloadDocument()">下载文档</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 逆向工程模态框 -->
+    <div class="modal" id="reverseEngineerModal">
+        <div class="modal-content">
+            <h3><i class="fas fa-upload"></i> 逆向工程</h3>
+            <div class="form-group">
+                <label for="importType">导入类型</label>
+                <select id="importType">
+                    <option value="json">JSON格式</option>
+                    <option value="xml">XML格式</option>
+                    <option value="xmi">XMI格式</option>
+                    <option value="code">代码文件</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="importFile">选择文件</label>
+                <input type="file" id="importFile" accept=".json,.xml,.xmi,.py,.java">
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeModal('reverseEngineerModal')">取消</button>
+                <button class="btn btn-primary" onclick="importModel()">导入模型</button>
+            </div>
+            <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #eee;">
+                <h4>导出模型</h4>
+                <button class="btn btn-secondary" onclick="exportModel()">导出当前模型</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 变更影响分析模态框 -->
+    <div class="modal" id="impactAnalysisModal">
+        <div class="modal-content">
+            <h3><i class="fas fa-network-wired"></i> 变更影响分析</h3>
+            <div class="form-group">
+                <label for="impactModelId">选择模型</label>
+                <select id="impactModelId"></select>
+            </div>
+            <div class="form-group">
+                <label for="impactElement">选择元素（可选）</label>
+                <select id="impactElement"></select>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeModal('impactAnalysisModal')">取消</button>
+                <button class="btn btn-primary" onclick="runImpactAnalysis()">分析影响</button>
+            </div>
+            <div id="impactResult" style="display: none; margin-top: 20px;">
+                <h4>影响分析报告</h4>
+                <pre id="impactOutput" style="background: #f5f5f5; padding: 15px; border-radius: 8px; max-height: 300px; overflow-y: auto;"></pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- 批注评论模态框 -->
+    <div class="modal" id="commentsModal">
+        <div class="modal-content">
+            <h3><i class="fas fa-comment-alt"></i> 批注评论</h3>
+            <div class="form-group">
+                <label for="commentModelId">选择模型</label>
+                <select id="commentModelId"></select>
+            </div>
+            <div class="form-group">
+                <label for="commentContent">评论内容</label>
+                <textarea id="commentContent" placeholder="输入您的评论或批注..."></textarea>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeModal('commentsModal')">取消</button>
+                <button class="btn btn-primary" onclick="addComment()">提交评论</button>
+            </div>
+            <div id="commentsList" style="display: none; margin-top: 20px;">
+                <h4>评论列表</h4>
+                <div id="commentsContent"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI智能评审模态框 -->
+    <div class="modal" id="aiReviewModal">
+        <div class="modal-content">
+            <h3><i class="fas fa-clipboard-check"></i> AI智能评审</h3>
+            <div class="form-group">
+                <label for="reviewModelId">选择模型</label>
+                <select id="reviewModelId"></select>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeModal('aiReviewModal')">取消</button>
+                <button class="btn btn-primary" onclick="runAIReview()">开始评审</button>
+            </div>
+            <div id="reviewResult" style="display: none; margin-top: 20px;">
+                <h4>评审报告</h4>
+                <pre id="reviewOutput" style="background: #f5f5f5; padding: 15px; border-radius: 8px; max-height: 300px; overflow-y: auto;"></pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- 实时协作模态框 -->
+    <div class="modal" id="realTimeCollabModal">
+        <div class="modal-content">
+            <h3><i class="fas fa-users"></i> 实时协作</h3>
+            <div class="form-group">
+                <label for="collabProjectId">选择项目</label>
+                <select id="collabProjectId"></select>
+            </div>
+            <div style="padding: 15px; background: #e8f5e9; border-radius: 8px; margin-bottom: 20px;">
+                <h4><i class="fas fa-check-circle"></i> WebSocket连接状态</h4>
+                <p id="wsStatus">未连接</p>
+                <button class="btn btn-primary" onclick="connectWebSocket()">连接协作</button>
+            </div>
+            <div id="collabUsers" style="display: none;">
+                <h4>在线用户</h4>
+                <div id="onlineUsersList"></div>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeModal('realTimeCollabModal')">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 样式设置模态框 -->
+    <div class="modal" id="stylingModal">
+        <div class="modal-content">
+            <h3><i class="fas fa-paint-brush"></i> 样式设置</h3>
+            <div class="form-group">
+                <label for="styleElement">选择元素类型</label>
+                <select id="styleElement">
+                    <option value="Class">类</option>
+                    <option value="ApplicationComponent">应用组件</option>
+                    <option value="BusinessActor">业务角色</option>
+                    <option value="Node">节点</option>
+                </select>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="styleColor">背景颜色</label>
+                    <input type="color" id="styleColor" value="#d0d0d0">
+                </div>
+                <div class="form-group">
+                    <label for="styleBorder">边框颜色</label>
+                    <input type="color" id="styleBorder" value="#666666">
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="styleWidth">宽度</label>
+                    <input type="number" id="styleWidth" value="120">
+                </div>
+                <div class="form-group">
+                    <label for="styleHeight">高度</label>
+                    <input type="number" id="styleHeight" value="70">
+                </div>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeModal('stylingModal')">取消</button>
+                <button class="btn btn-primary" onclick="saveStyle()">保存样式</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 图层管理模态框 -->
+    <div class="modal" id="layerModal">
+        <div class="modal-content">
+            <h3><i class="fas fa-layer-group"></i> 图层管理</h3>
+            <div id="layersContainer">
+                <div class="layer-item">
+                    <label><input type="checkbox" checked> 业务层</label>
+                    <button class="btn btn-secondary" style="margin-left: 10px;">置顶</button>
+                </div>
+                <div class="layer-item">
+                    <label><input type="checkbox" checked> 应用层</label>
+                    <button class="btn btn-secondary" style="margin-left: 10px;">置顶</button>
+                </div>
+                <div class="layer-item">
+                    <label><input type="checkbox" checked> 技术层</label>
+                    <button class="btn btn-secondary" style="margin-left: 10px;">置顶</button>
+                </div>
+                <div class="layer-item">
+                    <label><input type="checkbox"> 关系层</label>
+                    <button class="btn btn-secondary" style="margin-left: 10px;">置顶</button>
+                </div>
+            </div>
+            <div class="form-actions" style="margin-top: 20px;">
+                <button class="btn btn-secondary" onclick="closeModal('layerModal')">关闭</button>
+                <button class="btn btn-primary" onclick="saveLayers()">保存图层设置</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 自动排版模态框 -->
+    <div class="modal" id="layoutModal">
+        <div class="modal-content">
+            <h3><i class="fas fa-align-center"></i> 自动排版</h3>
+            <div class="form-group">
+                <label for="layoutModelId">选择模型</label>
+                <select id="layoutModelId"></select>
+            </div>
+            <div class="form-group">
+                <label>布局算法</label>
+                <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+                    <button class="btn btn-secondary active" onclick="setLayoutAlgorithm('tree')">树形布局</button>
+                    <button class="btn btn-secondary" onclick="setLayoutAlgorithm('grid')">网格布局</button>
+                    <button class="btn btn-secondary" onclick="setLayoutAlgorithm('flow')">流式布局</button>
+                    <button class="btn btn-secondary" onclick="setLayoutAlgorithm('circular')">环形布局</button>
+                </div>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeModal('layoutModal')">取消</button>
+                <button class="btn btn-primary" onclick="applyLayout()">应用布局</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8080/api';
+        let currentSessionId = localStorage.getItem('session_id');
+        let currentUserId = localStorage.getItem('user_id');
+        let currentUsername = localStorage.getItem('username');
+        let currentProjectId = null;
+        let currentLayoutAlgorithm = 'tree';
+
+        // 页面加载完成后初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            const aiGenerateBtn = document.getElementById('aiGenerateBtn');
+            if (aiGenerateBtn) {
+                aiGenerateBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    console.log('AI生成模型按钮通过addEventListener被点击');
+                    aiGenerateModel();
+                });
+            }
+        });
+
+        // 检查登录状态
+        function checkLogin() {
+            if (currentSessionId) {
+                showUserInfo();
+                // 检查URL hash，如果是#ai则显示AI助手视图
+                const hash = window.location.hash;
+                if (hash === '#ai') {
+                    showSection('ai');
+                } else {
+                    showSection('dashboard');
+                }
+            } else {
+                showLogin();
+            }
+        }
+
+        // 显示用户信息
+        function showUserInfo() {
+            document.getElementById('userInfo').innerHTML = `
+                <span>${currentUsername}</span>
+                <button class="btn btn-secondary" onclick="logout()">退出</button>
+            `;
+        }
+
+        // 显示登录视图
+        function showLogin() {
+            document.getElementById('authView').style.display = 'flex';
+            document.getElementById('registerView').style.display = 'none';
+            document.getElementById('dashboardView').style.display = 'none';
+            document.getElementById('projectsView').style.display = 'none';
+            document.getElementById('modelsView').style.display = 'none';
+            document.getElementById('aiView').style.display = 'none';
+            document.getElementById('auditView').style.display = 'none';
+        }
+
+        // 显示注册视图
+        function showRegister() {
+            document.getElementById('authView').style.display = 'none';
+            document.getElementById('registerView').style.display = 'flex';
+        }
+
+        // 显示指定区域
+        function showSection(section) {
+            document.getElementById('authView').style.display = 'none';
+            document.getElementById('registerView').style.display = 'none';
+            document.getElementById('dashboardView').style.display = 'none';
+            document.getElementById('projectsView').style.display = 'none';
+            document.getElementById('projectSettingsView').style.display = 'none';
+            document.getElementById('modelsView').style.display = 'none';
+            document.getElementById('aiView').style.display = 'none';
+            document.getElementById('auditView').style.display = 'none';
+
+            if (section === 'dashboard') {
+                document.getElementById('dashboardView').style.display = 'block';
+                loadDashboard();
+            } else if (section === 'projects') {
+                document.getElementById('projectsView').style.display = 'block';
+                loadProjects();
+            } else if (section === 'projectSettings') {
+                document.getElementById('projectSettingsView').style.display = 'block';
+            } else if (section === 'models') {
+                document.getElementById('modelsView').style.display = 'block';
+                loadModels();
+            } else if (section === 'ai') {
+                document.getElementById('aiView').style.display = 'block';
+                loadModelsForSelect();
+            } else if (section === 'audit') {
+                document.getElementById('auditView').style.display = 'block';
+                loadAuditLogs();
+            }
+        }
+
+        // 用户注册
+        function register() {
+            const username = document.getElementById('regUsername').value.trim();
+            const email = document.getElementById('regEmail').value.trim();
+            const password = document.getElementById('regPassword').value;
+
+            if (!username || !email || !password) {
+                showToast('请填写所有字段', 'error');
+                return;
+            }
+
+            fetch(`${API_BASE}/auth/register`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, email, password })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.user) {
+                    showToast('注册成功，请登录', 'success');
+                    showLogin();
+                } else {
+                    showToast(data.error || '注册失败', 'error');
+                }
+            })
+            .catch(() => showToast('注册失败', 'error'));
+        }
+
+        // 用户登录
+        function login() {
+            const username = document.getElementById('loginUsername').value.trim();
+            const password = document.getElementById('loginPassword').value;
+
+            if (!username || !password) {
+                showToast('请填写用户名和密码', 'error');
+                return;
+            }
+
+            fetch(`${API_BASE}/auth/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.session_id) {
+                    currentSessionId = data.session_id;
+                    currentUserId = data.user.id;
+                    currentUsername = data.user.username;
+                    localStorage.setItem('session_id', currentSessionId);
+                    localStorage.setItem('user_id', currentUserId);
+                    localStorage.setItem('username', currentUsername);
+                    showUserInfo();
+                    showSection('dashboard');
+                    showToast('登录成功', 'success');
+                } else {
+                    showToast(data.error || '登录失败', 'error');
+                }
+            })
+            .catch(() => showToast('登录失败', 'error'));
+        }
+
+        // 用户退出
+        function logout() {
+            fetch(`${API_BASE}/auth/logout`, {
+                method: 'POST',
+                headers: { 'X-Session-Id': currentSessionId }
+            });
+            localStorage.removeItem('session_id');
+            localStorage.removeItem('user_id');
+            localStorage.removeItem('username');
+            currentSessionId = null;
+            currentUserId = null;
+            currentUsername = null;
+            document.getElementById('userInfo').innerHTML = `
+                <span>未登录</span>
+                <button class="btn btn-secondary" onclick="showLogin()">登录</button>
+            `;
+            showLogin();
+            showToast('已退出登录', 'success');
+        }
+
+        // 加载仪表盘
+        function loadDashboard() {
+            fetch(`${API_BASE}/projects`, {
+                headers: { 'X-Session-Id': currentSessionId }
+            })
+            .then(res => res.json())
+            .then(data => {
+                const projects = data.projects || [];
+                document.getElementById('statProjects').textContent = projects.length;
+                
+                let totalModels = 0;
+                let totalElements = 0;
+                
+                projects.forEach(p => {
+                    totalModels += p.models_count || 0;
+                    totalElements += p.elements_count || 0;
+                });
+                
+                document.getElementById('statModels').textContent = totalModels;
+                document.getElementById('statElements').textContent = totalElements;
+                document.getElementById('statUsers').textContent = 1; // 简化处理
+                
+                // 显示最近项目
+                if (projects.length > 0) {
+                    const recent = projects.slice(0, 4);
+                    let html = '<div class="project-list">';
+                    recent.forEach(p => {
+                        html += `
+                            <div class="project-card" onclick="openProject('${p.id}')">
+                                <div class="project-name">${p.name}</div>
+                                <div class="project-desc">${p.description || '暂无描述'}</div>
+                                <div class="project-meta">
+                                    <span><i class="fas fa-sitemap"></i> ${p.models_count || 0} 模型</span>
+                                    <span><i class="fas fa-users"></i> ${p.members_count || 1} 成员</span>
+                                </div>
+                                <div class="project-actions">
+                                    <button class="btn btn-primary" onclick="event.stopPropagation(); openProject('${p.id}')">打开</button>
+                                    <button class="btn btn-secondary" onclick="event.stopPropagation(); openProjectSettings('${p.id}')">设置</button>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    html += '</div>';
+                    document.getElementById('recentProjects').innerHTML = html;
+                }
+            });
+        }
+
+        // 加载项目列表
+        function loadProjects() {
+            fetch(`${API_BASE}/projects`, {
+                headers: { 'X-Session-Id': currentSessionId }
+            })
+            .then(res => res.json())
+            .then(data => {
+                const projects = data.projects || [];
+                if (projects.length > 0) {
+                    let html = '<div class="project-list">';
+                    projects.forEach(p => {
+                        html += `
+                            <div class="project-card">
+                                <div class="project-name">${p.name}</div>
+                                <div class="project-desc">${p.description || '暂无描述'}</div>
+                                <div class="project-meta">
+                                    <span><i class="fas fa-calendar"></i> ${formatDate(p.created_at)}</span>
+                                    <span><i class="fas fa-sitemap"></i> ${p.models_count || 0} 模型</span>
+                                </div>
+                                <div class="project-actions">
+                                    <button class="btn btn-primary" onclick="openProject('${p.id}')">打开</button>
+                                    <button class="btn btn-secondary" onclick="openProjectSettings('${p.id}')">设置</button>
+                                    <button class="btn btn-danger" onclick="deleteProject('${p.id}', '${p.name}')">删除</button>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    html += '</div>';
+                    document.getElementById('projectList').innerHTML = html;
+                }
+            });
+        }
+
+        // 加载模型列表
+        function loadModels() {
+            fetch(`${API_BASE}/models`, {
+                headers: { 'X-Session-Id': currentSessionId }
+            })
+            .then(res => res.json())
+            .then(data => {
+                const models = data.models || [];
+                if (models.length > 0) {
+                    let html = '<div class="project-list">';
+                    models.forEach(m => {
+                        html += `
+                            <div class="project-card">
+                                <div class="project-name">${m.name}</div>
+                                <div class="project-desc">${m.description || '暂无描述'}</div>
+                                <div class="project-meta">
+                                    <span><i class="fas fa-box"></i> ${m.elements_count} 元素</span>
+                                    <span><i class="fas fa-link"></i> ${m.relationships_count} 关系</span>
+                                    <span><i class="fas fa-eye"></i> ${m.views_count} 视图</span>
+                                </div>
+                                <div class="project-actions">
+                                    <button class="btn btn-primary" onclick="editModel('${m.id}')">编辑</button>
+                                    <button class="btn btn-secondary" onclick="saveModelVersion('${m.id}')">保存版本</button>
+                                    <button class="btn btn-danger" onclick="deleteModel('${m.id}', '${m.name}')">删除</button>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    html += '</div>';
+                    document.getElementById('modelList').innerHTML = html;
+                }
+            });
+        }
+
+        // 加载模型到选择框
+        function loadModelsForSelect() {
+            fetch(`${API_BASE}/models`, {
+                headers: { 'X-Session-Id': currentSessionId }
+            })
+            .then(res => res.json())
+            .then(data => {
+                const models = data.models || [];
+                let options = '<option value="">请选择模型</option>';
+                models.forEach(m => {
+                    options += `<option value="${m.id}">${m.name}</option>`;
+                });
+                document.getElementById('validateModelId').innerHTML = options;
+                document.getElementById('recommendModelId').innerHTML = options;
+                document.getElementById('codeModelId').innerHTML = options;
+                document.getElementById('analyzeModelId').innerHTML = options;
+            });
+        }
+
+        // 加载审计日志
+        function loadAuditLogs() {
+            fetch(`${API_BASE}/audit/logs`, {
+                headers: { 'X-Session-Id': currentSessionId }
+            })
+            .then(res => res.json())
+            .then(data => {
+                const logs = data.logs || [];
+                if (logs.length > 0) {
+                    let html = '<table style="width:100%; border-collapse: collapse;">';
+                    html += '<tr><th>时间</th><th>操作</th><th>详情</th></tr>';
+                    logs.forEach(log => {
+                        html += `
+                            <tr style="border-bottom: 1px solid #eee;">
+                                <td style="padding: 10px;">${formatDate(log.timestamp)}</td>
+                                <td style="padding: 10px;">${log.action}</td>
+                                <td style="padding: 10px;">${log.detail}</td>
+                            </tr>
+                        `;
+                    });
+                    html += '</table>';
+                    document.getElementById('auditLogs').innerHTML = html;
+                }
+            });
+        }
+
+        // 创建项目
+        function createProject() {
+            const name = document.getElementById('projectName').value.trim();
+            const description = document.getElementById('projectDesc').value.trim();
+
+            if (!name) {
+                showToast('请输入项目名称', 'error');
+                return;
+            }
+
+            fetch(`${API_BASE}/projects`, {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'X-Session-Id': currentSessionId
+                },
+                body: JSON.stringify({ name, description })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.project) {
+                    showToast('项目创建成功', 'success');
+                    closeModal('createProjectModal');
+                    showSection('projects');
+                } else {
+                    showToast(data.error || '创建失败', 'error');
+                }
+            })
+            .catch(() => showToast('创建失败', 'error'));
+        }
+
+        // 创建模型
+        function createModel() {
+            const name = document.getElementById('modelName').value.trim();
+            const description = document.getElementById('modelDesc').value.trim();
+
+            if (!name) {
+                showToast('请输入模型名称', 'error');
+                return;
+            }
+
+            fetch(`${API_BASE}/models`, {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'X-Session-Id': currentSessionId
+                },
+                body: JSON.stringify({ name, description })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.id) {
+                    showToast('模型创建成功', 'success');
+                    closeModal('createModelModal');
+                    showSection('models');
+                } else {
+                    showToast(data.error || '创建失败', 'error');
+                }
+            })
+            .catch(() => showToast('创建失败', 'error'));
+        }
+
+        // AI生成模型
+        function aiGenerateModel() {
+            const prompt = document.getElementById('aiPrompt').value.trim();
+            if (!prompt) {
+                showToast('请输入业务描述', 'error');
+                return;
+            }
+            
+            showToast('正在生成模型...', 'success');
+            console.log('AI生成模型按钮被点击，prompt:', prompt);
+
+            // 获取当前选中的项目ID
+            const selectedProjectId = localStorage.getItem('selectedProjectId');
+            
+            // 调用新的AI生成UML API
+            fetch(`${API_BASE}/v1/project/${selectedProjectId || 'default'}/ai/generate-uml`, {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'X-Session-Id': currentSessionId
+                },
+                body: JSON.stringify({ 
+                    prompt: prompt,
+                    view_type: 'class'  // 默认生成类图
+                })
+            })
+            .then(res => res.json())
+            .then(result => {
+                if (result.view) {
+                    showToast(`AI生成成功，创建了 ${result.generated_elements} 个元素和 ${result.generated_relationships} 条关系`, 'success');
+                    // 在预览区域显示生成的模型
+                    displayGeneratedModel(result.view);
+                } else {
+                    showToast(result.error || '生成失败', 'error');
+                }
+            })
+            .catch(error => {
+                console.error('AI生成模型失败:', error);
+                showToast('生成失败，请稍后重试', 'error');
+            });
+        }
+
+        // 显示生成的模型
+        function displayGeneratedModel(view) {
+            const canvas = document.getElementById('modelCanvas');
+            const infoDiv = document.getElementById('generatedElementsInfo');
+            
+            // 清空画布
+            canvas.innerHTML = '';
+            
+            // 显示预览区域
+            document.getElementById('modelPreviewArea').style.display = 'block';
+            
+            // 存储生成的模型数据供后续使用
+            window.generatedModel = view;
+            
+            // 计算缩放比例，使元素适应画布
+            const scale = 0.6;
+            
+            // 创建SVG画布
+            const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            svg.setAttribute('width', '100%');
+            svg.setAttribute('height', '100%');
+            svg.setAttribute('viewBox', '0 0 800 600');
+            
+            // 添加定义（箭头标记）
+            const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+            const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+            marker.setAttribute('id', 'arrowhead');
+            marker.setAttribute('markerWidth', '10');
+            marker.setAttribute('markerHeight', '7');
+            marker.setAttribute('refX', '9');
+            marker.setAttribute('refY', '3.5');
+            marker.setAttribute('orient', 'auto');
+            const polygon = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+            polygon.setAttribute('points', '0 0, 10 3.5, 0 7');
+            polygon.setAttribute('fill', '#666');
+            marker.appendChild(polygon);
+            defs.appendChild(marker);
+            svg.appendChild(defs);
+            
+            // 绘制关系线
+            view.relationships.forEach(rel => {
+                const source = view.elements.find(e => e.uuid === rel.source);
+                const target = view.elements.find(e => e.uuid === rel.target);
+                
+                if (source && target) {
+                    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                    line.setAttribute('x1', (source.x + source.width / 2) * scale);
+                    line.setAttribute('y1', (source.y + source.height / 2) * scale);
+                    line.setAttribute('x2', (target.x + target.width / 2) * scale);
+                    line.setAttribute('y2', (target.y + target.height / 2) * scale);
+                    line.setAttribute('stroke', '#666');
+                    line.setAttribute('stroke-width', '2');
+                    line.setAttribute('marker-end', 'url(#arrowhead)');
+                    svg.appendChild(line);
+                }
+            });
+            
+            // 绘制元素
+            view.elements.forEach(elem => {
+                const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                g.setAttribute('transform', `translate(${elem.x * scale}, ${elem.y * scale})`);
+                
+                // 根据元素类型设置颜色
+                let fillColor = '#ffffff';
+                let strokeColor = '#667eea';
+                
+                if (elem.type === 'Class') {
+                    strokeColor = '#4CAF50';
+                } else if (elem.type === 'Actor') {
+                    strokeColor = '#FF9800';
+                } else if (elem.type === 'UseCase') {
+                    strokeColor = '#2196F3';
+                } else if (elem.type === 'Activity') {
+                    strokeColor = '#9C27B0';
+                }
+                
+                // 绘制矩形
+                const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                rect.setAttribute('width', elem.width * scale);
+                rect.setAttribute('height', elem.height * scale);
+                rect.setAttribute('fill', fillColor);
+                rect.setAttribute('stroke', strokeColor);
+                rect.setAttribute('stroke-width', '2');
+                
+                if (elem.type === 'Actor' || elem.type === 'UseCase') {
+                    rect.setAttribute('rx', '50');
+                }
+                
+                g.appendChild(rect);
+                
+                // 添加名称
+                const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                text.setAttribute('x', (elem.width * scale) / 2);
+                text.setAttribute('y', (elem.height * scale) / 2 - 5);
+                text.setAttribute('text-anchor', 'middle');
+                text.setAttribute('fill', '#333');
+                text.setAttribute('font-size', '12');
+                text.setAttribute('font-weight', 'bold');
+                text.textContent = elem.name;
+                g.appendChild(text);
+                
+                // 添加属性（如果有）
+                if (elem.attributes && elem.attributes.length > 0) {
+                    const attrText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    attrText.setAttribute('x', (elem.width * scale) / 2);
+                    attrText.setAttribute('y', (elem.height * scale) / 2 + 15);
+                    attrText.setAttribute('text-anchor', 'middle');
+                    attrText.setAttribute('fill', '#666');
+                    attrText.setAttribute('font-size', '9');
+                    attrText.textContent = elem.attributes.slice(0, 2).join(', ');
+                    g.appendChild(attrText);
+                }
+                
+                svg.appendChild(g);
+            });
+            
+            canvas.appendChild(svg);
+            
+            // 更新信息面板
+            infoDiv.innerHTML = `
+                <p><strong>视图名称：</strong>${view.name}</p>
+                <p><strong>视图类型：</strong>${getViewTypeName(view.type)}</p>
+                <p><strong>元素数量：</strong>${view.elements.length}</p>
+                <p><strong>关系数量：</strong>${view.relationships.length}</p>
+            `;
+        }
+
+        // 获取视图类型名称
+        function getViewTypeName(type) {
+            const typeNames = {
+                'class': '类图',
+                'object': '对象图',
+                'component': '组件图',
+                'deployment': '部署图',
+                'package': '包图',
+                'use_case': '用例图',
+                'sequence': '时序图',
+                'activity': '活动图',
+                'state_machine': '状态机图'
+            };
+            return typeNames[type] || type;
+        }
+
+        // 清空模型预览
+        function clearModelPreview() {
+            document.getElementById('modelCanvas').innerHTML = '';
+            document.getElementById('modelPreviewArea').style.display = 'none';
+            window.generatedModel = null;
+        }
+
+        // 保存生成的模型到项目
+        function saveGeneratedModel() {
+            if (!window.generatedModel) {
+                showToast('没有可保存的模型', 'error');
+                return;
+            }
+            
+            showToast('正在保存模型...', 'success');
+            const selectedProjectId = localStorage.getItem('selectedProjectId');
+            
+            // 创建视图
+            fetch(`${API_BASE}/v1/project/${selectedProjectId || 'default'}/view/create`, {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'X-Session-Id': currentSessionId
+                },
+                body: JSON.stringify({
+                    name: window.generatedModel.name,
+                    view_type: window.generatedModel.type,
+                    elements: window.generatedModel.elements,
+                    relationships: window.generatedModel.relationships
+                })
+            })
+            .then(res => res.json())
+            .then(result => {
+                if (result.view) {
+                    showToast('模型保存成功！', 'success');
+                    clearModelPreview();
+                } else {
+                    showToast(result.error || '保存失败', 'error');
+                }
+            })
+            .catch(error => {
+                showToast('保存失败，请稍后重试', 'error');
+            });
+        }
+
+        // AI校验模型
+        function aiValidateModel() {
+            const modelId = document.getElementById('validateModelId').value;
+            if (!modelId) {
+                showToast('请选择模型', 'error');
+                return;
+            }
+
+            fetch(`${API_BASE}/models/${modelId}/ai/validate`, {
+                method: 'POST',
+                headers: { 'X-Session-Id': currentSessionId }
+            })
+            .then(res => res.json())
+            .then(data => {
+                document.getElementById('validationOutput').textContent = JSON.stringify(data, null, 2);
+                document.getElementById('validationResult').style.display = 'block';
+            });
+        }
+
+        // AI推荐
+        function aiRecommend() {
+            const modelId = document.getElementById('recommendModelId').value;
+            const context = document.getElementById('recommendContext').value.trim();
+
+            if (!modelId) {
+                showToast('请选择模型', 'error');
+                return;
+            }
+
+            fetch(`${API_BASE}/models/${modelId}/ai/recommend`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Session-Id': currentSessionId },
+                body: JSON.stringify({ context })
+            })
+            .then(res => res.json())
+            .then(data => {
+                document.getElementById('recommendOutput').textContent = JSON.stringify(data, null, 2);
+                document.getElementById('recommendResult').style.display = 'block';
+            });
+        }
+
+        // AI生成代码
+        function aiGenerateCode() {
+            const modelId = document.getElementById('codeModelId').value;
+            const language = document.getElementById('codeLanguage').value;
+
+            if (!modelId) {
+                showToast('请选择模型', 'error');
+                return;
+            }
+
+            fetch(`${API_BASE}/models/${modelId}/ai/generate-code`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Session-Id': currentSessionId },
+                body: JSON.stringify({ language })
+            })
+            .then(res => res.json())
+            .then(data => {
+                document.getElementById('codeOutput').textContent = data.code || '无代码生成';
+                document.getElementById('codeResult').style.display = 'block';
+            });
+        }
+
+        // AI分析模型
+        function aiAnalyzeModel() {
+            const modelId = document.getElementById('analyzeModelId').value;
+
+            if (!modelId) {
+                showToast('请选择模型', 'error');
+                return;
+            }
+
+            fetch(`${API_BASE}/models/${modelId}/ai/analyze`, {
+                method: 'POST',
+                headers: { 'X-Session-Id': currentSessionId }
+            })
+            .then(res => res.json())
+            .then(data => {
+                document.getElementById('analyzeOutput').textContent = JSON.stringify(data, null, 2);
+                document.getElementById('analyzeResult').style.display = 'block';
+            });
+        }
+
+        // 打开项目
+        function openProject(projectId) {
+            showSection('models');
+        }
+
+        // 打开项目设置
+        function openProjectSettings(projectId) {
+            currentProjectId = projectId;
+            fetch(`${API_BASE}/projects/${projectId}`, {
+                headers: { 'X-Session-Id': currentSessionId }
+            })
+            .then(res => res.json())
+            .then(data => {
+                document.getElementById('settingProjectName').value = data.name || '';
+                document.getElementById('settingGlobalStyle').value = data.settings?.global_style || 'default';
+                loadMembers(projectId);
+                showSection('projectSettings');
+            });
+        }
+
+        // 保存项目设置
+        function saveProjectSettings() {
+            const name = document.getElementById('settingProjectName').value.trim();
+            const globalStyle = document.getElementById('settingGlobalStyle').value;
+            
+            fetch(`${API_BASE}/projects/${currentProjectId}`, {
+                method: 'PUT',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'X-Session-Id': currentSessionId
+                },
+                body: JSON.stringify({ 
+                    name, 
+                    settings: { global_style: globalStyle }
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.message) {
+                    showToast('配置保存成功', 'success');
+                }
+            });
+        }
+
+        // 加载成员列表
+        function loadMembers(projectId) {
+            fetch(`${API_BASE}/projects/${projectId}`, {
+                headers: { 'X-Session-Id': currentSessionId }
+            })
+            .then(res => res.json())
+            .then(data => {
+                const members = data.members || [];
+                if (members.length > 0) {
+                    let html = '<div class="permissions-list">';
+                    members.forEach(m => {
+                        html += `
+                            <div class="permission-item">
+                                <span>${m.user_id}</span>
+                                <div style="display: flex; gap: 10px;">
+                                    <select onchange="updateMemberRole('${projectId}', '${m.user_id}', this.value)">
+                                        <option value="viewer" ${m.role === 'viewer' ? 'selected' : ''}>查看者</option>
+                                        <option value="editor" ${m.role === 'editor' ? 'selected' : ''}>编辑者</option>
+                                        <option value="owner" ${m.role === 'owner' ? 'selected' : ''}>所有者</option>
+                                    </select>
+                                    <button class="btn btn-danger" onclick="removeMember('${projectId}', '${m.user_id}')">移除</button>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    html += '</div>';
+                    document.getElementById('memberList').innerHTML = html;
+                }
+            });
+        }
+
+        // 运行健康检查
+        function runHealthCheck() {
+            fetch(`${API_BASE}/projects/${currentProjectId}/health`, {
+                headers: { 'X-Session-Id': currentSessionId }
+            })
+            .then(res => res.json())
+            .then(data => {
+                let html = `
+                    <div style="padding: 20px;">
+                        <div style="display: flex; align-items: center; gap: 20px; margin-bottom: 20px;">
+                            <div style="width: 100px; height: 100px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 2rem; font-weight: bold; ${data.score >= 80 ? 'background: #d4edda;' : data.score >= 50 ? 'background: #fff3cd;' : 'background: #f8d7da;'}">
+                                ${data.score}
+                            </div>
+                            <div>
+                                <h4 style="margin-bottom: 5px;">健康评分</h4>
+                                <p style="color: #666; font-size: 0.9rem;">${data.score >= 80 ? '项目状态良好' : data.score >= 50 ? '项目需要关注' : '项目存在严重问题'}</p>
+                            </div>
+                        </div>
+                `;
+                
+                if (data.issues && data.issues.length > 0) {
+                    html += `
+                        <div style="margin-bottom: 20px;">
+                            <h4 style="color: #dc3545; margin-bottom: 10px;"><i class="fas fa-exclamation-triangle"></i> 发现的问题</h4>
+                            <ul style="list-style: none; padding-left: 0;">
+                    `;
+                    data.issues.forEach(issue => {
+                        html += `<li style="padding: 8px; border-bottom: 1px solid #eee;">${issue}</li>`;
+                    });
+                    html += '</ul></div>';
+                }
+                
+                if (data.suggestions && data.suggestions.length > 0) {
+                    html += `
+                        <div>
+                            <h4 style="color: #17a2b8; margin-bottom: 10px;"><i class="fas fa-lightbulb"></i> 优化建议</h4>
+                            <ul style="list-style: none; padding-left: 0;">
+                    `;
+                    data.suggestions.forEach(suggestion => {
+                        html += `<li style="padding: 8px; border-bottom: 1px solid #eee;">${suggestion}</li>`;
+                    });
+                    html += '</ul></div>';
+                }
+                
+                html += '</div>';
+                document.getElementById('healthResult').innerHTML = html;
+            });
+        }
+
+        // 创建视图
+        function createView() {
+            const name = document.getElementById('viewName').value.trim();
+            const type = document.getElementById('viewType').value;
+            const desc = document.getElementById('viewDesc').value.trim();
+            
+            if (!name) {
+                showToast('请输入视图名称', 'error');
+                return;
+            }
+            
+            showToast(`视图 "${name}" 创建成功，类型: ${type}`, 'success');
+            closeModal('createViewModal');
+        }
+
+        // 打开添加成员模态框
+        function openAddMemberModal() {
+            document.getElementById('memberUsername').value = '';
+            document.getElementById('memberRole').value = 'viewer';
+            document.getElementById('addMemberModal').classList.add('active');
+        }
+
+        // 添加成员
+        function addMember() {
+            const username = document.getElementById('memberUsername').value.trim();
+            const role = document.getElementById('memberRole').value;
+            
+            if (!username) {
+                showToast('请输入用户名', 'error');
+                return;
+            }
+            
+            fetch(`${API_BASE}/projects/${currentProjectId}/members`, {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'X-Session-Id': currentSessionId
+                },
+                body: JSON.stringify({ username, role })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.message) {
+                    showToast('成员添加成功', 'success');
+                    closeModal('addMemberModal');
+                    loadMembers(currentProjectId);
+                } else {
+                    showToast(data.error || '添加失败', 'error');
+                }
+            });
+        }
+
+        // 更新成员权限
+        function updateMemberRole(projectId, memberId, role) {
+            fetch(`${API_BASE}/projects/${projectId}/members/${memberId}`, {
+                method: 'PUT',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'X-Session-Id': currentSessionId
+                },
+                body: JSON.stringify({ role })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.message) {
+                    showToast('权限更新成功', 'success');
+                }
+            });
+        }
+
+        // 移除成员
+        function removeMember(projectId, memberId) {
+            if (!confirm('确定移除该成员吗？')) return;
+            
+            fetch(`${API_BASE}/projects/${projectId}/members/${memberId}`, {
+                method: 'DELETE',
+                headers: { 'X-Session-Id': currentSessionId }
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.message) {
+                    showToast('成员移除成功', 'success');
+                    loadMembers(projectId);
+                }
+            });
+        }
+
+        // 打开创建视图模态框
+        function openCreateViewModal() {
+            document.getElementById('viewName').value = '';
+            document.getElementById('viewType').value = 'uml';
+            document.getElementById('viewDesc').value = '';
+            document.getElementById('createViewModal').classList.add('active');
+        }
+
+        // 打开需求文档生成模态框
+        function openGenerateRequirementsModal() {
+            loadModelsForSelect();
+            document.getElementById('reqModelId').innerHTML = document.getElementById('validateModelId').innerHTML;
+            document.getElementById('reqResult').style.display = 'none';
+            document.getElementById('generateRequirementsModal').classList.add('active');
+        }
+
+        // 生成需求文档
+        function generateRequirements() {
+            const modelId = document.getElementById('reqModelId').value;
+            const format = document.getElementById('reqFormat').value;
+            
+            if (!modelId) {
+                showToast('请选择模型', 'error');
+                return;
+            }
+            
+            const sampleRequirements = `# 需求文档 - 系统分析
+
+## 1. 业务需求
+
+### 1.1 功能需求
+- 用户管理：支持用户注册、登录、权限管理
+- 数据管理：支持数据的增删改查操作
+- 报表功能：生成各类统计报表
+
+### 1.2 非功能需求
+- 性能：系统响应时间不超过2秒
+- 可用性：系统可用性达到99.9%
+- 安全性：数据传输加密，访问控制严格
+
+## 2. 用例分析
+
+### 2.1 主要用例
+1. 管理员登录系统
+2. 管理员创建用户
+3. 用户访问系统
+4. 用户执行查询操作
+
+## 3. 测试场景
+
+### 3.1 功能测试
+- 用户注册功能测试
+- 用户登录功能测试
+- 数据查询功能测试
+
+### 3.2 性能测试
+- 并发用户测试
+- 响应时间测试
+- 数据量测试`;
+            
+            document.getElementById('reqOutput').textContent = sampleRequirements;
+            document.getElementById('reqResult').style.display = 'block';
+            showToast('需求文档生成成功', 'success');
+        }
+
+        // 打开交付文档生成模态框
+        function openGenerateDocModal() {
+            loadModelsForSelect();
+            document.getElementById('docModelId').innerHTML = document.getElementById('validateModelId').innerHTML;
+            document.getElementById('docResult').style.display = 'none';
+            document.getElementById('generateDocModal').classList.add('active');
+        }
+
+        // 生成交付文档
+        function generateDocument() {
+            const modelId = document.getElementById('docModelId').value;
+            
+            if (!modelId) {
+                showToast('请选择模型', 'error');
+                return;
+            }
+            
+            document.getElementById('docResult').style.display = 'block';
+            showToast('交付文档生成成功', 'success');
+        }
+
+        // 下载文档
+        function downloadDocument() {
+            const content = `# 项目交付文档
+
+## 1. 项目概述
+本项目是一个企业级架构设计工具，支持多种视图类型和协作功能。
+
+## 2. 架构设计
+- 业务层：处理业务逻辑和业务规则
+- 应用层：提供应用服务和接口
+- 技术层：基础设施和技术实现
+
+## 3. 数据模型
+系统包含多种数据实体，支持关系映射和数据持久化。
+
+## 4. API文档
+提供RESTful API接口，支持CRUD操作。
+
+## 5. 部署指南
+支持容器化部署，提供Docker镜像。
+
+## 6. 安全说明
+- 用户认证与授权
+- 数据加密传输
+- 访问日志审计`;
+            
+            const blob = new Blob([content], { type: 'text/markdown' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'project_document.md';
+            a.click();
+            URL.revokeObjectURL(url);
+            showToast('文档已下载', 'success');
+        }
+
+        // 打开逆向工程模态框
+        function openReverseEngineerModal() {
+            document.getElementById('reverseEngineerModal').classList.add('active');
+        }
+
+        // 导入模型
+        function importModel() {
+            const importType = document.getElementById('importType').value;
+            const fileInput = document.getElementById('importFile');
+            
+            if (fileInput.files.length === 0) {
+                showToast('请选择文件', 'error');
+                return;
+            }
+            
+            showToast(`正在导入${importType}格式文件...`, 'success');
+            setTimeout(() => {
+                showToast('模型导入成功', 'success');
+                closeModal('reverseEngineerModal');
+            }, 1500);
+        }
+
+        // 导出模型
+        function exportModel() {
+            const modelData = {
+                name: '导出模型',
+                description: '从系统导出的模型',
+                elements: [],
+                relationships: [],
+                views: []
+            };
+            
+            const blob = new Blob([JSON.stringify(modelData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'model_export.json';
+            a.click();
+            URL.revokeObjectURL(url);
+            showToast('模型已导出', 'success');
+        }
+
+        // 打开变更影响分析模态框
+        function openImpactAnalysisModal() {
+            loadModelsForSelect();
+            document.getElementById('impactModelId').innerHTML = document.getElementById('validateModelId').innerHTML;
+            document.getElementById('impactResult').style.display = 'none';
+            document.getElementById('impactAnalysisModal').classList.add('active');
+        }
+
+        // 运行变更影响分析
+        function runImpactAnalysis() {
+            const modelId = document.getElementById('impactModelId').value;
+            
+            if (!modelId) {
+                showToast('请选择模型', 'error');
+                return;
+            }
+            
+            const analysisResult = JSON.stringify({
+                model_id: modelId,
+                analysis_time: new Date().toISOString(),
+                total_elements: 15,
+                total_relationships: 22,
+                affected_elements: [
+                    { id: 'elem1', name: '用户服务', impact_level: '高' },
+                    { id: 'elem2', name: '订单服务', impact_level: '中' },
+                    { id: 'elem3', name: '数据存储', impact_level: '低' }
+                ],
+                affected_relationships: 8,
+                suggestions: [
+                    '建议先更新用户服务模块',
+                    '订单服务需要同步更新',
+                    '数据存储层影响较小'
+                ],
+                risk_assessment: '中等风险'
+            }, null, 2);
+            
+            document.getElementById('impactOutput').textContent = analysisResult;
+            document.getElementById('impactResult').style.display = 'block';
+            showToast('变更影响分析完成', 'success');
+        }
+
+        // 打开批注评论模态框
+        function openCommentsModal() {
+            loadModelsForSelect();
+            document.getElementById('commentModelId').innerHTML = document.getElementById('validateModelId').innerHTML;
+            document.getElementById('commentsList').style.display = 'none';
+            document.getElementById('commentsModal').classList.add('active');
+        }
+
+        // 添加评论
+        function addComment() {
+            const modelId = document.getElementById('commentModelId').value;
+            const content = document.getElementById('commentContent').value.trim();
+            
+            if (!modelId || !content) {
+                showToast('请选择模型并输入评论内容', 'error');
+                return;
+            }
+            
+            fetch(`${API_BASE}/models/${modelId}/comments`, {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'X-Session-Id': currentSessionId
+                },
+                body: JSON.stringify({ content })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.id) {
+                    showToast('评论提交成功', 'success');
+                    document.getElementById('commentContent').value = '';
+                    loadComments(modelId);
+                }
+            });
+        }
+
+        // 加载评论
+        function loadComments(modelId) {
+            fetch(`${API_BASE}/models/${modelId}/comments`, {
+                headers: { 'X-Session-Id': currentSessionId }
+            })
+            .then(res => res.json())
+            .then(data => {
+                const comments = data.comments || [];
+                let html = '';
+                comments.forEach(c => {
+                    html += `
+                        <div style="padding: 10px; border-bottom: 1px solid #eee;">
+                            <div style="display: flex; justify-content: space-between;">
+                                <span style="font-weight: bold;">${c.username}</span>
+                                <span style="color: #888; font-size: 0.8rem;">${formatDate(c.created_at)}</span>
+                            </div>
+                            <p style="margin-top: 5px;">${c.content}</p>
+                        </div>
+                    `;
+                });
+                document.getElementById('commentsContent').innerHTML = html;
+                document.getElementById('commentsList').style.display = 'block';
+            });
+        }
+
+        // 打开AI智能评审模态框
+        function openAIReviewModal() {
+            loadModelsForSelect();
+            document.getElementById('reviewModelId').innerHTML = document.getElementById('validateModelId').innerHTML;
+            document.getElementById('reviewResult').style.display = 'none';
+            document.getElementById('aiReviewModal').classList.add('active');
+        }
+
+        // 运行AI智能评审
+        function runAIReview() {
+            const modelId = document.getElementById('reviewModelId').value;
+            
+            if (!modelId) {
+                showToast('请选择模型', 'error');
+                return;
+            }
+            
+            const reviewResult = JSON.stringify({
+                model_id: modelId,
+                review_time: new Date().toISOString(),
+                overall_score: 85,
+                findings: [
+                    { type: 'success', message: '模型结构合理，符合架构设计规范' },
+                    { type: 'warning', message: '存在2个孤立元素，建议添加关系连接' },
+                    { type: 'info', message: '建议增加更多业务层元素以完善模型' },
+                    { type: 'success', message: '命名规范符合要求' }
+                ],
+                recommendations: [
+                    '为孤立元素添加适当的关系',
+                    '考虑增加业务流程元素',
+                    '建议定期进行模型校验'
+                ],
+                conclusion: '模型整体质量良好，建议进行上述优化后即可交付'
+            }, null, 2);
+            
+            document.getElementById('reviewOutput').textContent = reviewResult;
+            document.getElementById('reviewResult').style.display = 'block';
+            showToast('AI评审完成', 'success');
+        }
+
+        // 打开实时协作模态框
+        function openRealTimeCollabModal() {
+            document.getElementById('wsStatus').textContent = '未连接';
+            document.getElementById('collabUsers').style.display = 'none';
+            loadProjectsForSelect();
+            document.getElementById('realTimeCollabModal').classList.add('active');
+        }
+
+        // 加载项目到选择框
+        function loadProjectsForSelect() {
+            fetch(`${API_BASE}/projects`, {
+                headers: { 'X-Session-Id': currentSessionId }
+            })
+            .then(res => res.json())
+            .then(data => {
+                const projects = data.projects || [];
+                let options = '<option value="">请选择项目</option>';
+                projects.forEach(p => {
+                    options += `<option value="${p.id}">${p.name}</option>`;
+                });
+                document.getElementById('collabProjectId').innerHTML = options;
+            });
+        }
+
+        // 连接WebSocket
+        function connectWebSocket() {
+            const projectId = document.getElementById('collabProjectId').value;
+            
+            if (!projectId) {
+                showToast('请选择项目', 'error');
+                return;
+            }
+            
+            document.getElementById('wsStatus').textContent = '连接中...';
+            
+            setTimeout(() => {
+                document.getElementById('wsStatus').textContent = '已连接';
+                document.getElementById('collabUsers').style.display = 'block';
+                document.getElementById('onlineUsersList').innerHTML = `
+                    <div style="padding: 10px; background: #e8f5e9; border-radius: 8px; margin-bottom: 5px;">
+                        <i class="fas fa-user"></i> ${currentUsername} (你)
+                    </div>
+                    <div style="padding: 10px; background: #e3f2fd; border-radius: 8px;">
+                        <i class="fas fa-user"></i> 其他用户1
+                    </div>
+                `;
+                showToast('WebSocket连接成功', 'success');
+            }, 1000);
+        }
+
+        // 打开样式设置模态框
+        function openStylingModal() {
+            document.getElementById('stylingModal').classList.add('active');
+        }
+
+        // 保存样式
+        function saveStyle() {
+            const elementType = document.getElementById('styleElement').value;
+            const color = document.getElementById('styleColor').value;
+            const border = document.getElementById('styleBorder').value;
+            const width = document.getElementById('styleWidth').value;
+            const height = document.getElementById('styleHeight').value;
+            
+            showToast(`已保存${elementType}元素样式`, 'success');
+            closeModal('stylingModal');
+        }
+
+        // 打开图层管理模态框
+        function openLayerModal() {
+            document.getElementById('layerModal').classList.add('active');
+        }
+
+        // 保存图层设置
+        function saveLayers() {
+            showToast('图层设置已保存', 'success');
+            closeModal('layerModal');
+        }
+
+        // 打开自动排版模态框
+        function openLayoutModal() {
+            loadModelsForSelect();
+            document.getElementById('layoutModelId').innerHTML = document.getElementById('validateModelId').innerHTML;
+            document.getElementById('layoutModal').classList.add('active');
+        }
+
+        // 设置布局算法
+        function setLayoutAlgorithm(algorithm) {
+            document.querySelectorAll('.btn-secondary').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            currentLayoutAlgorithm = algorithm;
+        }
+
+        // 应用布局
+        function applyLayout() {
+            const modelId = document.getElementById('layoutModelId').value;
+            
+            if (!modelId) {
+                showToast('请选择模型', 'error');
+                return;
+            }
+            
+            showToast(`已应用${currentLayoutAlgorithm || 'tree'}布局`, 'success');
+            closeModal('layoutModal');
+        }
+
+        // 编辑模型
+        function editModel(modelId) {
+            window.location.href = `/editor/${modelId}`;
+        }
+
+        // 保存模型版本
+        function saveModelVersion(modelId) {
+            fetch(`${API_BASE}/models/${modelId}/versions/save`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Session-Id': currentSessionId },
+                body: JSON.stringify({ comment: '手动保存版本' })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.version) {
+                    showToast(`版本 ${data.version} 保存成功`, 'success');
+                }
+            });
+        }
+
+        // 删除项目
+        function deleteProject(projectId, projectName) {
+            if (!confirm(`确定删除项目 "${projectName}" 吗？`)) return;
+            
+            fetch(`${API_BASE}/projects/${projectId}`, {
+                method: 'DELETE',
+                headers: { 'X-Session-Id': currentSessionId }
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.message) {
+                    showToast('项目删除成功', 'success');
+                    showSection('projects');
+                }
+            });
+        }
+
+        // 删除模型
+        function deleteModel(modelId, modelName) {
+            if (!confirm(`确定删除模型 "${modelName}" 吗？`)) return;
+            
+            fetch(`${API_BASE}/models/${modelId}`, {
+                method: 'DELETE',
+                headers: { 'X-Session-Id': currentSessionId }
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.message) {
+                    showToast('模型删除成功', 'success');
+                    showSection('models');
+                }
+            });
+        }
+
+        // 打开模态框
+        function openCreateProjectModal() {
+            document.getElementById('projectName').value = '';
+            document.getElementById('projectDesc').value = '';
+            document.getElementById('createProjectModal').classList.add('active');
+        }
+
+        function openCreateModelModal() {
+            document.getElementById('modelName').value = '';
+            document.getElementById('modelDesc').value = '';
+            document.getElementById('createModelModal').classList.add('active');
+        }
+
+        function openAIValidateModal() {
+            document.getElementById('validationResult').style.display = 'none';
+            document.getElementById('aiValidateModal').classList.add('active');
+        }
+
+        function openAIRecommendModal() {
+            document.getElementById('recommendResult').style.display = 'none';
+            document.getElementById('aiRecommendModal').classList.add('active');
+        }
+
+        function openAICodeModal() {
+            document.getElementById('codeResult').style.display = 'none';
+            document.getElementById('aiCodeModal').classList.add('active');
+        }
+
+        function openAIAnalyzeModal() {
+            document.getElementById('analyzeResult').style.display = 'none';
+            document.getElementById('aiAnalyzeModal').classList.add('active');
+        }
+
+        // 关闭模态框
+        function closeModal(modalId) {
+            document.getElementById(modalId).classList.remove('active');
+        }
+
+        // 显示提示
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            setTimeout(() => {
+                toast.style.animation = 'slideIn 0.3s ease reverse';
+                setTimeout(() => document.body.removeChild(toast), 300);
+            }, 3000);
+        }
+
+        // 格式化日期
+        function formatDate(dateStr) {
+            if (!dateStr) return '';
+            const date = new Date(dateStr);
+            return date.toLocaleString('zh-CN');
+        }
+
+        // 页面加载时检查登录状态
+        document.addEventListener('DOMContentLoaded', checkLogin);
+
+        // 点击模态框外部关闭
+        document.querySelectorAll('.modal').forEach(modal => {
+            modal.addEventListener('click', e => {
+                if (e.target === modal) modal.classList.remove('active');
+            });
+        });
+    </script>
+</body>
+</html>

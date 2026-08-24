@@ -1,0 +1,32 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+
+# IDE
+.idea/
+.vscode/
+
+# Claude Code 本地配置
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 环境变量（含密钥）
+.env
+.env.*
+
+# 运行时数据（模型/上传/用户/版本，由后端运行中生成）
+EA_fake/ea-webapp/models/
+EA_fake/ea-webapp/uploads/
+EA_fake/ea-webapp/users/
+EA_fake/ea-webapp/versions/
+EA_fake/models/
+EA_fake/uploads/
+EA_fake/users/
+EA_fake/versions/
