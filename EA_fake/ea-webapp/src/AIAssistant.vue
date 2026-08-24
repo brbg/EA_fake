@@ -91,7 +91,7 @@
           </div>
         </div>
 
-        <div v-if="isTyping" class="chat-message bot">
+        <div v-if="isTyping && !streamStarted" class="chat-message bot">
           <div class="chat-bubble">
             <i class="fas fa-spinner fa-spin"></i> AI正在思考...
           </div>
@@ -115,7 +115,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted, nextTick, computed } from 'vue'
-import { getAIConfig, updateAIConfig, chatWithAI } from './aiService'
+import { getAIConfig, updateAIConfig, chatWithAIStream } from './aiService'
 import { ProjectContext, buildMessagesWithContext } from './projectContext'
 
 const props = defineProps<{
@@ -125,6 +125,7 @@ const props = defineProps<{
 const messages = ref<Array<{id: number; type: string; content: string}>>([])
 const inputMessage = ref('')
 const isTyping = ref(false)
+const streamStarted = ref(false)  // 是否已收到首个流式分片（用于隐藏“思考中”提示）
 const showConfig = ref(false)
 const saving = ref(false)
 const configMessage = ref<{type: string; text: string} | null>(null)
@@ -263,25 +264,50 @@ const buildMessages = (message: string): Array<{ role: string; content: string }
 const sendNormalMessage = async (message: string) => {
   const conversationMessages = buildMessages(message)
 
-  const response = await chatWithAI(conversationMessages, chatSessionId.value)
+  // 先放一个空的 bot 气泡，流式内容实时往里面填
+  const botMsgId = Date.now()
+  messages.value.push({ id: botMsgId, type: 'bot', content: '' })
+  streamStarted.value = false
 
-  if (response.error) {
-    throw new Error(response.error)
+  let fullContent = ''
+  let streamError: string | null = null
+
+  await chatWithAIStream(
+    conversationMessages,
+    (chunk) => {
+      streamStarted.value = true
+      fullContent += chunk
+      const idx = messages.value.findIndex((m) => m.id === botMsgId)
+      if (idx >= 0) {
+        messages.value[idx].content = fullContent
+      }
+      scrollToBottom()
+    },
+    (error) => {
+      streamError = error
+    },
+    chatSessionId.value
+  )
+
+  const idx = messages.value.findIndex((m) => m.id === botMsgId)
+
+  if (streamError) {
+    // 失败：占位气泡直接显示错误，不写入对话历史
+    if (idx >= 0) {
+      messages.value[idx].content = `错误: ${streamError}`
+    } else {
+      messages.value.push({ id: Date.now(), type: 'bot', content: `错误: ${streamError}` })
+    }
+    return
   }
 
-  // 记录本轮回话，供下一轮作为上下文回传
+  // 成功：填充完成内容并记录历史，供下一轮作为上下文回传
+  const finalContent = fullContent || '（无回复）'
+  if (idx >= 0) {
+    messages.value[idx].content = finalContent
+  }
   conversationHistory.value.push({ role: 'user', content: message })
-  conversationHistory.value.push({ role: 'assistant', content: response.response.content })
-
-  messages.value.push({
-    id: Date.now(),
-    type: 'bot',
-    content: response.response.content
-  })
-
-  if (response.session_id) {
-    chatSessionId.value = response.session_id
-  }
+  conversationHistory.value.push({ role: 'assistant', content: finalContent })
 }
 
 const clearChat = () => {

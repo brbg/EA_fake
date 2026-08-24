@@ -2,7 +2,94 @@
 import { ref, onMounted, nextTick, watch, computed } from 'vue'
 import { io } from 'socket.io-client'
 import AIAssistant from './AIAssistant.vue'
+import LoginView from './LoginView.vue'
 import type { ProjectContext } from './projectContext'
+import { getAIConfig } from './aiService'
+
+// === 登录门禁状态 ===
+const authUser = ref<{ username: string; email: string } | null>(null)
+const authChecked = ref(false)
+
+// 进入主界面（登录成功 or 会话恢复有效）
+const enterApp = () => {
+  nextTick(async () => {
+    await loadModels()
+    initCanvasEvents()
+    initArchimateCanvas()
+    initErCanvas()
+    updateStats()
+  })
+}
+
+// 启动时校验本地保存的会话是否仍有效
+const checkAuth = async () => {
+  const sid = sessionStorage.getItem('sessionId')
+  if (!sid) {
+    authChecked.value = true
+    return
+  }
+  try {
+    const res = await fetch('/api/auth/validate', {
+      headers: { 'X-Session-Id': sid }
+    })
+    if (res.ok) {
+      const data = await res.json()
+      let saved = null
+      try {
+        saved = JSON.parse(sessionStorage.getItem('ea_user') || 'null')
+      } catch (e) {
+        saved = null
+      }
+      authUser.value = {
+        username: data.user?.username || saved?.username || '用户',
+        email: saved?.email || ''
+      }
+      enterApp()
+    } else {
+      sessionStorage.removeItem('sessionId')
+      sessionStorage.removeItem('ea_user')
+    }
+  } catch (e) {
+    // 后端未启动等异常：清掉会话，落到登录页
+    sessionStorage.removeItem('sessionId')
+    sessionStorage.removeItem('ea_user')
+  }
+  authChecked.value = true
+}
+
+const onAuthenticated = (user: { username: string; email: string }) => {
+  authUser.value = user
+  enterApp()
+}
+
+const logout = async () => {
+  try {
+    await fetch('/api/auth/logout', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
+      }
+    })
+  } catch (e) {
+    // 忽略登出接口异常，前端仍然清理本地会话
+  }
+  sessionStorage.removeItem('sessionId')
+  sessionStorage.removeItem('ea_user')
+  authUser.value = null
+  activeTab.value = 'dashboard'
+  // 重置内存中的模型数据，避免下一个账号看到上一个账号的内容
+  models.value = []
+  elements = []
+  connections = []
+  archimateElements = []
+  archimateConnections = []
+  erEntities = []
+  erRelations = []
+  currentModelId.value = ''
+  currentModelName.value = ''
+  updateStats()
+}
 
 const activeTab = ref('dashboard')
 const showCreateModal = ref(false)
@@ -103,6 +190,24 @@ const erSqlResult = ref('')
 
 const codeConfig = ref({ language: 'java', framework: 'spring', source: 'uml', outputType: 'entity' })
 const generatedCode = ref('// 选择模型源和输出类型，然后点击生成代码按钮')
+const codeGenerating = ref(false)
+
+const showValidateModal = ref(false)
+const validating = ref(false)
+const validateResult = ref<any>(null)
+const validateError = ref('')
+
+// ArchiMate AI 架构评审
+const showReviewModal = ref(false)
+const reviewing = ref(false)
+const reviewResult = ref<any>(null)
+const reviewError = ref('')
+
+// 选中元素 AI 分析
+const showAnalyzeModal = ref(false)
+const analyzing = ref(false)
+const analyzeResult = ref<any>(null)
+const analyzeError = ref('')
 
 let canvas: HTMLCanvasElement | null = null
 let ctx: CanvasRenderingContext2D | null = null
@@ -209,7 +314,9 @@ let erRedo: ErHistoryState[] = []
 
 const loadModels = async () => {
   try {
-    const res = await fetch('/api/models')
+    const res = await fetch('/api/models', {
+      headers: { 'X-Session-Id': sessionStorage.getItem('sessionId') || '' }
+    })
     if (!res.ok) {
       console.error('Failed to load models:', res.status)
       alert('加载项目列表失败，请检查后端服务是否运行')
@@ -253,7 +360,10 @@ const createModel = async () => {
   try {
     const res = await fetch('/api/models', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
+      },
       body: JSON.stringify(newModel.value)
     })
     const data = await res.json()
@@ -297,10 +407,11 @@ const createModel = async () => {
 const deleteModel = async (id: string) => {
   if (!confirm('确定要删除这个项目吗？')) return
   try {
-    const res = await fetch(`/api/models/${id}`, { 
+    const res = await fetch(`/api/models/${id}`, {
       method: 'DELETE',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
       }
     })
     if (res.ok) {
@@ -362,9 +473,42 @@ const openModel = async (model: Model) => {
   await loadModelFromServer(model.id)
 }
 
-const generateCode = () => {
+const generateCode = async () => {
   const { language, framework, source, outputType } = codeConfig.value
-  
+
+  // 优先 AI 语义级生成（AI 启用时），失败/未启用回退本地模板
+  try {
+    const aiCfg = await getAIConfig()
+    if (aiCfg?.config?.enabled) {
+      codeGenerating.value = true
+      generatedCode.value = '// AI 正在生成代码，请稍候...'
+      const payload: Record<string, unknown> = { source, language, framework, outputType }
+      if (source === 'uml') {
+        payload.elements = elements
+      } else {
+        payload.erEntities = erEntities
+        payload.erRelations = erRelations
+      }
+      const res = await fetch('/api/v1/ai/code/generate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': sessionStorage.getItem('sessionId') || ''
+        },
+        body: JSON.stringify(payload)
+      })
+      const data = await res.json()
+      if (!data.error && data.code) {
+        generatedCode.value = data.code
+        codeGenerating.value = false
+        return
+      }
+    }
+  } catch {
+    // 网络异常等，回退本地模板
+  }
+  codeGenerating.value = false
+
   if (source === 'uml') {
     if (elements.length === 0) {
       generatedCode.value = '// 请先在UML建模页面创建类或接口'
@@ -2456,7 +2600,10 @@ const saveModel = async () => {
   try {
     const res = await fetch(`/api/models/${currentModelId.value}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
+      },
       body: JSON.stringify({
         elements,
         connections,
@@ -2488,9 +2635,148 @@ const saveModel = async () => {
   }
 }
 
+const aiValidateModel = async () => {
+  if (!currentModelId.value) {
+    alert('请先创建或选择一个项目')
+    return
+  }
+  validating.value = true
+  validateError.value = ''
+  validateResult.value = null
+  showValidateModal.value = true
+  try {
+    // 校验读的是后端保存的模型，先把画布当前状态同步过去
+    await fetch(`/api/models/${currentModelId.value}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
+      },
+      body: JSON.stringify({ elements, connections })
+    })
+    const res = await fetch(`/api/v1/project/${currentModelId.value}/ai/validate-uml`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
+      },
+      body: JSON.stringify({ view_id: null })
+    })
+    const data = await res.json()
+    if (!res.ok || data.error) {
+      validateError.value = data.error || `校验失败: HTTP ${res.status}`
+    } else {
+      validateResult.value = data
+    }
+  } catch (e: any) {
+    validateError.value = e?.message || '校验请求失败，请检查后端服务'
+  } finally {
+    validating.value = false
+  }
+}
+
+const aiReviewArchimate = async () => {
+  if (!currentModelId.value) {
+    alert('请先创建或选择一个项目')
+    return
+  }
+  reviewing.value = true
+  reviewError.value = ''
+  reviewResult.value = null
+  showReviewModal.value = true
+  try {
+    // 评审读的是后端保存的模型，先把 ArchiMate 画布当前状态同步过去
+    await fetch(`/api/models/${currentModelId.value}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
+      },
+      body: JSON.stringify({ archimateElements, archimateConnections })
+    })
+    const res = await fetch(`/api/v1/project/${currentModelId.value}/ai/review-archimate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
+      },
+      body: JSON.stringify({})
+    })
+    const data = await res.json()
+    if (!res.ok || data.error) {
+      reviewError.value = data.error || `评审失败: HTTP ${res.status}`
+    } else {
+      reviewResult.value = data
+    }
+  } catch (e: any) {
+    reviewError.value = e?.message || '评审请求失败，请检查后端服务'
+  } finally {
+    reviewing.value = false
+  }
+}
+
+// 选中元素 AI 分析（UML / ArchiMate / ER 三套画布共用）
+const aiAnalyzeElement = async (kind: 'uml' | 'archimate' | 'er') => {
+  if (!currentModelId.value) {
+    alert('请先创建或选择一个项目')
+    return
+  }
+  let element: any = null
+  let ctxElements: any[] = []
+  let ctxRelationships: any[] = []
+  if (kind === 'uml') {
+    element = selectedElement
+    ctxElements = elements
+    ctxRelationships = connections
+  } else if (kind === 'archimate') {
+    element = archimateSelectedElement
+    ctxElements = archimateElements
+    ctxRelationships = archimateConnections
+  } else {
+    element = erSelectedEntity
+    ctxElements = erEntities
+    ctxRelationships = erRelations
+  }
+  if (!element) {
+    alert('请先在画布上选中一个元素')
+    return
+  }
+
+  analyzing.value = true
+  analyzeError.value = ''
+  analyzeResult.value = null
+  showAnalyzeModal.value = true
+  try {
+    const res = await fetch(`/api/v1/project/${currentModelId.value}/ai/analyze-element`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
+      },
+      body: JSON.stringify({
+        kind,
+        element,
+        context: { elements: ctxElements, relationships: ctxRelationships }
+      })
+    })
+    const data = await res.json()
+    if (!res.ok || data.error) {
+      analyzeError.value = data.error || `分析失败: HTTP ${res.status}`
+    } else {
+      analyzeResult.value = data
+    }
+  } catch (e: any) {
+    analyzeError.value = e?.message || '分析请求失败，请检查后端服务'
+  } finally {
+    analyzing.value = false
+  }
+}
+
 const loadModelFromServer = async (modelId: string) => {
   try {
-    const res = await fetch(`/api/models/${modelId}`)
+    const res = await fetch(`/api/models/${modelId}`, {
+      headers: { 'X-Session-Id': sessionStorage.getItem('sessionId') || '' }
+    })
     const data = await res.json()
     elements = data.elements || []
     connections = data.relationships || data.connections || []
@@ -2614,19 +2900,38 @@ const handleKeyboardShortcut = (e: KeyboardEvent) => {
 
 onMounted(() => {
   initSocket()
-  loadModels()
   window.addEventListener('keydown', handleKeyboardShortcut)
-  nextTick(() => {
-    initCanvasEvents()
-  })
+  checkAuth()
 })
 </script>
 
 <template>
-  <div class="container">
+  <!-- 登录门禁：未认证前不渲染主界面 -->
+  <div v-if="!authChecked" class="app-loading">
+    <i class="fas fa-spinner fa-spin"></i> 正在加载...
+  </div>
+
+  <LoginView v-else-if="!authUser" @authenticated="onAuthenticated" />
+
+  <div v-else class="container">
     <div class="header">
-      <h1><i class="fas fa-project-diagram"></i> AI原生Enterprise Architect</h1>
-      <p>智能企业架构建模平台</p>
+      <div class="header-left">
+        <div class="header-logo"><i class="fas fa-project-diagram"></i></div>
+        <div class="header-text">
+          <h1>AI原生Enterprise Architect</h1>
+          <p>智能企业架构建模平台</p>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="user-chip">
+          <div class="user-avatar">{{ (authUser?.username || 'U').charAt(0).toUpperCase() }}</div>
+          <span class="user-name">{{ authUser?.username }}</span>
+        </div>
+        <button class="btn-logout" @click="logout" title="退出登录">
+          <i class="fas fa-sign-out-alt"></i>
+          <span>退出</span>
+        </button>
+      </div>
     </div>
 
     <div class="stats-row">
@@ -2845,6 +3150,12 @@ onMounted(() => {
         <button class="toolbar-btn" @click="saveModel">
           <i class="fas fa-save"></i> 保存
         </button>
+        <button class="toolbar-btn" @click="aiValidateModel" :disabled="validating" title="AI 校验模型设计（结构 + 语义分析）">
+          <i class="fas fa-magnifying-glass-chart"></i> {{ validating ? '校验中...' : 'AI校验' }}
+        </button>
+        <button class="toolbar-btn" @click="aiAnalyzeElement('uml')" :disabled="analyzing" title="AI 分析选中的元素（先在画布上选中一个元素）">
+          <i class="fas fa-wand-magic-sparkles"></i> {{ analyzing ? '分析中...' : 'AI分析' }}
+        </button>
         <button class="toolbar-btn" @click="exportImage">
           <i class="fas fa-download"></i> 导出图片
         </button>
@@ -2922,6 +3233,12 @@ onMounted(() => {
         <button class="toolbar-btn" @click="saveArchimateModel">
           <i class="fas fa-save"></i> 保存
         </button>
+        <button class="toolbar-btn" @click="aiReviewArchimate" :disabled="reviewing" title="AI 架构评审（结构 + 语义分析）">
+          <i class="fas fa-magnifying-glass-chart"></i> {{ reviewing ? '评审中...' : 'AI评审' }}
+        </button>
+        <button class="toolbar-btn" @click="aiAnalyzeElement('archimate')" :disabled="analyzing" title="AI 分析选中的元素（先在画布上选中一个元素）">
+          <i class="fas fa-wand-magic-sparkles"></i> {{ analyzing ? '分析中...' : 'AI分析' }}
+        </button>
         <button class="toolbar-btn" @click="exportArchimateImage">
           <i class="fas fa-download"></i> 导出图片
         </button>
@@ -2976,6 +3293,9 @@ onMounted(() => {
         </button>
         <button class="toolbar-btn" @click="generateErSql">
           <i class="fas fa-database"></i> 生成SQL
+        </button>
+        <button class="toolbar-btn" @click="aiAnalyzeElement('er')" :disabled="analyzing" title="AI 分析选中的表（先在画布上选中一个表）">
+          <i class="fas fa-wand-magic-sparkles"></i> {{ analyzing ? '分析中...' : 'AI分析' }}
         </button>
         <button class="toolbar-btn" @click="saveErModel">
           <i class="fas fa-save"></i> 保存
@@ -3047,8 +3367,8 @@ onMounted(() => {
             <option value="nestjs">NestJS</option>
             <option value="none">无框架</option>
           </select>
-          <button class="btn btn-primary" @click="generateCode">
-            <i class="fas fa-code"></i> 生成代码
+          <button class="btn btn-primary" @click="generateCode" :disabled="codeGenerating">
+            <i class="fas fa-code"></i> {{ codeGenerating ? '生成中...' : '生成代码' }}
           </button>
           <button 
             class="btn btn-outline" 
@@ -3074,6 +3394,194 @@ onMounted(() => {
 
     <div v-if="activeTab === 'ai'" class="card" style="padding: 0; height: calc(100vh - 120px);">
       <AIAssistant :project-context="projectContext" />
+    </div>
+  </div>
+
+  <div v-if="showValidateModal" class="modal-overlay" @click.self="showValidateModal = false">
+    <div class="modal-content" style="width: 660px; max-height: 80vh; overflow-y: auto;">
+      <span class="modal-close" @click="showValidateModal = false">&times;</span>
+      <h3 style="margin-top: 0;"><i class="fas fa-magnifying-glass-chart"></i> AI 模型校验</h3>
+
+      <template v-if="validating">
+        <p style="color:#666;"><i class="fas fa-spinner fa-spin"></i> 正在校验模型，AI 语义分析可能需要几秒钟...</p>
+      </template>
+
+      <template v-else-if="validateError">
+        <div style="color:#d33; padding: 10px; background:#fdf0f0; border-radius:8px;">
+          <i class="fas fa-exclamation-triangle"></i> {{ validateError }}
+        </div>
+        <p style="color:#999; font-size:12px;">提示：校验需要登录项目所属账号；AI 语义分析需在 AI 设置中配置密钥后启用。</p>
+      </template>
+
+      <template v-else-if="validateResult">
+        <div style="margin-bottom: 12px;">
+          <span :style="{ padding:'3px 10px', borderRadius:'12px', color:'#fff', background: validateResult.valid ? '#52c41a' : '#f5222d' }">
+            {{ validateResult.valid ? '✓ 结构通过' : '✗ 存在问题' }}
+          </span>
+          <span style="color:#666; margin-left:8px;">{{ validateResult.report }}</span>
+        </div>
+
+        <div v-if="validateResult.errors && validateResult.errors.length" class="validate-section">
+          <h4 style="color:#f5222d; margin-bottom:6px;"><i class="fas fa-times-circle"></i> 错误（{{ validateResult.errors.length }}）</h4>
+          <ul class="validate-list">
+            <li v-for="(err, i) in validateResult.errors" :key="i" style="color:#f5222d;">
+              {{ err.message }}<span v-if="err.element_name" style="color:#999;">（元素：{{ err.element_name }}）</span>
+            </li>
+          </ul>
+        </div>
+
+        <div v-if="validateResult.warnings && validateResult.warnings.length" class="validate-section">
+          <h4 style="color:#e6a23c; margin-bottom:6px;"><i class="fas fa-exclamation-triangle"></i> 警告（{{ validateResult.warnings.length }}）</h4>
+          <ul class="validate-list">
+            <li v-for="(w, i) in validateResult.warnings" :key="i" style="color:#555;">
+              <span :style="{ color: w.type === 'semantic' ? '#7d3fc1' : '#e6a23c' }">
+                <i v-if="w.type === 'semantic'" class="fas fa-robot"></i> {{ w.message }}
+              </span>
+              <div v-if="w.suggestion" style="color:#999; font-size:12px; margin-left:16px;">建议：{{ w.suggestion }}</div>
+            </li>
+          </ul>
+        </div>
+
+        <div v-if="validateResult.suggestions && validateResult.suggestions.length" class="validate-section">
+          <h4 style="color:#409eff; margin-bottom:6px;"><i class="fas fa-lightbulb"></i> 建议（{{ validateResult.suggestions.length }}）</h4>
+          <ul class="validate-list">
+            <li v-for="(s, i) in validateResult.suggestions" :key="i" style="color:#555;">{{ s }}</li>
+          </ul>
+        </div>
+
+        <div v-if="validateResult.ai_analysis && validateResult.ai_analysis.summary" class="validate-section" style="background:#f5f0ff; border-radius:8px; padding:12px; margin-top:16px;">
+          <h4 style="color:#7d3fc1; margin:0 0 6px 0;"><i class="fas fa-robot"></i> AI 语义分析</h4>
+          <p style="color:#444; margin:0;">{{ validateResult.ai_analysis.summary }}</p>
+        </div>
+      </template>
+
+      <div style="margin-top:20px; text-align:right;">
+        <button class="btn btn-outline" @click="showValidateModal = false">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div v-if="showReviewModal" class="modal-overlay" @click.self="showReviewModal = false">
+    <div class="modal-content" style="width: 660px; max-height: 80vh; overflow-y: auto;">
+      <span class="modal-close" @click="showReviewModal = false">&times;</span>
+      <h3 style="margin-top: 0;"><i class="fas fa-magnifying-glass-chart"></i> AI 架构评审（ArchiMate）</h3>
+
+      <template v-if="reviewing">
+        <p style="color:#666;"><i class="fas fa-spinner fa-spin"></i> 正在评审模型，AI 语义分析可能需要几秒钟...</p>
+      </template>
+
+      <template v-else-if="reviewError">
+        <div style="color:#d33; padding: 10px; background:#fdf0f0; border-radius:8px;">
+          <i class="fas fa-exclamation-triangle"></i> {{ reviewError }}
+        </div>
+        <p style="color:#999; font-size:12px;">提示：评审需要登录项目所属账号；AI 语义分析需在 AI 设置中配置密钥后启用。</p>
+      </template>
+
+      <template v-else-if="reviewResult">
+        <div style="margin-bottom: 12px;">
+          <span :style="{ padding:'3px 10px', borderRadius:'12px', color:'#fff', background: reviewResult.valid ? '#52c41a' : '#f5222d' }">
+            {{ reviewResult.valid ? '✓ 结构通过' : '✗ 存在问题' }}
+          </span>
+          <span style="color:#666; margin-left:8px;">{{ reviewResult.report }}</span>
+        </div>
+
+        <div v-if="reviewResult.errors && reviewResult.errors.length" class="validate-section">
+          <h4 style="color:#f5222d; margin-bottom:6px;"><i class="fas fa-times-circle"></i> 错误（{{ reviewResult.errors.length }}）</h4>
+          <ul class="validate-list">
+            <li v-for="(err, i) in reviewResult.errors" :key="i" style="color:#f5222d;">
+              {{ err.message }}<span v-if="err.element_name" style="color:#999;">（元素：{{ err.element_name }}）</span>
+            </li>
+          </ul>
+        </div>
+
+        <div v-if="reviewResult.warnings && reviewResult.warnings.length" class="validate-section">
+          <h4 style="color:#e6a23c; margin-bottom:6px;"><i class="fas fa-exclamation-triangle"></i> 警告（{{ reviewResult.warnings.length }}）</h4>
+          <ul class="validate-list">
+            <li v-for="(w, i) in reviewResult.warnings" :key="i" style="color:#555;">
+              <span :style="{ color: w.type === 'semantic' ? '#7d3fc1' : '#e6a23c' }">
+                <i v-if="w.type === 'semantic'" class="fas fa-robot"></i> {{ w.message }}
+              </span>
+              <div v-if="w.suggestion" style="color:#999; font-size:12px; margin-left:16px;">建议：{{ w.suggestion }}</div>
+            </li>
+          </ul>
+        </div>
+
+        <div v-if="reviewResult.suggestions && reviewResult.suggestions.length" class="validate-section">
+          <h4 style="color:#409eff; margin-bottom:6px;"><i class="fas fa-lightbulb"></i> 建议（{{ reviewResult.suggestions.length }}）</h4>
+          <ul class="validate-list">
+            <li v-for="(s, i) in reviewResult.suggestions" :key="i" style="color:#555;">{{ s }}</li>
+          </ul>
+        </div>
+
+        <div v-if="reviewResult.ai_analysis && reviewResult.ai_analysis.summary" class="validate-section" style="background:#f5f0ff; border-radius:8px; padding:12px; margin-top:16px;">
+          <h4 style="color:#7d3fc1; margin:0 0 6px 0;"><i class="fas fa-robot"></i> AI 语义分析</h4>
+          <p style="color:#444; margin:0;">{{ reviewResult.ai_analysis.summary }}</p>
+        </div>
+      </template>
+
+      <div style="margin-top:20px; text-align:right;">
+        <button class="btn btn-outline" @click="showReviewModal = false">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div v-if="showAnalyzeModal" class="modal-overlay" @click.self="showAnalyzeModal = false">
+    <div class="modal-content" style="width: 620px; max-height: 80vh; overflow-y: auto;">
+      <span class="modal-close" @click="showAnalyzeModal = false">&times;</span>
+      <h3 style="margin-top: 0;"><i class="fas fa-wand-magic-sparkles"></i> AI 元素分析</h3>
+
+      <template v-if="analyzing">
+        <p style="color:#666;"><i class="fas fa-spinner fa-spin"></i> 正在分析元素，AI 语义分析可能需要几秒钟...</p>
+      </template>
+
+      <template v-else-if="analyzeError">
+        <div style="color:#d33; padding: 10px; background:#fdf0f0; border-radius:8px;">
+          <i class="fas fa-exclamation-triangle"></i> {{ analyzeError }}
+        </div>
+        <p style="color:#999; font-size:12px;">提示：分析需要登录项目所属账号；AI 语义分析需在 AI 设置中配置密钥后启用。</p>
+      </template>
+
+      <template v-else-if="analyzeResult">
+        <div style="margin-bottom: 12px; padding: 10px 12px; background:#f0f4ff; border-radius:8px;">
+          <strong>{{ analyzeResult.name }}</strong>
+          <span style="color:#666; margin-left:8px; font-size:12px;">{{ analyzeResult.type }}<template v-if="analyzeResult.layer"> · {{ analyzeResult.layer }}</template></span>
+        </div>
+
+        <div v-if="analyzeResult.summary" class="validate-section" style="background:#f5f0ff; border-radius:8px; padding:12px;">
+          <h4 style="color:#7d3fc1; margin:0 0 6px 0;"><i class="fas fa-robot"></i> 总体评价</h4>
+          <p style="color:#444; margin:0;">{{ analyzeResult.summary }}</p>
+        </div>
+
+        <div v-if="analyzeResult.strengths && analyzeResult.strengths.length" class="validate-section">
+          <h4 style="color:#52c41a; margin-bottom:6px;"><i class="fas fa-thumbs-up"></i> 优点（{{ analyzeResult.strengths.length }}）</h4>
+          <ul class="validate-list">
+            <li v-for="(s, i) in analyzeResult.strengths" :key="i" style="color:#555;">{{ s }}</li>
+          </ul>
+        </div>
+
+        <div v-if="analyzeResult.issues && analyzeResult.issues.length" class="validate-section">
+          <h4 style="color:#e6a23c; margin-bottom:6px;"><i class="fas fa-exclamation-triangle"></i> 问题与风险（{{ analyzeResult.issues.length }}）</h4>
+          <ul class="validate-list">
+            <li v-for="(iss, i) in analyzeResult.issues" :key="i" style="color:#555;">
+              <span :style="{ color: iss.severity === 'error' ? '#f5222d' : iss.severity === 'warning' ? '#e6a23c' : '#7d3fc1' }">
+                <i class="fas fa-circle-info" style="margin-right:4px;"></i>{{ iss.message }}
+              </span>
+              <div v-if="iss.suggestion" style="color:#999; font-size:12px; margin-left:16px;">建议：{{ iss.suggestion }}</div>
+            </li>
+          </ul>
+        </div>
+
+        <div v-if="analyzeResult.suggestions && analyzeResult.suggestions.length" class="validate-section">
+          <h4 style="color:#409eff; margin-bottom:6px;"><i class="fas fa-lightbulb"></i> 改进建议（{{ analyzeResult.suggestions.length }}）</h4>
+          <ul class="validate-list">
+            <li v-for="(s, i) in analyzeResult.suggestions" :key="i" style="color:#555;">{{ s }}</li>
+          </ul>
+        </div>
+      </template>
+
+      <div style="margin-top:20px; text-align:right;">
+        <button class="btn btn-outline" @click="showAnalyzeModal = false">关闭</button>
+      </div>
     </div>
   </div>
 
@@ -3205,77 +3713,180 @@ onMounted(() => {
 </template>
 
 <style>
+.app-loading {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 15px;
+  color: var(--muted);
+}
+.app-loading i {
+  color: var(--brand);
+}
+
 .container {
-  max-width: 1200px;
+  max-width: 1240px;
   margin: 0 auto;
   padding: 20px;
 }
 
+/* 顶部导航栏 */
 .header {
-  text-align: center;
-  margin-bottom: 40px;
-  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 20px;
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 24px;
+  flex-wrap: wrap;
 }
-
-.header h1 {
-  font-size: 36px;
-  margin-bottom: 10px;
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
-
-.header p {
-  font-size: 16px;
-  opacity: 0.9;
+.header-logo {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: var(--brand-grad);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 20px;
+  box-shadow: 0 6px 16px rgba(99, 102, 241, 0.35);
+  flex-shrink: 0;
+}
+.header-text h1 {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.3;
+}
+.header-text p {
+  font-size: 13px;
+  color: var(--muted);
+}
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.user-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--brand-grad);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 600;
+}
+.user-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.btn-logout {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text-2);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-logout:hover {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #dc2626;
 }
 
 .stats-row {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 20px;
-  margin-bottom: 30px;
+  gap: 16px;
+  margin-bottom: 24px;
 }
 
 .stat-card {
-  background: white;
-  border-radius: 12px;
-  padding: 20px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 16px;
   text-align: center;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
 }
 
 .stat-value {
-  font-size: 32px;
-  font-weight: bold;
-  color: #667eea;
-  margin-bottom: 5px;
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--brand);
+  margin-bottom: 4px;
 }
 
 .stat-label {
-  font-size: 14px;
-  color: #999;
+  font-size: 13px;
+  color: var(--muted);
 }
 
 .nav-tabs {
   display: flex;
-  gap: 10px;
-  margin-bottom: 20px;
+  gap: 8px;
+  margin-bottom: 24px;
   flex-wrap: wrap;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px;
+  box-shadow: var(--shadow-sm);
 }
 
 .nav-tab {
-  padding: 10px 20px;
+  padding: 9px 18px;
   border: none;
   border-radius: 8px;
   cursor: pointer;
   font-size: 14px;
   font-weight: 500;
-  background: white;
-  color: #666;
-  transition: all 0.3s;
+  background: transparent;
+  color: var(--text-2);
+  transition: all 0.2s;
+}
+
+.nav-tab:hover {
+  background: #eef1f8;
+  color: var(--brand);
 }
 
 .nav-tab.active {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
+  background: var(--brand-grad);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.35);
 }
 
 .dashboard-grid {
@@ -3285,16 +3896,17 @@ onMounted(() => {
 }
 
 .card {
-  background: white;
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 16px;
   padding: 24px;
-  box-shadow: 0 10px 40px rgba(0,0,0,0.1);
-  transition: transform 0.3s, box-shadow 0.3s;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.25s, box-shadow 0.25s;
 }
 
 .card:hover {
-  transform: translateY(-5px);
-  box-shadow: 0 15px 50px rgba(0,0,0,0.15);
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-md);
 }
 
 .card-icon {
@@ -3311,13 +3923,13 @@ onMounted(() => {
 .card-title {
   font-size: 18px;
   font-weight: 600;
-  color: #333;
+  color: var(--text);
   margin-bottom: 8px;
 }
 
 .card-desc {
   font-size: 14px;
-  color: #666;
+  color: var(--text-2);
   margin-bottom: 16px;
 }
 
@@ -3331,27 +3943,28 @@ onMounted(() => {
   cursor: pointer;
   font-size: 14px;
   font-weight: 500;
-  transition: all 0.3s;
+  transition: all 0.2s;
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--brand-grad);
   color: white;
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
 }
 
 .btn-primary:hover {
-  opacity: 0.9;
-  transform: scale(1.02);
+  opacity: 0.92;
+  transform: translateY(-1px);
 }
 
 .btn-outline {
   background: transparent;
-  border: 2px solid #667eea;
-  color: #667eea;
+  border: 1.5px solid var(--brand);
+  color: var(--brand);
 }
 
 .btn-outline:hover {
-  background: #667eea;
+  background: var(--brand);
   color: white;
 }
 
@@ -3406,6 +4019,11 @@ onMounted(() => {
   background: #f8f9fa;
   border-radius: 12px;
   overflow: hidden;
+}
+
+.canvas-container:hover {
+  transform: none;
+  box-shadow: var(--shadow-sm);
 }
 
 .canvas-toolbar {
@@ -3606,6 +4224,20 @@ onMounted(() => {
 
 .modal-close:hover {
   color: #333;
+}
+
+.validate-section {
+  margin-top: 14px;
+}
+
+.validate-list {
+  margin: 0;
+  padding-left: 20px;
+  line-height: 1.7;
+}
+
+.validate-list li {
+  margin-bottom: 4px;
 }
 
 .form-group {
