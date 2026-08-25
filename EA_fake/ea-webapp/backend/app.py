@@ -14,7 +14,7 @@ import bcrypt
 import db
 from constants import ELEMENT_TYPES, RELATIONSHIP_TYPES, ELEMENT_COLORS, get_default_color
 from models import Project, SimpleModel
-from prompts import uml_system_prompt, ER_SYSTEM_PROMPT, code_system_prompt, VALIDATE_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT, ELEMENT_ANALYSIS_SYSTEM_PROMPT
+from prompts import uml_system_prompt, ER_SYSTEM_PROMPT, code_system_prompt, VALIDATE_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT, ELEMENT_ANALYSIS_SYSTEM_PROMPT, code_reverse_system_prompt, edit_model_system_prompt
 from flask import Flask, request, jsonify, send_from_directory, render_template, session, stream_with_context, Response
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room, leave_room
@@ -138,6 +138,7 @@ class AIServiceConfig:
         self.api_key = os.getenv('OPENAI_API_KEY', '')
         self.base_url = os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')
         self.model = os.getenv('OPENAI_MODEL', 'gpt-4')
+        self.reasoning_model = os.getenv('OPENAI_REASONING_MODEL', '')  # 复杂任务专用推理模型（如 deepseek-reasoner）
         self.max_tokens = 2000
         self.temperature = 0.7
         self.stream = True
@@ -149,6 +150,7 @@ class AIServiceConfig:
             'provider': self.provider,
             'base_url': self.base_url,
             'model': self.model,
+            'reasoning_model': self.reasoning_model,
             'max_tokens': self.max_tokens,
             'temperature': self.temperature,
             'stream': self.stream,
@@ -164,6 +166,7 @@ class AIServiceConfig:
             'api_key': self.api_key,
             'base_url': self.base_url,
             'model': self.model,
+            'reasoning_model': self.reasoning_model,
             'max_tokens': self.max_tokens,
             'temperature': self.temperature,
             'stream': self.stream,
@@ -182,6 +185,8 @@ class AIServiceConfig:
             self.base_url = config_dict['base_url']
         if 'model' in config_dict:
             self.model = config_dict['model']
+        if 'reasoning_model' in config_dict:
+            self.reasoning_model = config_dict['reasoning_model']
         if 'max_tokens' in config_dict:
             self.max_tokens = config_dict['max_tokens']
         if 'temperature' in config_dict:
@@ -209,8 +214,9 @@ class AIService:
     """AI服务类 - 统一接口调用大模型（兼容OpenAI格式）"""
     
     @staticmethod
-    def chat_completion(messages, config=None, max_tokens=None, temperature=None):
-        """调用大模型进行对话。max_tokens/temperature 可覆盖全局配置（结构化生成常用）。"""
+    def chat_completion(messages, config=None, max_tokens=None, temperature=None, use_reasoning=False):
+        """调用大模型进行对话。max_tokens/temperature 可覆盖全局配置（结构化生成常用）。
+        use_reasoning=True 时走推理模型（config.reasoning_model，未配置则回退普通模型）。"""
         if config is None:
             config = ai_service_config
 
@@ -218,26 +224,34 @@ class AIService:
             return {'error': 'AI服务未启用，请配置API密钥'}
 
         try:
-            return AIService._call_api(messages, config, max_tokens=max_tokens, temperature=temperature)
+            return AIService._call_api(messages, config, max_tokens=max_tokens,
+                                       temperature=temperature, use_reasoning=use_reasoning)
         except Exception as e:
             return {'error': f'AI服务调用失败: {str(e)}'}
 
     @staticmethod
-    def _call_api(messages, config, max_tokens=None, temperature=None):
-        """通用API调用（兼容OpenAI格式）"""
+    def _call_api(messages, config, max_tokens=None, temperature=None, use_reasoning=False):
+        """通用API调用（兼容OpenAI格式）。use_reasoning=True 时切换推理模型并去掉 temperature（推理模型通常不支持）。"""
+        model = config.model
+        include_temperature = True
+        if use_reasoning and getattr(config, 'reasoning_model', ''):
+            model = config.reasoning_model
+            include_temperature = False  # 推理模型（如 deepseek-reasoner）不支持 temperature
+
         headers = {
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {config.api_key}'
         }
 
         payload = {
-            'model': config.model,
+            'model': model,
             'messages': messages,
             'max_tokens': max_tokens if max_tokens is not None else config.max_tokens,
-            'temperature': temperature if temperature is not None else config.temperature,
             'stream': False
         }
-        
+        if include_temperature:
+            payload['temperature'] = temperature if temperature is not None else config.temperature
+
         response = requests.post(
             f'{config.base_url.rstrip("/")}/chat/completions',
             headers=headers,
@@ -2580,7 +2594,7 @@ def _ai_validate_semantics(elements, relationships):
         {'role': 'system', 'content': system_prompt},
         {'role': 'user', 'content': user_prompt}
     ]
-    result = AIService.chat_completion(messages, max_tokens=2000, temperature=0.3)
+    result = AIService.chat_completion(messages, max_tokens=2000, temperature=0.3, use_reasoning=True)
     if not isinstance(result, dict) or 'error' in result:
         return None
     try:
@@ -5788,7 +5802,7 @@ def _ai_review_architecture_semantics(project):
         {'role': 'system', 'content': system_prompt},
         {'role': 'user', 'content': user_prompt}
     ]
-    result = AIService.chat_completion(messages, max_tokens=2000, temperature=0.3)
+    result = AIService.chat_completion(messages, max_tokens=2000, temperature=0.3, use_reasoning=True)
     if not isinstance(result, dict) or 'error' in result:
         return None
     try:
@@ -6151,7 +6165,7 @@ def analyze_element(kind, element, context):
         {'role': 'system', 'content': ELEMENT_ANALYSIS_SYSTEM_PROMPT},
         {'role': 'user', 'content': '待分析元素：\n' + user_prompt},
     ]
-    result = AIService.chat_completion(messages, max_tokens=2000, temperature=0.3)
+    result = AIService.chat_completion(messages, max_tokens=2000, temperature=0.3, use_reasoning=True)
     if not isinstance(result, dict) or 'error' in result:
         return {**base, **_analyze_element_mock(kind, element, context)}
     try:
@@ -8109,6 +8123,574 @@ def ai_code_generate_v1():
         return jsonify({'error': 'AI服务不可用，已使用本地模板生成'}), 200
 
     return jsonify({'code': code})
+
+
+# === 代码反向工程 ===
+
+def _layout_ai_er(entities_raw, relations_raw):
+    """把 LLM 返回的 ER 实体/关系布局成前端画布结构（分配 id/坐标/宽高，字段映射）。"""
+    name_to_id = {}
+    entities = []
+    x, y = 100, 100
+    for i, item in enumerate(entities_raw):
+        if not isinstance(item, dict) or not item.get('name'):
+            continue
+        name = str(item['name']).strip()
+        if not name or name in name_to_id:
+            continue
+        eid = i + 1
+        fields = []
+        attrs = item.get('attributes')
+        if isinstance(attrs, list):
+            for a in attrs:
+                if not isinstance(a, dict) or not a.get('name'):
+                    continue
+                fields.append({
+                    'name': str(a['name']),
+                    'type': str(a.get('data_type') or a.get('type') or 'string').upper(),
+                    'isPrimary': bool(a.get('is_primary_key', False)),
+                    'isForeign': bool(a.get('is_foreign_key', False))
+                })
+        if not fields:
+            fields = [{'name': 'id', 'type': 'INT', 'isPrimary': True, 'isForeign': False}]
+        entities.append({
+            'id': eid,
+            'name': name,
+            'x': x + (i % 3) * 210,
+            'y': y + (i // 3) * 160,
+            'width': 150,
+            'displayHeight': max(80, 40 + 18 * len(fields)),
+            'fields': fields
+        })
+        name_to_id[name] = eid
+
+    relations = []
+    valid_types = {'one_to_one', 'one_to_many', 'many_to_one', 'many_to_many'}
+    if isinstance(relations_raw, list):
+        for r in relations_raw:
+            if not isinstance(r, dict):
+                continue
+            s = name_to_id.get(str(r.get('source') or '').strip())
+            t = name_to_id.get(str(r.get('target') or '').strip())
+            if s is None or t is None or s == t:
+                continue
+            rtype = str(r.get('type') or 'one_to_many').strip()
+            if rtype not in valid_types:
+                rtype = 'one_to_many'
+            relations.append({
+                'id': len(relations) + 1,
+                'type': rtype,
+                'startEntity': s,
+                'endEntity': t
+            })
+    return entities, relations
+
+
+def reverse_code_to_model(code, language, target):
+    """解析源代码反推出模型结构化数据。AI 未启用/调用失败返回 None。"""
+    if not code or not code.strip():
+        return None
+    if not ai_service_config.enabled:
+        return None
+
+    messages = [
+        {'role': 'system', 'content': code_reverse_system_prompt(target)},
+        {'role': 'user', 'content': f'语言：{language or "auto"}\n源代码：\n{code}'}
+    ]
+    result = AIService.chat_completion(messages, max_tokens=4096, temperature=0.3)
+    if not isinstance(result, dict) or 'error' in result:
+        return None
+    try:
+        content = result['choices'][0]['message']['content']
+    except (KeyError, IndexError, TypeError):
+        return None
+    data = _ai_parse_json_response(content)
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+@app.route('/api/v1/ai/code/reverse', methods=['POST'])
+def ai_code_reverse_v1():
+    """代码反向工程：粘贴代码 → 反推 UML 类图 / ER 模型（LLM）。"""
+    data = request.json or {}
+    code = data.get('code', '')
+    language = data.get('language', 'auto')
+    target = data.get('target', 'uml')
+
+    if not code or not code.strip():
+        return jsonify({'error': '请粘贴源代码'}), 400
+    if target not in ('uml', 'er'):
+        return jsonify({'error': 'target 必须是 uml 或 er'}), 400
+
+    result = reverse_code_to_model(code, language, target)
+    if result is None:
+        return jsonify({'error': 'AI 服务不可用或未能解析代码，请确认已配置 API 密钥后重试'}), 422
+
+    if target == 'uml':
+        elements_raw = result.get('elements')
+        relationships_raw = result.get('relationships')
+        if not isinstance(elements_raw, list) or not elements_raw:
+            return jsonify({'error': '未能从代码中提取出类结构'}), 422
+        if not isinstance(relationships_raw, list):
+            relationships_raw = []
+        elements, relationships = _layout_ai_elements(elements_raw, relationships_raw, 'class')
+        # 把 uuid 映射为顺序 id（前端画布用 id 引用）
+        uuid_to_id = {e['uuid']: i + 1 for i, e in enumerate(elements)}
+        for e in elements:
+            e['id'] = uuid_to_id[e.pop('uuid')]
+        for r in relationships:
+            r.pop('uuid', None)
+            r['id'] = len(relationships)  # 占位，前端会用 startElement/endElement
+            r['startElement'] = uuid_to_id.get(r.get('source'))
+            r['endElement'] = uuid_to_id.get(r.get('target'))
+            r.pop('source', None)
+            r.pop('target', None)
+            r.pop('source_name', None)
+            r.pop('target_name', None)
+        return jsonify({'target': 'uml', 'elements': elements, 'relationships': relationships})
+
+    entities_raw = result.get('entities')
+    if not isinstance(entities_raw, list) or not entities_raw:
+        return jsonify({'error': '未能从代码中提取出实体'}), 422
+    entities, relations = _layout_ai_er(entities_raw, result.get('relationships') or [])
+    return jsonify({'target': 'er', 'entities': entities, 'relationships': relations})
+
+
+# === 对话式编辑 ===
+
+def _describe_uml_for_edit(elements, connections):
+    """把当前 UML 模型序列化为 LLM 可读文本。"""
+    lines = []
+    for e in elements:
+        parts = [f"{e.get('type')} {e.get('name')}"]
+        attrs = e.get('attributes') or []
+        methods = e.get('methods') or []
+        if attrs:
+            parts.append('属性: ' + '; '.join(str(a) for a in attrs))
+        if methods:
+            parts.append('方法: ' + '; '.join(str(m) for m in methods))
+        lines.append('- ' + ' | '.join(parts))
+    lines.append('关系:')
+    name_by_id = {e['id']: e['name'] for e in elements if e.get('id') is not None and e.get('name')}
+    for c in connections:
+        s = name_by_id.get(c.get('startElement')) or c.get('startElement')
+        t = name_by_id.get(c.get('endElement')) or c.get('endElement')
+        lines.append(f"- {s} --({c.get('type')})--> {t}")
+    return '\n'.join(lines) or '（空模型）'
+
+
+def _describe_er_for_edit(erEntities, erRelations):
+    """把当前 ER 模型序列化为 LLM 可读文本。"""
+    lines = []
+    for e in erEntities:
+        fields = []
+        for f in e.get('fields') or []:
+            tag = 'PK' if f.get('isPrimary') else ('FK' if f.get('isForeign') else '')
+            fields.append(f"{f.get('name')}({f.get('type')}{(' ' + tag) if tag else ''})")
+        lines.append(f"- {e.get('name')}: " + ', '.join(fields))
+    lines.append('关系:')
+    name_by_id = {e['id']: e['name'] for e in erEntities if e.get('id') is not None and e.get('name')}
+    for r in erRelations:
+        s = name_by_id.get(r.get('startEntity')) or r.get('startEntity')
+        t = name_by_id.get(r.get('endEntity')) or r.get('endEntity')
+        lines.append(f"- {s} --({r.get('type')})--> {t}")
+    return '\n'.join(lines) or '（空模型）'
+
+
+def _ai_edit_model(kind, description, instruction):
+    """调用 LLM 生成增量编辑操作列表。AI 未启用/失败返回 None。"""
+    if not ai_service_config.enabled:
+        return None
+    messages = [
+        {'role': 'system', 'content': edit_model_system_prompt(kind)},
+        {'role': 'user', 'content': f'当前模型：\n{description}\n\n用户指令：{instruction}'}
+    ]
+    result = AIService.chat_completion(messages, max_tokens=2000, temperature=0.3, use_reasoning=True)
+    if not isinstance(result, dict) or 'error' in result:
+        return None
+    try:
+        content = result['choices'][0]['message']['content']
+    except (KeyError, IndexError, TypeError):
+        return None
+    data = _ai_parse_json_response(content)
+    if not isinstance(data, dict) or not isinstance(data.get('operations'), list):
+        return None
+    return data['operations']
+
+
+def _apply_uml_edits(elements, connections, ops):
+    """把操作列表应用到当前 UML 模型（按类名解析 id），返回新元素/连接。"""
+    elements = [dict(e) for e in elements]
+    connections = [dict(c) for c in connections]
+    name_to_id = {}
+    for e in elements:
+        if e.get('name') and e.get('id') is not None:
+            name_to_id.setdefault(str(e['name']).strip(), e['id'])
+    next_id = max([e.get('id', 0) for e in elements] + [0]) + 1
+    new_elements = list(elements)
+    new_connections = list(connections)
+
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        o = str(op.get('op') or '').strip()
+        if o == 'add_element':
+            name = str(op.get('name') or '').strip()
+            if not name or name in name_to_id:
+                continue
+            eid = next_id
+            next_id += 1
+            elem = {'id': eid, 'type': str(op.get('type') or 'Class').strip() or 'Class', 'name': name,
+                    'x': 100, 'y': 100 + len(new_elements) * 40, 'width': 120, 'height': 80}
+            if isinstance(op.get('attributes'), list):
+                elem['attributes'] = [str(a) for a in op['attributes']]
+            if isinstance(op.get('methods'), list):
+                elem['methods'] = [str(m) for m in op['methods']]
+            if op.get('description'):
+                elem['description'] = str(op['description'])
+            name_to_id[name] = eid
+            new_elements.append(elem)
+        elif o == 'update_element':
+            name = str(op.get('name') or '').strip()
+            eid = name_to_id.get(name)
+            if eid is None:
+                continue
+            target = next((e for e in new_elements if e.get('id') == eid), None)
+            if not target:
+                continue
+            if isinstance(op.get('attributes'), list):
+                target['attributes'] = [str(a) for a in op['attributes']]
+            if isinstance(op.get('methods'), list):
+                target['methods'] = [str(m) for m in op['methods']]
+            if op.get('description'):
+                target['description'] = str(op['description'])
+        elif o == 'delete_element':
+            name = str(op.get('name') or '').strip()
+            eid = name_to_id.get(name)
+            if eid is None:
+                continue
+            new_elements = [e for e in new_elements if e.get('id') != eid]
+            new_connections = [c for c in new_connections
+                               if c.get('startElement') != eid and c.get('endElement') != eid]
+            name_to_id.pop(name, None)
+        elif o == 'add_relationship':
+            s = name_to_id.get(str(op.get('source') or '').strip())
+            t = name_to_id.get(str(op.get('target') or '').strip())
+            if s is None or t is None or s == t:
+                continue
+            rtype = str(op.get('type') or 'Association').strip()
+            if rtype not in RELATIONSHIP_TYPES:
+                rtype = 'Association'
+            new_connections.append({'id': next_id, 'type': rtype, 'startElement': s, 'endElement': t})
+            next_id += 1
+        elif o == 'delete_relationship':
+            s = name_to_id.get(str(op.get('source') or '').strip())
+            t = name_to_id.get(str(op.get('target') or '').strip())
+            new_connections = [c for c in new_connections
+                               if not (c.get('startElement') == s and c.get('endElement') == t)]
+
+    return new_elements, new_connections
+
+
+def _apply_er_edits(erEntities, erRelations, ops):
+    """把操作列表应用到当前 ER 模型（按实体名解析 id），返回新实体/关系。"""
+    erEntities = [dict(e) for e in erEntities]
+    erRelations = [dict(r) for r in erRelations]
+    name_to_id = {}
+    for e in erEntities:
+        if e.get('name') and e.get('id') is not None:
+            name_to_id.setdefault(str(e['name']).strip(), e['id'])
+    next_id = max([e.get('id', 0) for e in erEntities] + [0]) + 1
+    new_entities = list(erEntities)
+    new_relations = list(erRelations)
+
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        o = str(op.get('op') or '').strip()
+        if o == 'add_entity':
+            name = str(op.get('name') or '').strip()
+            if not name or name in name_to_id:
+                continue
+            eid = next_id
+            next_id += 1
+            fields = []
+            for f in op.get('fields') or []:
+                if isinstance(f, dict) and f.get('name'):
+                    fields.append({'name': str(f['name']), 'type': str(f.get('type') or 'string').upper(),
+                                   'isPrimary': bool(f.get('isPrimary', False)),
+                                   'isForeign': bool(f.get('isForeign', False))})
+            if not fields:
+                fields = [{'name': 'id', 'type': 'INT', 'isPrimary': True, 'isForeign': False}]
+            new_entities.append({'id': eid, 'name': name, 'x': 100, 'y': 100 + len(new_entities) * 40,
+                                 'width': 150, 'displayHeight': max(80, 40 + 18 * len(fields)), 'fields': fields})
+            name_to_id[name] = eid
+        elif o == 'delete_entity':
+            name = str(op.get('name') or '').strip()
+            eid = name_to_id.get(name)
+            if eid is None:
+                continue
+            new_entities = [e for e in new_entities if e.get('id') != eid]
+            new_relations = [r for r in new_relations
+                             if r.get('startEntity') != eid and r.get('endEntity') != eid]
+            name_to_id.pop(name, None)
+        elif o == 'add_field':
+            eid = name_to_id.get(str(op.get('entity') or '').strip())
+            if eid is None:
+                continue
+            target = next((e for e in new_entities if e.get('id') == eid), None)
+            f = op.get('field')
+            if target and isinstance(f, dict) and f.get('name'):
+                target['fields'].append({'name': str(f['name']), 'type': str(f.get('type') or 'string').upper(),
+                                         'isPrimary': bool(f.get('isPrimary', False)),
+                                         'isForeign': bool(f.get('isForeign', False))})
+                target['displayHeight'] = max(80, 40 + 18 * len(target['fields']))
+        elif o == 'delete_field':
+            eid = name_to_id.get(str(op.get('entity') or '').strip())
+            fname = str(op.get('field_name') or '').strip()
+            if eid is None:
+                continue
+            target = next((e for e in new_entities if e.get('id') == eid), None)
+            if target:
+                target['fields'] = [f for f in target['fields'] if f.get('name') != fname]
+                target['displayHeight'] = max(80, 40 + 18 * len(target['fields']))
+        elif o == 'add_relation':
+            s = name_to_id.get(str(op.get('source') or '').strip())
+            t = name_to_id.get(str(op.get('target') or '').strip())
+            if s is None or t is None or s == t:
+                continue
+            rtype = str(op.get('type') or 'one_to_many').strip()
+            if rtype not in ('one_to_one', 'one_to_many', 'many_to_one', 'many_to_many'):
+                rtype = 'one_to_many'
+            new_relations.append({'id': next_id, 'type': rtype, 'startEntity': s, 'endEntity': t})
+            next_id += 1
+        elif o == 'delete_relation':
+            s = name_to_id.get(str(op.get('source') or '').strip())
+            t = name_to_id.get(str(op.get('target') or '').strip())
+            new_relations = [r for r in new_relations
+                             if not (r.get('startEntity') == s and r.get('endEntity') == t)]
+
+    return new_entities, new_relations
+
+
+ARCHIMATE_ELEMENT_TYPES = {'actor', 'process', 'service', 'component', 'node', 'artifact'}
+ARCHIMATE_REL_TYPES = {'association', 'realization', 'serving', 'composition',
+                       'aggregation', 'access', 'flow', 'triggering'}
+ARCHIMATE_LAYERS = ('business', 'application', 'technology')
+
+
+def _describe_archimate_for_edit(archimateElements, archimateConnections):
+    """把当前 ArchiMate 模型序列化为 LLM 可读文本。"""
+    lines = []
+    for e in archimateElements:
+        layer = e.get('layer') or ''
+        lines.append(f"- {e.get('type')} {e.get('name')}" + (f" [层次:{layer}]" if layer else ''))
+    lines.append('关系:')
+    name_by_id = {e['id']: e['name'] for e in archimateElements if e.get('id') is not None and e.get('name')}
+    for c in archimateConnections:
+        s = name_by_id.get(c.get('startElement')) or c.get('startElement')
+        t = name_by_id.get(c.get('endElement')) or c.get('endElement')
+        lines.append(f"- {s} --({c.get('type')})--> {t}")
+    return '\n'.join(lines) or '（空模型）'
+
+
+def _apply_archimate_edits(archimateElements, archimateConnections, ops):
+    """把操作列表应用到当前 ArchiMate 模型（按元素名解析 id），返回新元素/连接。"""
+    archimateElements = [dict(e) for e in archimateElements]
+    archimateConnections = [dict(c) for c in archimateConnections]
+    name_to_id = {}
+    for e in archimateElements:
+        if e.get('name') and e.get('id') is not None:
+            name_to_id.setdefault(str(e['name']).strip(), e['id'])
+    next_id = max([e.get('id', 0) for e in archimateElements] + [0]) + 1
+    new_elements = list(archimateElements)
+    new_connections = list(archimateConnections)
+
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        o = str(op.get('op') or '').strip()
+        if o == 'add_element':
+            name = str(op.get('name') or '').strip()
+            if not name or name in name_to_id:
+                continue
+            etype = str(op.get('type') or 'service').strip().lower()
+            if etype not in ARCHIMATE_ELEMENT_TYPES:
+                etype = 'service'
+            layer = str(op.get('layer') or 'business').strip()
+            if layer not in ARCHIMATE_LAYERS:
+                layer = 'business'
+            eid = next_id
+            next_id += 1
+            new_elements.append({'id': eid, 'type': etype, 'name': name, 'layer': layer,
+                                 'x': 100, 'y': 100 + len(new_elements) * 50,
+                                 'width': 120, 'height': 80,
+                                 'color': '#ffffff', 'headerColor': '#667eea'})
+            name_to_id[name] = eid
+        elif o == 'update_element':
+            name = str(op.get('name') or '').strip()
+            eid = name_to_id.get(name)
+            if eid is None:
+                continue
+            target = next((e for e in new_elements if e.get('id') == eid), None)
+            if not target:
+                continue
+            new_name = str(op.get('new_name') or '').strip()
+            if new_name:
+                name_to_id.pop(name, None)
+                target['name'] = new_name
+                name_to_id[new_name] = eid
+            layer = str(op.get('layer') or '').strip()
+            if layer in ARCHIMATE_LAYERS:
+                target['layer'] = layer
+        elif o == 'delete_element':
+            name = str(op.get('name') or '').strip()
+            eid = name_to_id.get(name)
+            if eid is None:
+                continue
+            new_elements = [e for e in new_elements if e.get('id') != eid]
+            new_connections = [c for c in new_connections
+                               if c.get('startElement') != eid and c.get('endElement') != eid]
+            name_to_id.pop(name, None)
+        elif o == 'add_relationship':
+            s = name_to_id.get(str(op.get('source') or '').strip())
+            t = name_to_id.get(str(op.get('target') or '').strip())
+            if s is None or t is None or s == t:
+                continue
+            rtype = str(op.get('type') or 'association').strip().lower()
+            if rtype not in ARCHIMATE_REL_TYPES:
+                rtype = 'association'
+            new_connections.append({'id': next_id, 'type': rtype, 'startElement': s, 'endElement': t})
+            next_id += 1
+        elif o == 'delete_relationship':
+            s = name_to_id.get(str(op.get('source') or '').strip())
+            t = name_to_id.get(str(op.get('target') or '').strip())
+            new_connections = [c for c in new_connections
+                               if not (c.get('startElement') == s and c.get('endElement') == t)]
+
+    return new_elements, new_connections
+
+
+@app.route('/api/v1/project/<model_id>/ai/edit-model', methods=['POST'])
+def ai_edit_model_v1(model_id):
+    """对话式编辑：自然语言指令 → 增量修改当前模型（仅限所属用户）。
+    body: {kind: 'uml'|'er', instruction, elements, connections} 或 {kind:'er', erEntities, erRelations}
+    """
+    user_id = _require_user_id()
+    if user_id is None:
+        return jsonify({'error': '未登录'}), 401
+
+    model = load_model_from_cache(model_id)
+    if not _model_owned_by(model, user_id):
+        return jsonify({'error': '模型不存在'}), 404
+
+    data = request.json or {}
+    kind = data.get('kind', 'uml')
+    instruction = (data.get('instruction') or '').strip()
+    if kind not in ('uml', 'er', 'archimate'):
+        return jsonify({'error': 'kind 必须是 uml / er / archimate'}), 400
+    if not instruction:
+        return jsonify({'error': '请输入修改指令'}), 400
+
+    if kind == 'uml':
+        elements = data.get('elements') or []
+        connections = data.get('connections') or []
+        if not elements:
+            return jsonify({'error': '当前 UML 画布为空，请先画一些元素'}), 400
+        description = _describe_uml_for_edit(elements, connections)
+        ops = _ai_edit_model('uml', description, instruction)
+        if ops is None:
+            return jsonify({'error': 'AI 服务不可用或未能解析指令，请确认已配置 API 密钥后重试'}), 422
+        new_elements, new_connections = _apply_uml_edits(elements, connections, ops)
+        return jsonify({'kind': 'uml', 'elements': new_elements, 'connections': new_connections, 'applied_ops': len(ops)})
+
+    if kind == 'archimate':
+        archElements = data.get('archimateElements') or []
+        archConnections = data.get('archimateConnections') or []
+        if not archElements:
+            return jsonify({'error': '当前 ArchiMate 画布为空，请先画一些元素'}), 400
+        description = _describe_archimate_for_edit(archElements, archConnections)
+        ops = _ai_edit_model('archimate', description, instruction)
+        if ops is None:
+            return jsonify({'error': 'AI 服务不可用或未能解析指令，请确认已配置 API 密钥后重试'}), 422
+        new_elements, new_connections = _apply_archimate_edits(archElements, archConnections, ops)
+        return jsonify({'kind': 'archimate', 'archimateElements': new_elements,
+                        'archimateConnections': new_connections, 'applied_ops': len(ops)})
+
+    erEntities = data.get('erEntities') or []
+    erRelations = data.get('erRelations') or []
+    if not erEntities:
+        return jsonify({'error': '当前 ER 画布为空，请先建一些表'}), 400
+    description = _describe_er_for_edit(erEntities, erRelations)
+    ops = _ai_edit_model('er', description, instruction)
+    if ops is None:
+        return jsonify({'error': 'AI 服务不可用或未能解析指令，请确认已配置 API 密钥后重试'}), 422
+    new_entities, new_relations = _apply_er_edits(erEntities, erRelations, ops)
+    return jsonify({'kind': 'er', 'erEntities': new_entities, 'erRelations': new_relations, 'applied_ops': len(ops)})
+
+
+# === 项目专属记忆库 ===
+
+def _get_memories(model_id):
+    """读取项目的记忆条目列表。"""
+    data = db.get(f'memory:{model_id}', {}) or {}
+    entries = data.get('entries')
+    if not isinstance(entries, list):
+        entries = []
+    return entries
+
+
+@app.route('/api/v1/project/<model_id>/ai/memory', methods=['GET'])
+def get_model_memory(model_id):
+    """获取项目记忆库（仅限所属用户）"""
+    user_id = _require_user_id()
+    if user_id is None:
+        return jsonify({'error': '未登录'}), 401
+    model = load_model_from_cache(model_id)
+    if not _model_owned_by(model, user_id):
+        return jsonify({'error': '模型不存在'}), 404
+    return jsonify({'memories': _get_memories(model_id)})
+
+
+@app.route('/api/v1/project/<model_id>/ai/memory', methods=['POST'])
+def add_model_memory(model_id):
+    """添加一条项目记忆（仅限所属用户）"""
+    user_id = _require_user_id()
+    if user_id is None:
+        return jsonify({'error': '未登录'}), 401
+    model = load_model_from_cache(model_id)
+    if not _model_owned_by(model, user_id):
+        return jsonify({'error': '模型不存在'}), 404
+
+    content = (request.json or {}).get('content', '').strip()
+    if not content:
+        return jsonify({'error': '记忆内容不能为空'}), 400
+
+    entries = _get_memories(model_id)
+    entry = {
+        'id': str(uuid.uuid4())[:8],
+        'content': content,
+        'created_at': datetime.datetime.now().isoformat()
+    }
+    entries.append(entry)
+    db.set(f'memory:{model_id}', {'entries': entries})
+    return jsonify({'memory': entry, 'memories': entries})
+
+
+@app.route('/api/v1/project/<model_id>/ai/memory/<mem_id>', methods=['DELETE'])
+def delete_model_memory(model_id, mem_id):
+    """删除一条项目记忆（仅限所属用户）"""
+    user_id = _require_user_id()
+    if user_id is None:
+        return jsonify({'error': '未登录'}), 401
+    model = load_model_from_cache(model_id)
+    if not _model_owned_by(model, user_id):
+        return jsonify({'error': '模型不存在'}), 404
+
+    entries = [e for e in _get_memories(model_id) if e.get('id') != mem_id]
+    db.set(f'memory:{model_id}', {'entries': entries})
+    return jsonify({'message': '删除成功', 'memories': entries})
 
 
 def ai_generate_code_from_model(model, language, framework):

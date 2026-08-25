@@ -192,6 +192,11 @@ const codeConfig = ref({ language: 'java', framework: 'spring', source: 'uml', o
 const generatedCode = ref('// 选择模型源和输出类型，然后点击生成代码按钮')
 const codeGenerating = ref(false)
 
+// 代码反向工程（代码 → 模型）
+const reverseConfig = ref({ code: '', language: 'auto', target: 'uml' })
+const reversing = ref(false)
+const reverseError = ref('')
+
 const showValidateModal = ref(false)
 const validating = ref(false)
 const validateResult = ref<any>(null)
@@ -208,6 +213,27 @@ const showAnalyzeModal = ref(false)
 const analyzing = ref(false)
 const analyzeResult = ref<any>(null)
 const analyzeError = ref('')
+
+// 对话式编辑（自然语言改模型）
+const showEditModelModal = ref(false)
+const editingModelKind = ref<'uml' | 'archimate' | 'er'>('uml')
+const editModelInstruction = ref('')
+const editModelSubmitting = ref(false)
+const editModelError = ref('')
+const editModelSuccess = ref('')
+
+// AI 功能下拉菜单（每画布一个入口）
+const openAiMenu = ref<'uml' | 'archimate' | 'er' | null>(null)
+const toggleAiMenu = (kind: 'uml' | 'archimate' | 'er') => {
+  openAiMenu.value = openAiMenu.value === kind ? null : kind
+}
+const runAiAction = (kind: 'uml' | 'archimate' | 'er', action: string) => {
+  openAiMenu.value = null
+  if (action === 'validate') return aiValidateModel()
+  if (action === 'review') return aiReviewArchimate()
+  if (action === 'analyze') return aiAnalyzeElement(kind)
+  if (action === 'edit') return openAiEditModel(kind)
+}
 
 let canvas: HTMLCanvasElement | null = null
 let ctx: CanvasRenderingContext2D | null = null
@@ -539,6 +565,58 @@ const generateCode = async () => {
   // 不支持的语言×框架×输出组合会返回空字符串，给出明确提示而不是空白
   if (!generatedCode.value || generatedCode.value.trim() === '') {
     generatedCode.value = `// 当前暂不支持 语言=${language} / 框架=${framework} / 输出=${outputType} 的组合\n// 可尝试 Java+Spring、Python+Django、TypeScript+NestJS 等组合`
+  }
+}
+
+// 代码反向工程：粘贴代码 → AI 反推模型 → 画到画布
+const reverseCode = async () => {
+  const code = reverseConfig.value.code.trim()
+  if (!code) {
+    reverseError.value = '请先粘贴源代码'
+    return
+  }
+  if (!currentModelId.value) {
+    reverseError.value = '请先创建或选择一个项目'
+    return
+  }
+  const { language, target } = reverseConfig.value
+  reverseError.value = ''
+  reversing.value = true
+  try {
+    const res = await fetch('/api/v1/ai/code/reverse', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
+      },
+      body: JSON.stringify({ code, language, target })
+    })
+    const data = await res.json()
+    if (!res.ok || data.error) {
+      reverseError.value = data.error || `反推失败: HTTP ${res.status}`
+      return
+    }
+    if (target === 'uml') {
+      saveUmlHistory()
+      elements = data.elements || []
+      connections = data.relationships || []
+      selectedElement = null
+      activeTab.value = 'uml'
+      redraw()
+    } else {
+      saveErHistory()
+      erEntities = data.entities || []
+      erRelations = data.relationships || []
+      erSelectedEntity = null
+      activeTab.value = 'data'
+      redrawErCanvas()
+    }
+    updateStats()
+    alert(`反推成功：${target === 'uml' ? 'UML 类图' : 'ER 模型'}已生成到画布，记得点「保存」落盘`)
+  } catch (e: any) {
+    reverseError.value = e?.message || '反推请求失败，请检查后端服务'
+  } finally {
+    reversing.value = false
   }
 }
 
@@ -2772,6 +2850,83 @@ const aiAnalyzeElement = async (kind: 'uml' | 'archimate' | 'er') => {
   }
 }
 
+// 对话式编辑：打开弹窗（UML / ArchiMate / ER 画布共用）
+const openAiEditModel = (kind: 'uml' | 'archimate' | 'er') => {
+  if (!currentModelId.value) {
+    alert('请先创建或选择一个项目')
+    return
+  }
+  editingModelKind.value = kind
+  editModelInstruction.value = ''
+  editModelError.value = ''
+  editModelSuccess.value = ''
+  showEditModelModal.value = true
+}
+
+// 对话式编辑：提交指令 → 应用修改 → 刷新画布
+const submitAiEditModel = async () => {
+  const instruction = editModelInstruction.value.trim()
+  if (!instruction) {
+    editModelError.value = '请输入修改指令'
+    return
+  }
+  editModelError.value = ''
+  editModelSuccess.value = ''
+  editModelSubmitting.value = true
+  try {
+    const kind = editingModelKind.value
+    const payload: Record<string, unknown> = { kind, instruction }
+    if (kind === 'uml') {
+      payload.elements = elements
+      payload.connections = connections
+    } else if (kind === 'archimate') {
+      payload.archimateElements = archimateElements
+      payload.archimateConnections = archimateConnections
+    } else {
+      payload.erEntities = erEntities
+      payload.erRelations = erRelations
+    }
+    const res = await fetch(`/api/v1/project/${currentModelId.value}/ai/edit-model`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
+      },
+      body: JSON.stringify(payload)
+    })
+    const data = await res.json()
+    if (!res.ok || data.error) {
+      editModelError.value = data.error || `编辑失败: HTTP ${res.status}`
+      return
+    }
+    if (kind === 'uml') {
+      saveUmlHistory()
+      elements = data.elements || elements
+      connections = data.connections || connections
+      selectedElement = null
+      redraw()
+    } else if (kind === 'archimate') {
+      saveArchimateHistory()
+      archimateElements = data.archimateElements || archimateElements
+      archimateConnections = data.archimateConnections || archimateConnections
+      archimateSelectedElement = null
+      redrawArchimateCanvas()
+    } else {
+      saveErHistory()
+      erEntities = data.erEntities || erEntities
+      erRelations = data.erRelations || erRelations
+      erSelectedEntity = null
+      redrawErCanvas()
+    }
+    updateStats()
+    editModelSuccess.value = `修改完成（应用了 ${data.applied_ops ?? 0} 步操作），画布已刷新。记得点「保存」落盘。`
+  } catch (e: any) {
+    editModelError.value = e?.message || '编辑请求失败，请检查后端服务'
+  } finally {
+    editModelSubmitting.value = false
+  }
+}
+
 const loadModelFromServer = async (modelId: string) => {
   try {
     const res = await fetch(`/api/models/${modelId}`, {
@@ -3150,12 +3305,24 @@ onMounted(() => {
         <button class="toolbar-btn" @click="saveModel">
           <i class="fas fa-save"></i> 保存
         </button>
-        <button class="toolbar-btn" @click="aiValidateModel" :disabled="validating" title="AI 校验模型设计（结构 + 语义分析）">
-          <i class="fas fa-magnifying-glass-chart"></i> {{ validating ? '校验中...' : 'AI校验' }}
-        </button>
-        <button class="toolbar-btn" @click="aiAnalyzeElement('uml')" :disabled="analyzing" title="AI 分析选中的元素（先在画布上选中一个元素）">
-          <i class="fas fa-wand-magic-sparkles"></i> {{ analyzing ? '分析中...' : 'AI分析' }}
-        </button>
+        <div style="position:relative; display:inline-block;">
+          <button class="toolbar-btn" @click="toggleAiMenu('uml')" :class="{ active: openAiMenu === 'uml' }" title="AI 功能">
+            <i class="fas fa-robot"></i> AI
+            <i class="fas fa-chevron-down" style="font-size:10px;"></i>
+          </button>
+          <div v-if="openAiMenu === 'uml'" class="ai-dropdown">
+            <div class="ai-dropdown-title">UML 模型</div>
+            <button class="ai-dropdown-item" @click="runAiAction('uml', 'validate')" :disabled="validating">
+              <i class="fas fa-magnifying-glass-chart"></i> {{ validating ? '校验中...' : 'AI校验整个模型' }}
+            </button>
+            <button class="ai-dropdown-item" @click="runAiAction('uml', 'analyze')" :disabled="analyzing">
+              <i class="fas fa-wand-magic-sparkles"></i> {{ analyzing ? '分析中...' : 'AI分析选中元素' }}
+            </button>
+            <button class="ai-dropdown-item" @click="runAiAction('uml', 'edit')">
+              <i class="fas fa-comment-dots"></i> AI对话式编辑
+            </button>
+          </div>
+        </div>
         <button class="toolbar-btn" @click="exportImage">
           <i class="fas fa-download"></i> 导出图片
         </button>
@@ -3233,12 +3400,24 @@ onMounted(() => {
         <button class="toolbar-btn" @click="saveArchimateModel">
           <i class="fas fa-save"></i> 保存
         </button>
-        <button class="toolbar-btn" @click="aiReviewArchimate" :disabled="reviewing" title="AI 架构评审（结构 + 语义分析）">
-          <i class="fas fa-magnifying-glass-chart"></i> {{ reviewing ? '评审中...' : 'AI评审' }}
-        </button>
-        <button class="toolbar-btn" @click="aiAnalyzeElement('archimate')" :disabled="analyzing" title="AI 分析选中的元素（先在画布上选中一个元素）">
-          <i class="fas fa-wand-magic-sparkles"></i> {{ analyzing ? '分析中...' : 'AI分析' }}
-        </button>
+        <div style="position:relative; display:inline-block;">
+          <button class="toolbar-btn" @click="toggleAiMenu('archimate')" :class="{ active: openAiMenu === 'archimate' }" title="AI 功能">
+            <i class="fas fa-robot"></i> AI
+            <i class="fas fa-chevron-down" style="font-size:10px;"></i>
+          </button>
+          <div v-if="openAiMenu === 'archimate'" class="ai-dropdown">
+            <div class="ai-dropdown-title">ArchiMate 架构</div>
+            <button class="ai-dropdown-item" @click="runAiAction('archimate', 'review')" :disabled="reviewing">
+              <i class="fas fa-magnifying-glass-chart"></i> {{ reviewing ? '评审中...' : 'AI架构评审' }}
+            </button>
+            <button class="ai-dropdown-item" @click="runAiAction('archimate', 'analyze')" :disabled="analyzing">
+              <i class="fas fa-wand-magic-sparkles"></i> {{ analyzing ? '分析中...' : 'AI分析选中元素' }}
+            </button>
+            <button class="ai-dropdown-item" @click="runAiAction('archimate', 'edit')">
+              <i class="fas fa-comment-dots"></i> AI对话式编辑
+            </button>
+          </div>
+        </div>
         <button class="toolbar-btn" @click="exportArchimateImage">
           <i class="fas fa-download"></i> 导出图片
         </button>
@@ -3294,9 +3473,21 @@ onMounted(() => {
         <button class="toolbar-btn" @click="generateErSql">
           <i class="fas fa-database"></i> 生成SQL
         </button>
-        <button class="toolbar-btn" @click="aiAnalyzeElement('er')" :disabled="analyzing" title="AI 分析选中的表（先在画布上选中一个表）">
-          <i class="fas fa-wand-magic-sparkles"></i> {{ analyzing ? '分析中...' : 'AI分析' }}
-        </button>
+        <div style="position:relative; display:inline-block;">
+          <button class="toolbar-btn" @click="toggleAiMenu('er')" :class="{ active: openAiMenu === 'er' }" title="AI 功能">
+            <i class="fas fa-robot"></i> AI
+            <i class="fas fa-chevron-down" style="font-size:10px;"></i>
+          </button>
+          <div v-if="openAiMenu === 'er'" class="ai-dropdown">
+            <div class="ai-dropdown-title">数据模型</div>
+            <button class="ai-dropdown-item" @click="runAiAction('er', 'analyze')" :disabled="analyzing">
+              <i class="fas fa-wand-magic-sparkles"></i> {{ analyzing ? '分析中...' : 'AI分析选中表' }}
+            </button>
+            <button class="ai-dropdown-item" @click="runAiAction('er', 'edit')">
+              <i class="fas fa-comment-dots"></i> AI对话式编辑
+            </button>
+          </div>
+        </div>
         <button class="toolbar-btn" @click="saveErModel">
           <i class="fas fa-save"></i> 保存
         </button>
@@ -3390,12 +3581,58 @@ onMounted(() => {
           <pre>{{ generatedCode }}</pre>
         </div>
       </div>
+
+      <div style="margin-top: 36px; border-top: 1px solid #e8ecf0; padding-top: 24px;">
+        <h3 class="card-title"><i class="fas fa-arrow-left-long" style="color: #6366f1;"></i> 代码反向工程</h3>
+        <p class="card-desc">粘贴源代码，AI 反推出 UML 类图或 ER 模型并画到画布上</p>
+
+        <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px;">
+          <select
+            v-model="reverseConfig.target"
+            style="padding: 10px; border-radius: 8px; border: 2px solid #e8ecf0;"
+          >
+            <option value="uml">UML类图</option>
+            <option value="er">ER模型</option>
+          </select>
+          <select
+            v-model="reverseConfig.language"
+            style="padding: 10px; border-radius: 8px; border: 2px solid #e8ecf0;"
+          >
+            <option value="auto">自动识别语言</option>
+            <option value="java">Java</option>
+            <option value="python">Python</option>
+            <option value="typescript">TypeScript</option>
+            <option value="csharp">C#</option>
+            <option value="go">Go</option>
+          </select>
+          <button class="btn btn-primary" @click="reverseCode" :disabled="reversing || !reverseConfig.code.trim()">
+            <i class="fas fa-arrow-left"></i> {{ reversing ? '反推中...' : '反推模型' }}
+          </button>
+        </div>
+
+        <textarea
+          v-model="reverseConfig.code"
+          rows="10"
+          placeholder="在此粘贴源代码，例如：一个含用户/订单/商品的 Java 或 Python 类…"
+          style="width: 100%; font-family: 'Cascadia Code', Consolas, monospace; font-size: 13px; padding: 12px; border: 1px solid #ddd; border-radius: 8px; resize: vertical; background: #fafbff;"
+        ></textarea>
+
+        <div v-if="reverseError" style="margin-top: 10px; color: #d33; background: #fdf0f0; padding: 10px; border-radius: 8px;">
+          <i class="fas fa-exclamation-triangle"></i> {{ reverseError }}
+        </div>
+        <p style="color: #999; font-size: 12px; margin-top: 8px;">
+          反推结果会直接画到对应画布（UML类图 / ER模型），之后记得点「保存」落盘。需要先创建或选择一个项目。
+        </p>
+      </div>
     </div>
 
     <div v-if="activeTab === 'ai'" class="card" style="padding: 0; height: calc(100vh - 120px);">
-      <AIAssistant :project-context="projectContext" />
+      <AIAssistant :project-context="projectContext" :project-id="currentModelId || ''" />
     </div>
   </div>
+
+  <!-- AI 下拉菜单的外层遮罩：点击任意空白关闭 -->
+  <div v-if="openAiMenu" class="ai-menu-overlay" @click="openAiMenu = null"></div>
 
   <div v-if="showValidateModal" class="modal-overlay" @click.self="showValidateModal = false">
     <div class="modal-content" style="width: 660px; max-height: 80vh; overflow-y: auto;">
@@ -3581,6 +3818,36 @@ onMounted(() => {
 
       <div style="margin-top:20px; text-align:right;">
         <button class="btn btn-outline" @click="showAnalyzeModal = false">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div v-if="showEditModelModal" class="modal-overlay" @click.self="showEditModelModal = false">
+    <div class="modal-content" style="width: 560px;">
+      <span class="modal-close" @click="showEditModelModal = false">&times;</span>
+      <h3 style="margin-top: 0;"><i class="fas fa-comment-dots"></i> AI 对话式编辑</h3>
+      <p style="color:#666; font-size:13px; margin-bottom:12px;">
+        当前编辑：<strong>{{ editingModelKind === 'uml' ? 'UML 类图' : editingModelKind === 'archimate' ? 'ArchiMate 架构' : 'ER 数据模型' }}</strong>。
+        用自然语言描述你要的修改，例如「给 Order 类加一个 status 字段」「把客户表和订单表改成一对多关系」「给订单流程加一个消息队列节点」。
+      </p>
+      <textarea
+        v-model="editModelInstruction"
+        rows="4"
+        placeholder="例如：给 Order 类加个 status 字段，并把 User 和 Order 之间的关系改成 Composition"
+        style="width:100%; padding:12px; border:1px solid #ddd; border-radius:8px; font-size:14px; resize:vertical; font-family:inherit;"
+      ></textarea>
+      <div v-if="editModelError" style="margin-top:10px; color:#d33; background:#fdf0f0; padding:10px; border-radius:8px;">
+        <i class="fas fa-exclamation-triangle"></i> {{ editModelError }}
+      </div>
+      <div v-if="editModelSuccess" style="margin-top:10px; color:#2e7d32; background:#e8f5e9; padding:10px; border-radius:8px;">
+        <i class="fas fa-check-circle"></i> {{ editModelSuccess }}
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:16px;">
+        <button class="btn btn-outline" @click="showEditModelModal = false">关闭</button>
+        <button class="btn btn-primary" @click="submitAiEditModel" :disabled="editModelSubmitting || !editModelInstruction.trim()">
+          <i v-if="editModelSubmitting" class="fas fa-spinner fa-spin"></i>
+          {{ editModelSubmitting ? '执行中...' : '执行修改' }}
+        </button>
       </div>
     </div>
   </div>
@@ -4056,6 +4323,58 @@ onMounted(() => {
   background: #667eea;
   color: white;
   border-color: #667eea;
+}
+
+/* AI 功能下拉菜单 */
+.ai-menu-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+}
+.ai-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 200px;
+  background: #fff;
+  border: 1px solid #e8ecf0;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  padding: 6px;
+  z-index: 1000;
+}
+.ai-dropdown-title {
+  font-size: 11px;
+  color: #94a3b8;
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid #f1f5f9;
+  margin-bottom: 4px;
+}
+.ai-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #334155;
+  text-align: left;
+}
+.ai-dropdown-item:hover:not(:disabled) {
+  background: #f1f5f9;
+}
+.ai-dropdown-item:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.ai-dropdown-item i {
+  width: 16px;
+  text-align: center;
+  color: #6366f1;
 }
 
 #canvas {

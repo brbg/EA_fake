@@ -30,6 +30,7 @@ export const updateAIConfig = async (config: {
   api_key?: string
   base_url?: string
   model?: string
+  reasoning_model?: string
   max_tokens?: number
   temperature?: number
   stream?: boolean

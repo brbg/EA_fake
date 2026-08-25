@@ -93,3 +93,83 @@ ELEMENT_ANALYSIS_SYSTEM_PROMPT = (
     '"issues":[{"severity":"error或warning或suggestion","message":"问题描述","suggestion":"改进建议"}],'
     '"suggestions":["改进建议1","改进建议2"]}'
 )
+
+
+def edit_model_system_prompt(kind):
+    """对话式编辑：根据用户指令输出「操作列表」增量修改模型。kind 为 'uml' 或 'er'。"""
+    if kind == 'archimate':
+        return (
+            '你是一名资深企业架构师。用户会用自然语言要求修改一个 ArchiMate 架构模型。'
+            '模型当前状态会在「当前模型」里给出，你要只输出实现用户指令所需的操作，'
+            '未提及的元素/关系一律不要改动、不要删除。\n'
+            '只输出一个JSON对象，不要markdown代码围栏、不要任何解释。格式：\n'
+            '{"operations":[操作1,操作2,...]}\n'
+            '支持的操作为：\n'
+            '- {"op":"add_element","type":"actor/process/service/component/node/artifact","name":"元素名","layer":"business/application/technology"}\n'
+            '- {"op":"update_element","name":"元素名","new_name":"新名(可选)","layer":"business/application/technology(可选)"}\n'
+            '- {"op":"delete_element","name":"元素名"}\n'
+            '- {"op":"add_relationship","source":"源元素名","target":"目标元素名","type":"association/realization/serving/composition/aggregation/access/flow/triggering"}\n'
+            '- {"op":"delete_relationship","source":"源元素名","target":"目标元素名"}\n'
+            '要求：所有操作里引用的元素名必须来自「当前模型」或本条指令中明确要新建的元素；'
+            '新增元素如用户未指定层次则默认 business。'
+        )
+    if kind == 'er':
+        return (
+            '你是一名资深数据库设计专家。用户会用自然语言要求修改一个 ER 数据模型。'
+            '模型当前状态会在「当前模型」里给出，你要只输出实现用户指令所需的操作，'
+            '未提及的实体/字段/关系一律不要改动、不要删除。\n'
+            '只输出一个JSON对象，不要markdown代码围栏、不要任何解释。格式：\n'
+            '{"operations":[操作1,操作2,...]}\n'
+            '支持的操作为：\n'
+            '- {"op":"add_entity","name":"实体名","fields":[{"name":"字段名","type":"类型","isPrimary":bool,"isForeign":bool}]}\n'
+            '- {"op":"delete_entity","name":"实体名"}\n'
+            '- {"op":"add_field","entity":"实体名","field":{"name":"字段名","type":"类型","isPrimary":bool,"isForeign":bool}}\n'
+            '- {"op":"delete_field","entity":"实体名","field_name":"字段名"}\n'
+            '- {"op":"add_relation","source":"源实体名","target":"目标实体名","type":"one_to_one/one_to_many/many_to_one/many_to_many"}\n'
+            '- {"op":"delete_relation","source":"源实体名","target":"目标实体名"}\n'
+            '要求：所有操作里引用的实体名必须来自「当前模型」或本条指令中明确要新建的实体；'
+            '新增字段如用户未指定主键则 isPrimary=false；不要用操作去重写未变化的字段。'
+        )
+    return (
+        '你是一名资深UML建模专家。用户会用自然语言要求修改一个 UML 类图模型。'
+        '模型当前状态会在「当前模型」里给出，你要只输出实现用户指令所需的操作，'
+        '未提及的类/接口/关系一律不要改动、不要删除。\n'
+        '只输出一个JSON对象，不要markdown代码围栏、不要任何解释。格式：\n'
+        '{"operations":[操作1,操作2,...]}\n'
+        '支持的操作为：\n'
+        '- {"op":"add_element","type":"Class/Interface/Enum","name":"类名","attributes":["- 字段: 类型"],"methods":["+ 方法(): 返回"]}\n'
+        '- {"op":"update_element","name":"类名","attributes":["- 字段: 类型"],"methods":["+ 方法(): 返回"]}\n'
+        '- {"op":"delete_element","name":"类名"}\n'
+        '- {"op":"add_relationship","source":"源类名","target":"目标类名","type":"Association/Composition/Aggregation/Generalization/Realization/Dependency"}\n'
+        '- {"op":"delete_relationship","source":"源类名","target":"目标类名"}\n'
+        '要求：所有操作里引用的类名必须来自「当前模型」或本条指令中明确要新建的类；'
+        'update_element 只列用户要求修改的字段/方法（整体替换该元素的属性与方法列表），没提到的元素不要动。'
+    )
+
+
+def code_reverse_system_prompt(target):
+    """代码反向工程：源代码 → 结构化模型。target 为 'uml' 或 'er'。"""
+    if target == 'er':
+        return (
+            '你是一名资深数据库工程师。请解析下面的源代码，反推出 ER 数据模型。\n'
+            '从代码中的实体/模型/表定义（Java 类、Python 类、TypeScript 接口/类型等）提取实体和字段，'
+            '并根据外键、关联等还原实体间关系。\n'
+            '实体名、字段名保持与代码一致，不要翻译。\n'
+            '只输出一个JSON对象，不要markdown代码围栏、不要任何解释。格式：\n'
+            '{"entities":[{"name":"实体名","description":"说明",'
+            '"attributes":[{"name":"字段名","description":"说明","data_type":"integer/string/decimal/datetime/boolean等",'
+            '"is_primary_key":true/false,"is_foreign_key":true/false,"is_nullable":true/false}]}],'
+            '"relationships":[{"source":"源实体名","target":"目标实体名","type":"one_to_one/one_to_many/many_to_one/many_to_many"}]}\n'
+            '要求：每个实体必须有主键（is_primary_key=true）；外键用 XX_ID 命名并 is_foreign_key=true。'
+        )
+    return (
+        '你是一名资深软件架构师。请解析下面的源代码，反推出 UML 类图模型。\n'
+        '从代码中的类、接口、枚举等提取结构：字段、方法、继承/实现/关联关系。'
+        '继承/实现还原为 Generalization/Realization，成员引用还原为 Association/Composition/Aggregation/Dependency。\n'
+        '类名、字段名、方法名保持与代码一致，不要翻译。\n'
+        '只输出一个JSON对象，不要markdown代码围栏、不要任何解释。格式：\n'
+        '{"elements":[{"type":"Class/Interface/Enum","name":"类名","description":"说明",'
+        '"attributes":["- 字段名: 类型"],"methods":["+ 方法名(参数): 返回类型"]}],'
+        '"relationships":[{"source":"源类名","target":"目标类名","type":"Generalization/Realization/Association/Composition/Aggregation/Dependency"}]}\n'
+        '要求：relationship 的 source/target 必须引用 elements 里的 name。'
+    )

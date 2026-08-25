@@ -3,6 +3,9 @@
     <div class="ai-header">
       <h3>AI助手</h3>
       <div class="ai-actions">
+        <button class="btn btn-outline" @click="showMemory = !showMemory">
+          <i class="fas fa-brain"></i> {{ showMemory ? '收起记忆库' : '记忆库' }}
+        </button>
         <button class="btn btn-outline" @click="showConfig = !showConfig">
           <i class="fas fa-cog"></i> {{ showConfig ? '收起配置' : '配置' }}
         </button>
@@ -35,11 +38,21 @@
 
       <div class="config-item">
         <label>模型名称</label>
-        <input 
-          type="text" 
-          v-model="config.model" 
+        <input
+          type="text"
+          v-model="config.model"
           placeholder="gpt-3.5-turbo"
         />
+      </div>
+
+      <div class="config-item">
+        <label>推理模型（复杂任务专用，可留空）</label>
+        <input
+          type="text"
+          v-model="config.reasoning_model"
+          placeholder="如 deepseek-reasoner；架构评审/校验/AI编辑会用它"
+        />
+        <span style="font-size:12px; color:#999; display:block; margin-top:4px;">留空则所有任务都用上面的模型</span>
       </div>
 
       <div class="config-item">
@@ -58,6 +71,35 @@
 
       <div v-if="configMessage" :class="['config-message', configMessage.type]">
         {{ configMessage.text }}
+      </div>
+    </div>
+
+    <div v-if="showMemory" class="ai-memory-panel">
+      <h4><i class="fas fa-brain"></i> 项目记忆库</h4>
+      <p style="color:#999; font-size:12px; margin:0 0 12px 0;">
+        记忆会随每个问题注入给 AI。可手动添加，也可在对话中说「记住：xxx」自动保存。
+      </p>
+      <div v-if="memories.length === 0" style="color:#999; font-size:13px; padding: 8px 0;">
+        暂无记忆。
+      </div>
+      <div v-for="mem in memories" :key="mem.id" class="memory-item">
+        <span>{{ mem.content }}</span>
+        <button class="memory-del" @click="deleteMemory(mem.id)" title="删除">
+          <i class="fas fa-trash"></i>
+        </button>
+      </div>
+      <div class="memory-add">
+        <input
+          v-model="newMemory"
+          placeholder="添加一条项目记忆…"
+          @keydown.enter.prevent="addMemory"
+        />
+        <button class="btn btn-primary" @click="addMemory" :disabled="savingMemory || !newMemory.trim()">
+          <i v-if="savingMemory" class="fas fa-spinner fa-spin"></i> 保存
+        </button>
+      </div>
+      <div v-if="memoryMsg" :class="['config-message', memoryMsg.type]">
+        {{ memoryMsg.text }}
       </div>
     </div>
 
@@ -114,12 +156,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, nextTick, computed } from 'vue'
+import { ref, reactive, onMounted, nextTick, computed, watch } from 'vue'
 import { getAIConfig, updateAIConfig, chatWithAIStream } from './aiService'
 import { ProjectContext, buildMessagesWithContext } from './projectContext'
 
 const props = defineProps<{
   projectContext?: ProjectContext
+  projectId?: string
 }>()
 
 const messages = ref<Array<{id: number; type: string; content: string}>>([])
@@ -129,6 +172,13 @@ const streamStarted = ref(false)  // 是否已收到首个流式分片（用于�
 const showConfig = ref(false)
 const saving = ref(false)
 const configMessage = ref<{type: string; text: string} | null>(null)
+
+// 项目专属记忆库
+const showMemory = ref(false)
+const memories = ref<Array<{ id: string; content: string; created_at: string }>>([])
+const newMemory = ref('')
+const savingMemory = ref(false)
+const memoryMsg = ref<{type: string; text: string} | null>(null)
 const chatMessagesRef = ref<HTMLElement | null>(null)
 const aiEnabled = ref(false)
 const chatSessionId = ref<string>('')
@@ -139,6 +189,7 @@ const config = reactive({
   api_key: '',
   base_url: 'https://api.openai.com/v1',
   model: 'gpt-3.5-turbo',
+  reasoning_model: '',
   includeContext: true
 })
 
@@ -152,7 +203,101 @@ const hasProjectContext = computed(() => {
 
 onMounted(async () => {
   await loadConfig()
+  if (props.projectId) {
+    await loadMemories()
+  }
 })
+
+// 项目切换时同步加载记忆
+watch(() => props.projectId, () => {
+  if (props.projectId) {
+    loadMemories()
+  } else {
+    memories.value = []
+  }
+})
+
+const loadMemories = async () => {
+  if (!props.projectId) {
+    memories.value = []
+    return
+  }
+  try {
+    const res = await fetch(`/api/v1/project/${props.projectId}/ai/memory`, {
+      headers: { 'X-Session-Id': sessionStorage.getItem('sessionId') || '' }
+    })
+    const data = await res.json()
+    if (data.memories) {
+      memories.value = data.memories
+    }
+  } catch (e) {
+    // 网络异常静默处理
+  }
+}
+
+const addMemory = async () => {
+  const content = newMemory.value.trim()
+  if (!content || !props.projectId) return
+  savingMemory.value = true
+  memoryMsg.value = null
+  try {
+    const res = await fetch(`/api/v1/project/${props.projectId}/ai/memory`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
+      },
+      body: JSON.stringify({ content })
+    })
+    const data = await res.json()
+    if (data.error) {
+      memoryMsg.value = { type: 'error', text: data.error }
+    } else {
+      memories.value = data.memories || memories.value
+      newMemory.value = ''
+      memoryMsg.value = { type: 'success', text: '已记入记忆库' }
+    }
+  } catch (e) {
+    memoryMsg.value = { type: 'error', text: '保存失败，请检查后端服务' }
+  } finally {
+    savingMemory.value = false
+  }
+}
+
+const deleteMemory = async (id: string) => {
+  if (!props.projectId) return
+  try {
+    const res = await fetch(`/api/v1/project/${props.projectId}/ai/memory/${id}`, {
+      method: 'DELETE',
+      headers: { 'X-Session-Id': sessionStorage.getItem('sessionId') || '' }
+    })
+    const data = await res.json()
+    if (data.memories) {
+      memories.value = data.memories
+    }
+  } catch (e) {
+    // 忽略
+  }
+}
+
+// 对话中「记住：xxx」→ 静默写入记忆库
+const saveMemorySilently = async (content: string) => {
+  if (!props.projectId || !content) return
+  try {
+    await fetch(`/api/v1/project/${props.projectId}/ai/memory`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
+      },
+      body: JSON.stringify({ content })
+    })
+    await loadMemories()
+    memoryMsg.value = { type: 'success', text: '已记入项目记忆库' }
+  } catch (e) {
+    // 忽略
+  }
+}
 
 const loadConfig = async () => {
   try {
@@ -161,6 +306,7 @@ const loadConfig = async () => {
       config.api_key = result.config.api_key || ''
       config.base_url = result.config.base_url || 'https://api.openai.com/v1'
       config.model = result.config.model || 'gpt-3.5-turbo'
+      config.reasoning_model = result.config.reasoning_model || ''
       config.includeContext = result.config.includeContext !== false
       aiEnabled.value = result.config.enabled || false
     }
@@ -180,10 +326,12 @@ const saveConfig = async () => {
       api_key?: string
       base_url: string
       model: string
+      reasoning_model: string
       includeContext: boolean
     } = {
       base_url: config.base_url,
       model: config.model,
+      reasoning_model: config.reasoning_model.trim(),
       includeContext: config.includeContext
     }
     if (config.api_key && config.api_key.trim()) {
@@ -252,6 +400,12 @@ const buildMessages = (message: string): Array<{ role: string; content: string }
     systemContent = built[0].content
   }
 
+  // 注入项目专属记忆（用户长期记录的约束/偏好，回答时优先遵循）
+  if (memories.value.length > 0) {
+    const memBlock = memories.value.map((m) => `- ${m.content}`).join('\n')
+    systemContent += `\n\n【项目专属记忆】（用户长期记录的约束或偏好，涉及时应优先遵循）：\n${memBlock}`
+  }
+
   const result: Array<{ role: string; content: string }> = [
     { role: 'system', content: systemContent }
   ]
@@ -308,6 +462,15 @@ const sendNormalMessage = async (message: string) => {
   }
   conversationHistory.value.push({ role: 'user', content: message })
   conversationHistory.value.push({ role: 'assistant', content: finalContent })
+
+  // 自动记忆：用户说「记住：xxx」时把 xxx 写入项目记忆库
+  const rememberMatch = message.match(/记住[：:，,、\s]*(.+)/)
+  if (rememberMatch && rememberMatch[1]) {
+    const toRemember = rememberMatch[1].trim()
+    if (toRemember) {
+      await saveMemorySilently(toRemember)
+    }
+  }
 }
 
 const clearChat = () => {
@@ -413,6 +576,58 @@ const scrollToBottom = () => {
   background: #f8d7da;
   color: #721c24;
   border: 1px solid #f5c6cb;
+}
+
+.ai-memory-panel {
+  padding: 16px;
+  background: #f8f9fa;
+  border-bottom: 1px solid #e8ecf0;
+}
+
+.ai-memory-panel h4 {
+  margin: 0 0 4px 0;
+  font-size: 16px;
+  color: #333;
+}
+
+.memory-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  background: #fff;
+  border: 1px solid #e8ecf0;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: #444;
+}
+
+.memory-del {
+  border: none;
+  background: transparent;
+  color: #999;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.memory-del:hover {
+  color: #d33;
+}
+
+.memory-add {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.memory-add input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 13px;
 }
 
 .ai-chat {
