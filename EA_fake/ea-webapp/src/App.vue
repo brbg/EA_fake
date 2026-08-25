@@ -201,6 +201,12 @@ const reverseConfig = ref({ code: '', language: 'auto', target: 'uml' })
 const reversing = ref(false)
 const reverseError = ref('')
 
+// AI 文档/报表生成
+const docConfig = ref({ docType: 'architecture', format: 'markdown' })
+const docGenerating = ref(false)
+const generatedDoc = ref('')
+const docError = ref('')
+
 const showValidateModal = ref(false)
 const validating = ref(false)
 const validateResult = ref<any>(null)
@@ -241,6 +247,9 @@ const runAiAction = (kind: 'uml' | 'archimate' | 'er', action: string) => {
 
 let canvas: HTMLCanvasElement | null = null
 let ctx: CanvasRenderingContext2D | null = null
+// 画布元素/关系 id 用单调递增计数器（Date.now() 毫秒级会在连续创建时撞 id）
+let eidCounter = 0
+const nextEid = () => ++eidCounter
 let elements: any[] = []
 let connections: any[] = []
 let selectedElement: any = null
@@ -622,6 +631,68 @@ const reverseCode = async () => {
   } finally {
     reversing.value = false
   }
+}
+
+// AI 文档/报表生成
+const generateDoc = async () => {
+  if (!currentModelId.value) {
+    docError.value = '请先创建或选择一个项目'
+    return
+  }
+  const { docType, format } = docConfig.value
+  docError.value = ''
+  generatedDoc.value = ''
+  docGenerating.value = true
+  try {
+    const res = await fetch(`/api/v1/project/${currentModelId.value}/ai/document`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
+      },
+      body: JSON.stringify({ doc_type: docType, format })
+    })
+    const data = await res.json()
+    if (!res.ok || data.error) {
+      docError.value = data.error || `生成失败: HTTP ${res.status}`
+      return
+    }
+    generatedDoc.value = data.content || '（生成结果为空）'
+  } catch (e: any) {
+    docError.value = e?.message || '生成请求失败，请检查后端服务'
+  } finally {
+    docGenerating.value = false
+  }
+}
+
+const copyDoc = async () => {
+  if (!generatedDoc.value) return
+  try {
+    await navigator.clipboard.writeText(generatedDoc.value)
+    alert('文档已复制到剪贴板')
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = generatedDoc.value
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    document.body.removeChild(textarea)
+    alert('文档已复制到剪贴板')
+  }
+}
+
+const downloadDoc = () => {
+  if (!generatedDoc.value) return
+  const ext = docConfig.value.format === 'html' ? 'html' : 'md'
+  const blob = new Blob([generatedDoc.value], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${currentModelName.value || 'model'}-${docConfig.value.docType}.${ext}`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
 }
 
 const copyCode = async () => {
@@ -1360,7 +1431,7 @@ const handleCanvasClick = (e: MouseEvent) => {
   if (currentTool === 'class') {
     saveUmlHistory()
     elements.push({
-      id: Date.now(),
+      id: nextEid(),
       type: 'class',
       name: 'NewClass',
       x,
@@ -1376,7 +1447,7 @@ const handleCanvasClick = (e: MouseEvent) => {
   } else if (currentTool === 'interface') {
     saveUmlHistory()
     elements.push({
-      id: Date.now(),
+      id: nextEid(),
       type: 'interface',
       name: 'NewInterface',
       x,
@@ -1455,7 +1526,7 @@ const handleMouseUp = (e: MouseEvent) => {
           y >= elem.y && y <= elem.y + elem.height) {
         saveUmlHistory()
         connections.push({
-          id: Date.now(),
+          id: nextEid(),
           type: selectedTool.value,
           startElement: connectStartElement.id,
           endElement: elem.id
@@ -1845,7 +1916,7 @@ const handleArchimateClick = (e: MouseEvent) => {
     saveArchimateHistory()
     const isActor = currentTool === 'actor'
     archimateElements.push({
-      id: Date.now(),
+      id: nextEid(),
       type: currentTool,
       name: getElementName(currentTool),
       layer,
@@ -1938,7 +2009,7 @@ const handleArchimateMouseUp = (e: MouseEvent) => {
         // 与 UML/ER 一致，连线也要入撤销历史
         saveArchimateHistory()
         archimateConnections.push({
-          id: Date.now(),
+          id: nextEid(),
           type: selectedArchimateTool.value,
           startElement: archimateConnectStartElement.id,
           endElement: elem.id
@@ -2352,7 +2423,7 @@ const handleErClick = (e: MouseEvent) => {
   if (currentTool === 'entity') {
     saveErHistory()
     erEntities.push({
-      id: Date.now(),
+      id: nextEid(),
       name: `Table_${erEntities.length + 1}`,
       x,
       y,
@@ -2438,7 +2509,7 @@ const handleErMouseUp = (e: MouseEvent) => {
         if (!exists) {
           saveErHistory()
           erRelations.push({
-            id: Date.now(),
+            id: nextEid(),
             type: selectedErTool.value,
             startEntity: erConnectStartEntity.id,
             endEntity: entity.id
@@ -3611,6 +3682,41 @@ onMounted(() => {
           反推结果会直接画到对应画布（UML类图 / ER模型），之后记得点「保存」落盘。需要先创建或选择一个项目。
         </p>
       </div>
+
+      <div style="margin-top: 36px; border-top: 1px solid #e8ecf0; padding-top: 24px;">
+        <h3 class="card-title"><i class="fas fa-file-lines" style="color: #1f5eff;"></i> AI 文档/报表生成</h3>
+        <p class="card-desc">用 AI 把当前模型生成设计文档或项目报告，可导出 Markdown / HTML</p>
+
+        <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px;">
+          <select v-model="docConfig.docType" style="padding: 10px; border-radius: 8px; border: 2px solid #e8ecf0;">
+            <option value="architecture">架构设计文档</option>
+            <option value="overview">项目概览报告</option>
+            <option value="database">数据库设计文档</option>
+          </select>
+          <select v-model="docConfig.format" style="padding: 10px; border-radius: 8px; border: 2px solid #e8ecf0;">
+            <option value="markdown">Markdown</option>
+            <option value="html">HTML</option>
+          </select>
+          <button class="btn btn-primary" @click="generateDoc" :disabled="docGenerating">
+            <i v-if="docGenerating" class="fas fa-spinner fa-spin"></i>
+            <i v-else class="fas fa-file-lines"></i> {{ docGenerating ? '生成中...' : '生成文档' }}
+          </button>
+          <button class="btn btn-outline" @click="copyDoc" :disabled="!generatedDoc">
+            <i class="fas fa-copy"></i> 复制
+          </button>
+          <button class="btn btn-outline" @click="downloadDoc" :disabled="!generatedDoc">
+            <i class="fas fa-download"></i> 下载
+          </button>
+        </div>
+
+        <div v-if="docError" style="margin-top: 10px; color: #d33; background: #fdf0f0; padding: 10px; border-radius: 8px;">
+          <i class="fas fa-exclamation-triangle"></i> {{ docError }}
+        </div>
+
+        <div v-if="generatedDoc" class="doc-preview">
+          <pre>{{ generatedDoc }}</pre>
+        </div>
+      </div>
     </div>
 
     <div v-if="activeTab === 'ai'" class="card" style="padding: 0; height: calc(100vh - 120px);">
@@ -4482,6 +4588,20 @@ onMounted(() => {
   overflow-x: auto;
   max-height: 300px;
   overflow-y: auto;
+}
+
+.doc-preview {
+  background: #fbfcfe;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  font-size: 14px;
+  color: var(--text);
+  line-height: 1.65;
+  max-height: 420px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .ai-chat {

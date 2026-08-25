@@ -147,6 +147,25 @@ def edit_model_system_prompt(kind):
     )
 
 
+def document_system_prompt(doc_type, fmt='markdown'):
+    """AI 文档/报表生成：模型 → 设计文档。doc_type: architecture/overview/database，fmt: markdown/html。"""
+    if fmt == 'html':
+        fmt_rule = ('只输出 HTML 片段，使用 <h2>/<h3>/<p>/<ul>/<table> 等标签，'
+                    '可含简单内联样式，不要 <html>/<head>/<body> 包裹，不要代码围栏、不要任何解释。')
+    else:
+        fmt_rule = '只输出 Markdown 文档本身，不要代码围栏、不要任何解释。'
+    base = {
+        'overview': '你是一名资深企业架构顾问。根据下面提供的模型内容，撰写一份项目概览报告：'
+                    '包含项目目标与定位、模块清单、核心设计要点、存在的风险与建议。',
+        'database': '你是一名资深数据库架构师。根据下面提供的 ER 模型内容，撰写一份数据库设计文档：'
+                    '包含数据模型概述、实体清单（含关键字段与约束）、实体关系说明、设计建议。实体/字段名保留原样。',
+        'architecture': '你是一名资深企业架构师。根据下面提供的模型内容，撰写一份架构设计文档：'
+                        '包含架构概述、分层与模块说明（UML 类、ArchiMate 元素、ER 数据）、'
+                        '关键关系与依赖、设计权衡与建议。元素/类/实体名保留原样。',
+    }
+    return base.get(doc_type, base['architecture']) + ' 用中文撰写，条理清晰。' + fmt_rule
+
+
 def code_reverse_system_prompt(target):
     """代码反向工程：源代码 → 结构化模型。target 为 'uml' 或 'er'。"""
     if target == 'er':

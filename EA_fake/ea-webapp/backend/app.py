@@ -14,7 +14,7 @@ import bcrypt
 import db
 from constants import ELEMENT_TYPES, RELATIONSHIP_TYPES, ELEMENT_COLORS, get_default_color
 from models import Project, SimpleModel
-from prompts import uml_system_prompt, ER_SYSTEM_PROMPT, code_system_prompt, VALIDATE_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT, ELEMENT_ANALYSIS_SYSTEM_PROMPT, code_reverse_system_prompt, edit_model_system_prompt
+from prompts import uml_system_prompt, ER_SYSTEM_PROMPT, code_system_prompt, VALIDATE_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT, ELEMENT_ANALYSIS_SYSTEM_PROMPT, code_reverse_system_prompt, edit_model_system_prompt, document_system_prompt
 from flask import Flask, request, jsonify, send_from_directory, render_template, session, stream_with_context, Response
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room, leave_room
@@ -8691,6 +8691,106 @@ def delete_model_memory(model_id, mem_id):
     entries = [e for e in _get_memories(model_id) if e.get('id') != mem_id]
     db.set(f'memory:{model_id}', {'entries': entries})
     return jsonify({'message': '删除成功', 'memories': entries})
+
+
+# === AI 文档/报表生成 ===
+
+def _describe_model_for_document(model, doc_type):
+    """把模型的 UML / ArchiMate / ER 三部分序列化为 LLM 可读文本。"""
+    lines = []
+    if model.elements:
+        lines.append('## UML 类/接口')
+        for e in model.elements:
+            attrs = e.get('attributes') or []
+            methods = e.get('methods') or []
+            extra = ''
+            if attrs:
+                extra += ' | 属性: ' + '; '.join(str(a) for a in attrs)
+            if methods:
+                extra += ' | 方法: ' + '; '.join(str(m) for m in methods)
+            lines.append(f"- {e.get('type')} {e.get('name')}{extra}")
+        lines.append('## UML 关系')
+        name_by_id = {e['id']: e['name'] for e in model.elements if e.get('id') is not None and e.get('name')}
+        for r in model.relationships:
+            s = name_by_id.get(r.get('startElement')) or r.get('startElement')
+            t = name_by_id.get(r.get('endElement')) or r.get('endElement')
+            lines.append(f"- {s} --({r.get('type')})--> {t}")
+    if model.archimate_elements:
+        lines.append('## ArchiMate 元素')
+        for e in model.archimate_elements:
+            layer = e.get('layer') or ''
+            lines.append(f"- {e.get('type')} {e.get('name')}" + (f" [层次:{layer}]" if layer else ''))
+        lines.append('## ArchiMate 关系')
+        name_by_id = {e['id']: e['name'] for e in model.archimate_elements if e.get('id') is not None and e.get('name')}
+        for r in model.archimate_connections:
+            s = name_by_id.get(r.get('startElement')) or r.get('startElement')
+            t = name_by_id.get(r.get('endElement')) or r.get('endElement')
+            lines.append(f"- {s} --({r.get('type')})--> {t}")
+    if model.er_entities:
+        lines.append('## ER 实体')
+        for e in model.er_entities:
+            fields = ', '.join(
+                f"{f.get('name')}({f.get('type')}{' PK' if f.get('isPrimary') else ''}{' FK' if f.get('isForeign') else ''})"
+                for f in e.get('fields', [])
+            )
+            lines.append(f"- {e.get('name')}: {fields}")
+        lines.append('## ER 关系')
+        name_by_id = {e['id']: e['name'] for e in model.er_entities if e.get('id') is not None and e.get('name')}
+        for r in model.er_relations:
+            s = name_by_id.get(r.get('startEntity')) or r.get('startEntity')
+            t = name_by_id.get(r.get('endEntity')) or r.get('endEntity')
+            lines.append(f"- {s} --({r.get('type')})--> {t}")
+    return '\n'.join(lines)
+
+
+def _ai_generate_document(description, doc_type, fmt):
+    """调用 LLM 生成设计文档。AI 未启用/失败返回 None。"""
+    if not ai_service_config.enabled:
+        return None
+    messages = [
+        {'role': 'system', 'content': document_system_prompt(doc_type, fmt)},
+        {'role': 'user', 'content': '模型内容：\n' + description}
+    ]
+    result = AIService.chat_completion(messages, max_tokens=4096, temperature=0.4)
+    if not isinstance(result, dict) or 'error' in result:
+        return None
+    try:
+        content = result['choices'][0]['message']['content']
+    except (KeyError, IndexError, TypeError):
+        return None
+    content = (content or '').strip()
+    return content or None
+
+
+@app.route('/api/v1/project/<model_id>/ai/document', methods=['POST'])
+def ai_document_v1(model_id):
+    """AI 生成设计文档/报表（仅限所属用户）。
+    body: {doc_type: architecture/overview/database, format: markdown/html}
+    """
+    user_id = _require_user_id()
+    if user_id is None:
+        return jsonify({'error': '未登录'}), 401
+    model = load_model_from_cache(model_id)
+    if not _model_owned_by(model, user_id):
+        return jsonify({'error': '模型不存在'}), 404
+
+    data = request.json or {}
+    doc_type = data.get('doc_type', 'architecture')
+    fmt = data.get('format', 'markdown')
+    if doc_type not in ('architecture', 'overview', 'database'):
+        return jsonify({'error': 'doc_type 必须是 architecture / overview / database'}), 400
+    if fmt not in ('markdown', 'html'):
+        return jsonify({'error': 'format 必须是 markdown / html'}), 400
+
+    description = _describe_model_for_document(model, doc_type)
+    if not description.strip():
+        return jsonify({'error': '模型为空，无法生成文档'}), 400
+
+    content = _ai_generate_document(description, doc_type, fmt)
+    if content is None:
+        return jsonify({'error': 'AI 服务不可用或未能生成文档，请确认已配置 API 密钥后重试'}), 422
+
+    return jsonify({'content': content, 'doc_type': doc_type, 'format': fmt})
 
 
 def ai_generate_code_from_model(model, language, framework):

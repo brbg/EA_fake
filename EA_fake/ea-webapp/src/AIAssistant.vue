@@ -166,6 +166,9 @@ const props = defineProps<{
 }>()
 
 const messages = ref<Array<{id: number; type: string; content: string}>>([])
+// 消息 id 用单调递增计数器（Date.now() 毫秒级会与用户消息/占位气泡撞 id，导致流式写入错位）
+let msgIdCounter = 0
+const nextMsgId = () => ++msgIdCounter
 const inputMessage = ref('')
 const isTyping = ref(false)
 const streamStarted = ref(false)  // 是否已收到首个流式分片（用于隐藏“思考中”提示）
@@ -359,7 +362,7 @@ const sendMessage = async () => {
   // 与发送按钮的 disabled 状态保持一致：AI 未启用时不发送 mock 假回复
   if (!aiEnabled.value) {
     messages.value.push({
-      id: Date.now(),
+      id: nextMsgId(),
       type: 'bot',
       content: 'AI服务未启用，请先点击右上角「配置」填写API密钥后再提问。'
     })
@@ -382,7 +385,7 @@ const sendMessage = async () => {
     await sendNormalMessage(message)
   } catch (error) {
     messages.value.push({
-      id: Date.now(),
+      id: nextMsgId(),
       type: 'bot',
       content: `错误: ${error instanceof Error ? error.message : '发送失败'}`
     })
@@ -419,7 +422,7 @@ const sendNormalMessage = async (message: string) => {
   const conversationMessages = buildMessages(message)
 
   // 先放一个空的 bot 气泡，流式内容实时往里面填
-  const botMsgId = Date.now()
+  const botMsgId = nextMsgId()
   messages.value.push({ id: botMsgId, type: 'bot', content: '' })
   streamStarted.value = false
 
