@@ -3186,6 +3186,98 @@ onMounted(() => {
       <button class="toolbar-btn" @click="exportImage"><i class="fas fa-download"></i> 导出图片</button>
     </div>
   </template>
+<template v-if="activeTab === 'archimate'">
+  <div class="ribbon-group">
+    <div class="ribbon-group-label">建模工具</div>
+    <button v-for="tool in archimateTools" :key="tool.id"
+      :class="['toolbar-btn', { active: selectedArchimateTool === tool.id }]"
+      @click="selectedArchimateTool = tool.id" :title="tool.name">
+      <i :class="tool.icon"></i> {{ tool.name }}
+    </button>
+  </div>
+  <div class="ribbon-group">
+    <div class="ribbon-group-label">层次</div>
+    <label style="display:flex;align-items:center;cursor:pointer;gap:4px;">
+      <input type="radio" v-model="archimateLayer" value="business" /> 业务层
+    </label>
+    <label style="display:flex;align-items:center;cursor:pointer;gap:4px;">
+      <input type="radio" v-model="archimateLayer" value="application" /> 应用层
+    </label>
+    <label style="display:flex;align-items:center;cursor:pointer;gap:4px;">
+      <input type="radio" v-model="archimateLayer" value="technology" /> 技术层
+    </label>
+  </div>
+  <div class="ribbon-group">
+    <div class="ribbon-group-label">编辑</div>
+    <button class="toolbar-btn" @click="undoArchimate"><i class="fas fa-undo"></i> 撤销</button>
+    <button class="toolbar-btn" @click="redoArchimate"><i class="fas fa-redo"></i> 重做</button>
+    <button class="toolbar-btn" @click="saveArchimateModel"><i class="fas fa-save"></i> 保存</button>
+    <button class="toolbar-btn" @click="clearArchimateCanvas"><i class="fas fa-trash"></i> 清空</button>
+  </div>
+  <div class="ribbon-group">
+    <div class="ribbon-group-label">AI</div>
+    <div style="position:relative; display:inline-block;">
+      <button class="toolbar-btn" @click="toggleAiMenu('archimate')" :class="{ active: openAiMenu === 'archimate' }">
+        <i class="fas fa-robot"></i> AI <i class="fas fa-chevron-down" style="font-size:10px;"></i>
+      </button>
+      <div v-if="openAiMenu === 'archimate'" class="ai-dropdown">
+        <div class="ai-dropdown-title">ArchiMate 架构</div>
+        <button class="ai-dropdown-item" @click="runAiAction('archimate', 'review')" :disabled="reviewing">
+          <i class="fas fa-magnifying-glass-chart"></i> {{ reviewing ? '评审中...' : 'AI架构评审' }}
+        </button>
+        <button class="ai-dropdown-item" @click="runAiAction('archimate', 'analyze')" :disabled="analyzing">
+          <i class="fas fa-wand-magic-sparkles"></i> {{ analyzing ? '分析中...' : 'AI分析选中元素' }}
+        </button>
+        <button class="ai-dropdown-item" @click="runAiAction('archimate', 'edit')">
+          <i class="fas fa-comment-dots"></i> AI对话式编辑
+        </button>
+      </div>
+    </div>
+  </div>
+  <div class="ribbon-group">
+    <div class="ribbon-group-label">导出</div>
+    <button class="toolbar-btn" @click="exportArchimateImage"><i class="fas fa-download"></i> 导出图片</button>
+  </div>
+</template>
+<template v-if="activeTab === 'data'">
+  <div class="ribbon-group">
+    <div class="ribbon-group-label">建模工具</div>
+    <button v-for="tool in erTools" :key="tool.id"
+      :class="['toolbar-btn', { active: selectedErTool === tool.id }]"
+      @click="selectedErTool = tool.id" :title="tool.name">
+      <i :class="tool.icon"></i> {{ tool.name }}
+    </button>
+  </div>
+  <div class="ribbon-group">
+    <div class="ribbon-group-label">编辑</div>
+    <button class="toolbar-btn" @click="undoEr"><i class="fas fa-undo"></i> 撤销</button>
+    <button class="toolbar-btn" @click="redoEr"><i class="fas fa-redo"></i> 重做</button>
+    <button class="toolbar-btn" @click="generateErSql"><i class="fas fa-database"></i> 生成SQL</button>
+    <button class="toolbar-btn" @click="saveErModel"><i class="fas fa-save"></i> 保存</button>
+    <button class="toolbar-btn" @click="clearErCanvas"><i class="fas fa-trash"></i> 清空</button>
+  </div>
+  <div class="ribbon-group">
+    <div class="ribbon-group-label">AI</div>
+    <div style="position:relative; display:inline-block;">
+      <button class="toolbar-btn" @click="toggleAiMenu('er')" :class="{ active: openAiMenu === 'er' }">
+        <i class="fas fa-robot"></i> AI <i class="fas fa-chevron-down" style="font-size:10px;"></i>
+      </button>
+      <div v-if="openAiMenu === 'er'" class="ai-dropdown">
+        <div class="ai-dropdown-title">数据模型</div>
+        <button class="ai-dropdown-item" @click="runAiAction('er', 'analyze')" :disabled="analyzing">
+          <i class="fas fa-wand-magic-sparkles"></i> {{ analyzing ? '分析中...' : 'AI分析选中表' }}
+        </button>
+        <button class="ai-dropdown-item" @click="runAiAction('er', 'edit')">
+          <i class="fas fa-comment-dots"></i> AI对话式编辑
+        </button>
+      </div>
+    </div>
+  </div>
+  <div class="ribbon-group">
+    <div class="ribbon-group-label">导出</div>
+    <button class="toolbar-btn" @click="exportErImage"><i class="fas fa-download"></i> 导出图片</button>
+  </div>
+</template>
 </div>
 
     <div v-if="activeTab === 'dashboard'" class="dashboard-grid">
@@ -3367,84 +3459,7 @@ onMounted(() => {
 
     <!-- ArchiMate 企业架构建模 -->
     <div v-if="activeTab === 'archimate'" class="card canvas-container">
-      <div class="canvas-toolbar">
-        <div style="display: flex; align-items: center; margin-right: 15px;">
-          <strong>ArchiMate建模</strong>
-        </div>
-        
-        <!-- 工具选择 -->
-        <button 
-          v-for="tool in archimateTools" 
-          :key="tool.id" 
-          :class="['toolbar-btn', { active: selectedArchimateTool === tool.id }]"
-          @click="selectedArchimateTool = tool.id"
-          :title="tool.name"
-        >
-          <i :class="tool.icon"></i> {{ tool.name }}
-        </button>
-        
-        <!-- 层次选择 -->
-        <div style="margin-left: 20px; display: flex; gap: 10px;">
-          <label style="display: flex; align-items: center; cursor: pointer;">
-            <input type="radio" v-model="archimateLayer" value="business" style="margin-right: 5px;" />
-            <span style="padding: 4px 12px; border-radius: 4px; font-size: 12px;" 
-                  :style="{ background: archimateLayer === 'business' ? '#3498db' : '#ddd', color: archimateLayer === 'business' ? 'white' : '#333' }">
-              业务层
-            </span>
-          </label>
-          <label style="display: flex; align-items: center; cursor: pointer;">
-            <input type="radio" v-model="archimateLayer" value="application" style="margin-right: 5px;" />
-            <span style="padding: 4px 12px; border-radius: 4px; font-size: 12px;"
-                  :style="{ background: archimateLayer === 'application' ? '#2ecc71' : '#ddd', color: archimateLayer === 'application' ? 'white' : '#333' }">
-              应用层
-            </span>
-          </label>
-          <label style="display: flex; align-items: center; cursor: pointer;">
-            <input type="radio" v-model="archimateLayer" value="technology" style="margin-right: 5px;" />
-            <span style="padding: 4px 12px; border-radius: 4px; font-size: 12px;"
-                  :style="{ background: archimateLayer === 'technology' ? '#e67e22' : '#ddd', color: archimateLayer === 'technology' ? 'white' : '#333' }">
-              技术层
-            </span>
-          </label>
-        </div>
-        
-        <div style="flex: 1;"></div>
-        <button class="toolbar-btn" @click="undoArchimate" title="撤销 (Ctrl+Z)">
-          <i class="fas fa-undo"></i> 撤销
-        </button>
-        <button class="toolbar-btn" @click="redoArchimate" title="重做 (Ctrl+Y)">
-          <i class="fas fa-redo"></i> 重做
-        </button>
-        <button class="toolbar-btn" @click="saveArchimateModel">
-          <i class="fas fa-save"></i> 保存
-        </button>
-        <div style="position:relative; display:inline-block;">
-          <button class="toolbar-btn" @click="toggleAiMenu('archimate')" :class="{ active: openAiMenu === 'archimate' }" title="AI 功能">
-            <i class="fas fa-robot"></i> AI
-            <i class="fas fa-chevron-down" style="font-size:10px;"></i>
-          </button>
-          <div v-if="openAiMenu === 'archimate'" class="ai-dropdown">
-            <div class="ai-dropdown-title">ArchiMate 架构</div>
-            <button class="ai-dropdown-item" @click="runAiAction('archimate', 'review')" :disabled="reviewing">
-              <i class="fas fa-magnifying-glass-chart"></i> {{ reviewing ? '评审中...' : 'AI架构评审' }}
-            </button>
-            <button class="ai-dropdown-item" @click="runAiAction('archimate', 'analyze')" :disabled="analyzing">
-              <i class="fas fa-wand-magic-sparkles"></i> {{ analyzing ? '分析中...' : 'AI分析选中元素' }}
-            </button>
-            <button class="ai-dropdown-item" @click="runAiAction('archimate', 'edit')">
-              <i class="fas fa-comment-dots"></i> AI对话式编辑
-            </button>
-          </div>
-        </div>
-        <button class="toolbar-btn" @click="exportArchimateImage">
-          <i class="fas fa-download"></i> 导出图片
-        </button>
-        <button class="toolbar-btn" @click="clearArchimateCanvas">
-          <i class="fas fa-trash"></i> 清空
-        </button>
-      </div>
-      
-      <canvas 
+      <canvas
         ref="archimateCanvas"
         id="archimateCanvas" 
         width="1150" 
@@ -3465,59 +3480,7 @@ onMounted(() => {
 
     <!-- 数据建模（ER图） -->
     <div v-if="activeTab === 'data'" class="card canvas-container">
-      <div class="canvas-toolbar">
-        <div style="display: flex; align-items: center; margin-right: 15px;">
-          <strong>数据建模</strong>
-        </div>
-        
-        <!-- 工具选择 -->
-        <button 
-          v-for="tool in erTools" 
-          :key="tool.id" 
-          :class="['toolbar-btn', { active: selectedErTool === tool.id }]"
-          @click="selectedErTool = tool.id"
-          :title="tool.name"
-        >
-          <i :class="tool.icon"></i> {{ tool.name }}
-        </button>
-        
-        <div style="flex: 1;"></div>
-        <button class="toolbar-btn" @click="undoEr" title="撤销 (Ctrl+Z)">
-          <i class="fas fa-undo"></i> 撤销
-        </button>
-        <button class="toolbar-btn" @click="redoEr" title="重做 (Ctrl+Y)">
-          <i class="fas fa-redo"></i> 重做
-        </button>
-        <button class="toolbar-btn" @click="generateErSql">
-          <i class="fas fa-database"></i> 生成SQL
-        </button>
-        <div style="position:relative; display:inline-block;">
-          <button class="toolbar-btn" @click="toggleAiMenu('er')" :class="{ active: openAiMenu === 'er' }" title="AI 功能">
-            <i class="fas fa-robot"></i> AI
-            <i class="fas fa-chevron-down" style="font-size:10px;"></i>
-          </button>
-          <div v-if="openAiMenu === 'er'" class="ai-dropdown">
-            <div class="ai-dropdown-title">数据模型</div>
-            <button class="ai-dropdown-item" @click="runAiAction('er', 'analyze')" :disabled="analyzing">
-              <i class="fas fa-wand-magic-sparkles"></i> {{ analyzing ? '分析中...' : 'AI分析选中表' }}
-            </button>
-            <button class="ai-dropdown-item" @click="runAiAction('er', 'edit')">
-              <i class="fas fa-comment-dots"></i> AI对话式编辑
-            </button>
-          </div>
-        </div>
-        <button class="toolbar-btn" @click="saveErModel">
-          <i class="fas fa-save"></i> 保存
-        </button>
-        <button class="toolbar-btn" @click="exportErImage">
-          <i class="fas fa-download"></i> 导出图片
-        </button>
-        <button class="toolbar-btn" @click="clearErCanvas">
-          <i class="fas fa-trash"></i> 清空
-        </button>
-      </div>
-      
-      <canvas 
+      <canvas
         ref="erCanvas"
         id="erCanvas" 
         width="1150" 
