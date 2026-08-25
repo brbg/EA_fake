@@ -3144,6 +3144,50 @@ onMounted(() => {
       </button>
     </div>
 
+    <div class="ribbon" v-if="activeTab === 'uml' || activeTab === 'archimate' || activeTab === 'data'">
+  <template v-if="activeTab === 'uml'">
+    <div class="ribbon-group">
+      <div class="ribbon-group-label">建模工具</div>
+      <button v-for="tool in tools" :key="tool.id"
+        :class="['toolbar-btn', { active: selectedTool === tool.id }]"
+        @click="selectedTool = tool.id" :title="tool.name">
+        <i :class="tool.icon"></i> {{ tool.name }}
+      </button>
+    </div>
+    <div class="ribbon-group">
+      <div class="ribbon-group-label">编辑</div>
+      <button class="toolbar-btn" @click="undoUml" title="撤销 (Ctrl+Z)"><i class="fas fa-undo"></i> 撤销</button>
+      <button class="toolbar-btn" @click="redoUml" title="重做 (Ctrl+Y)"><i class="fas fa-redo"></i> 重做</button>
+      <button class="toolbar-btn" @click="saveModel"><i class="fas fa-save"></i> 保存</button>
+      <button class="toolbar-btn" @click="clearCanvas"><i class="fas fa-trash"></i> 清空</button>
+    </div>
+    <div class="ribbon-group">
+      <div class="ribbon-group-label">AI</div>
+      <div style="position:relative; display:inline-block;">
+        <button class="toolbar-btn" @click="toggleAiMenu('uml')" :class="{ active: openAiMenu === 'uml' }" title="AI 功能">
+          <i class="fas fa-robot"></i> AI <i class="fas fa-chevron-down" style="font-size:10px;"></i>
+        </button>
+        <div v-if="openAiMenu === 'uml'" class="ai-dropdown">
+          <div class="ai-dropdown-title">UML 模型</div>
+          <button class="ai-dropdown-item" @click="runAiAction('uml', 'validate')" :disabled="validating">
+            <i class="fas fa-magnifying-glass-chart"></i> {{ validating ? '校验中...' : 'AI校验整个模型' }}
+          </button>
+          <button class="ai-dropdown-item" @click="runAiAction('uml', 'analyze')" :disabled="analyzing">
+            <i class="fas fa-wand-magic-sparkles"></i> {{ analyzing ? '分析中...' : 'AI分析选中元素' }}
+          </button>
+          <button class="ai-dropdown-item" @click="runAiAction('uml', 'edit')">
+            <i class="fas fa-comment-dots"></i> AI对话式编辑
+          </button>
+        </div>
+      </div>
+    </div>
+    <div class="ribbon-group">
+      <div class="ribbon-group-label">导出</div>
+      <button class="toolbar-btn" @click="exportImage"><i class="fas fa-download"></i> 导出图片</button>
+    </div>
+  </template>
+</div>
+
     <div v-if="activeTab === 'dashboard'" class="dashboard-grid">
       <div class="card">
         <div class="card-icon" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
@@ -3304,53 +3348,8 @@ onMounted(() => {
     </div>
 
     <div v-if="activeTab === 'uml'" class="card canvas-container">
-      <div class="canvas-toolbar">
-        <button 
-          v-for="tool in tools" 
-          :key="tool.id" 
-          :class="['toolbar-btn', { active: selectedTool === tool.id }]"
-          @click="selectedTool = tool.id"
-          :title="tool.name"
-        >
-          <i :class="tool.icon"></i> {{ tool.name }}
-        </button>
-        <div style="flex: 1;"></div>
-        <button class="toolbar-btn" @click="undoUml" title="撤销 (Ctrl+Z)">
-          <i class="fas fa-undo"></i> 撤销
-        </button>
-        <button class="toolbar-btn" @click="redoUml" title="重做 (Ctrl+Y)">
-          <i class="fas fa-redo"></i> 重做
-        </button>
-        <button class="toolbar-btn" @click="saveModel">
-          <i class="fas fa-save"></i> 保存
-        </button>
-        <div style="position:relative; display:inline-block;">
-          <button class="toolbar-btn" @click="toggleAiMenu('uml')" :class="{ active: openAiMenu === 'uml' }" title="AI 功能">
-            <i class="fas fa-robot"></i> AI
-            <i class="fas fa-chevron-down" style="font-size:10px;"></i>
-          </button>
-          <div v-if="openAiMenu === 'uml'" class="ai-dropdown">
-            <div class="ai-dropdown-title">UML 模型</div>
-            <button class="ai-dropdown-item" @click="runAiAction('uml', 'validate')" :disabled="validating">
-              <i class="fas fa-magnifying-glass-chart"></i> {{ validating ? '校验中...' : 'AI校验整个模型' }}
-            </button>
-            <button class="ai-dropdown-item" @click="runAiAction('uml', 'analyze')" :disabled="analyzing">
-              <i class="fas fa-wand-magic-sparkles"></i> {{ analyzing ? '分析中...' : 'AI分析选中元素' }}
-            </button>
-            <button class="ai-dropdown-item" @click="runAiAction('uml', 'edit')">
-              <i class="fas fa-comment-dots"></i> AI对话式编辑
-            </button>
-          </div>
-        </div>
-        <button class="toolbar-btn" @click="exportImage">
-          <i class="fas fa-download"></i> 导出图片
-        </button>
-        <button class="toolbar-btn" @click="clearCanvas">
-          <i class="fas fa-trash"></i> 清空
-        </button>
-      </div>
-      <canvas 
-        id="canvas" 
+      <canvas
+        id="canvas"
         width="1150" 
         height="600"
         @click="handleCanvasClick"
