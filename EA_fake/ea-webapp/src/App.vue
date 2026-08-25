@@ -5,6 +5,7 @@ import AIAssistant from './AIAssistant.vue'
 import LoginView from './LoginView.vue'
 import type { ProjectContext } from './projectContext'
 import { getAIConfig } from './aiService'
+import { setupCanvasTransform, toLogical, LOGICAL_W, LOGICAL_H } from './canvasUtils'
 
 // === 登录门禁状态 ===
 const authUser = ref<{ username: string; email: string } | null>(null)
@@ -1124,6 +1125,7 @@ const mapTypeToCSharp = (type: string): string => {
 const initCanvas = () => {
   canvas = document.getElementById('canvas') as HTMLCanvasElement
   if (canvas) {
+    setupCanvasTransform(canvas)
     ctx = canvas.getContext('2d')
     drawGrid()
     // 切回 UML 标签时 canvas 会被 v-if 重建，需重新绘制内存中的元素
@@ -1137,17 +1139,17 @@ const drawGrid = () => {
   ctx.lineWidth = 0.5
   const gridSize = 20
   
-  for (let x = 0; x < canvas.width; x += gridSize) {
+  for (let x = 0; x < LOGICAL_W; x += gridSize) {
     ctx.beginPath()
     ctx.moveTo(x, 0)
-    ctx.lineTo(x, canvas.height)
+    ctx.lineTo(x, LOGICAL_H)
     ctx.stroke()
   }
-  
-  for (let y = 0; y < canvas.height; y += gridSize) {
+
+  for (let y = 0; y < LOGICAL_H; y += gridSize) {
     ctx.beginPath()
     ctx.moveTo(0, y)
-    ctx.lineTo(canvas.width, y)
+    ctx.lineTo(LOGICAL_W, y)
     ctx.stroke()
   }
 }
@@ -1323,12 +1325,12 @@ const drawConnection = (conn: any) => {
 
 const handleCanvasClick = (e: MouseEvent) => {
   if (!canvas) return
-  const rect = canvas.getBoundingClientRect()
-  let x = e.clientX - rect.left
-  let y = e.clientY - rect.top
+  const p = toLogical(e, canvas)
+  let x = p.x
+  let y = p.y
   // 钳制坐标，避免在画布边缘点击时把元素创建到可见区域之外
-  x = Math.max(0, Math.min(canvas.width - 120, x))
-  y = Math.max(0, Math.min(canvas.height - 100, y))
+  x = Math.max(0, Math.min(LOGICAL_W - 120, x))
+  y = Math.max(0, Math.min(LOGICAL_H - 100, y))
 
   // 防止双击时重复创建元素（双击会在300ms内触发两次点击）
   const now = Date.now()
@@ -1390,9 +1392,9 @@ const handleCanvasClick = (e: MouseEvent) => {
 
 const handleMouseDown = (e: MouseEvent) => {
   if (!canvas) return
-  const rect = canvas.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  const y = e.clientY - rect.top
+  const p = toLogical(e, canvas)
+  const x = p.x
+  const y = p.y
   
   if (selectedTool.value === 'association' || selectedTool.value === 'inheritance' || selectedTool.value === 'composition' || selectedTool.value === 'realization' || selectedTool.value === 'dependency' || selectedTool.value === 'aggregation') {
     for (let i = elements.length - 1; i >= 0; i--) {
@@ -1425,22 +1427,22 @@ const handleMouseDown = (e: MouseEvent) => {
 
 const handleMouseMove = (e: MouseEvent) => {
   if (!canvas) return
-  const rect = canvas.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  const y = e.clientY - rect.top
+  const p = toLogical(e, canvas)
+  const x = p.x
+  const y = p.y
   
   if (isDragging && selectedElement) {
-    selectedElement.x = Math.max(0, Math.min(canvas.width - selectedElement.width, x - dragOffset.x))
-    selectedElement.y = Math.max(0, Math.min(canvas.height - selectedElement.height, y - dragOffset.y))
+    selectedElement.x = Math.max(0, Math.min(LOGICAL_W - selectedElement.width, x - dragOffset.x))
+    selectedElement.y = Math.max(0, Math.min(LOGICAL_H - selectedElement.height, y - dragOffset.y))
     redraw()
   }
 }
 
 const handleMouseUp = (e: MouseEvent) => {
   if (!canvas) return
-  const rect = canvas.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  const y = e.clientY - rect.top
+  const p = toLogical(e, canvas)
+  const x = p.x
+  const y = p.y
   
   if (isConnecting && connectStartElement) {
     for (let i = elements.length - 1; i >= 0; i--) {
@@ -1478,9 +1480,9 @@ const initCanvasEvents = () => {
 
 const handleDoubleClick = (e: MouseEvent) => {
   if (!canvas) return
-  const rect = canvas.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  const y = e.clientY - rect.top
+  const p = toLogical(e, canvas)
+  const x = p.x
+  const y = p.y
   
   for (let i = elements.length - 1; i >= 0; i--) {
     const elem = elements[i]
@@ -1505,7 +1507,7 @@ const saveEdit = () => {
 
 const redraw = () => {
   if (!ctx || !canvas) return
-  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  ctx.clearRect(0, 0, LOGICAL_W, LOGICAL_H)
   drawGrid()
   connections.forEach(drawConnection)
   elements.forEach(drawElement)
@@ -1559,9 +1561,9 @@ const redoUml = () => {
 const handleUmlContextMenu = (e: MouseEvent) => {
   e.preventDefault()
   if (!canvas) return
-  const rect = canvas.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  const y = e.clientY - rect.top
+  const p = toLogical(e, canvas)
+  const x = p.x
+  const y = p.y
   
   for (let i = elements.length - 1; i >= 0; i--) {
     const elem = elements[i]
@@ -1627,6 +1629,7 @@ const initArchimateCanvas = () => {
   const canvasEl = document.getElementById('archimateCanvas') as HTMLCanvasElement
   if (canvasEl) {
     archimateCanvas.value = canvasEl
+    setupCanvasTransform(canvasEl)
     archimateCtx = canvasEl.getContext('2d')
     redrawArchimateCanvas()
     // 先移除再添加，避免切换标签页时监听器重复累积
@@ -2092,6 +2095,7 @@ const initErCanvas = () => {
   const canvasEl = document.getElementById('erCanvas') as HTMLCanvasElement
   if (canvasEl) {
     erCanvas.value = canvasEl
+    setupCanvasTransform(canvasEl)
     erCtx = canvasEl.getContext('2d')
     redrawErCanvas()
     // 先移除再添加，避免切换标签页时监听器重复累积
@@ -3052,6 +3056,21 @@ const handleKeyboardShortcut = (e: KeyboardEvent) => {
     isUndo ? undoEr() : redoEr()
   }
 }
+
+// 三画布统一 resize：防抖 150ms，容器尺寸变化后重建物理像素尺寸与变换并重绘
+let canvasResizeTimer: number | null = null
+const resizeAllCanvases = () => {
+  if (canvasResizeTimer) window.clearTimeout(canvasResizeTimer)
+  canvasResizeTimer = window.setTimeout(() => {
+    const c1 = document.getElementById('canvas') as HTMLCanvasElement | null
+    if (c1) { setupCanvasTransform(c1); redraw() }
+    const c2 = archimateCanvas.value as HTMLCanvasElement | null
+    if (c2) { setupCanvasTransform(c2); redrawArchimateCanvas() }
+    const c3 = erCanvas.value as HTMLCanvasElement | null
+    if (c3) { setupCanvasTransform(c3); redrawErCanvas() }
+  }, 150)
+}
+window.addEventListener('resize', resizeAllCanvases)
 
 onMounted(() => {
   initSocket()
@@ -4380,6 +4399,14 @@ onMounted(() => {
 #canvas {
   display: block;
   cursor: crosshair;
+}
+
+/* 三画布随容器等比缩放：逻辑坐标恒为 1150×600，物理尺寸由 setupCanvasTransform 按 DPR 换算 */
+#canvas, #archimateCanvas, #erCanvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1150 / 600;
 }
 
 .table {
