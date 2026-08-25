@@ -4137,6 +4137,38 @@ onMounted(() => {
   box-shadow: 0 4px 12px rgba(99, 102, 241, 0.35);
 }
 
+.ribbon {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  background: #f7f8fa;
+  border: 1px solid #e8ecf0;
+  border-radius: 8px;
+  margin: 8px 0;
+  flex-wrap: wrap;
+  overflow-x: auto;
+}
+.ribbon-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+}
+.ribbon-group + .ribbon-group {
+  border-left: 1px solid #dfe3ea;
+}
+.ribbon-group-label {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-right: 2px;
+  white-space: nowrap;
+}
+.ribbon .toolbar-btn {
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
