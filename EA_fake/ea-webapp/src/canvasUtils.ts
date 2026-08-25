@@ -21,7 +21,7 @@ export function setupCanvasTransform(
   if (!ctx) return null
   const sx = logicalW / rect.width
   const sy = logicalH / rect.height
-  ctx.setTransform(dpr * sx, 0, 0, dpr * sy, 0, 0)
+  ctx.setTransform(dpr / sx, 0, 0, dpr / sy, 0, 0)
   return { sx, sy, dpr, ctx }
 }
 
