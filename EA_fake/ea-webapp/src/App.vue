@@ -1642,21 +1642,21 @@ const initArchimateCanvas = () => {
 
 const redrawArchimateCanvas = () => {
   if (!archimateCtx || !archimateCanvas.value) return
-  archimateCtx.clearRect(0, 0, archimateCanvas.value.width, archimateCanvas.value.height)
+  archimateCtx.clearRect(0, 0, LOGICAL_W, LOGICAL_H)
   
   // 绘制网格背景
   archimateCtx.strokeStyle = '#e8e8e8'
   archimateCtx.lineWidth = 1
-  for (let x = 0; x < archimateCanvas.value.width; x += 20) {
+  for (let x = 0; x < LOGICAL_W; x += 20) {
     archimateCtx.beginPath()
     archimateCtx.moveTo(x, 0)
-    archimateCtx.lineTo(x, archimateCanvas.value.height)
+    archimateCtx.lineTo(x, LOGICAL_H)
     archimateCtx.stroke()
   }
-  for (let y = 0; y < archimateCanvas.value.height; y += 20) {
+  for (let y = 0; y < LOGICAL_H; y += 20) {
     archimateCtx.beginPath()
     archimateCtx.moveTo(0, y)
-    archimateCtx.lineTo(archimateCanvas.value.width, y)
+    archimateCtx.lineTo(LOGICAL_W, y)
     archimateCtx.stroke()
   }
   
@@ -1802,12 +1802,12 @@ const drawArchimateConnection = (start: any, end: any, type: string) => {
 
 const handleArchimateClick = (e: MouseEvent) => {
   if (!archimateCanvas.value) return
-  const rect = archimateCanvas.value.getBoundingClientRect()
-  let x = e.clientX - rect.left
-  let y = e.clientY - rect.top
+  const p = toLogical(e, archimateCanvas.value)
+  let x = p.x
+  let y = p.y
   // 钳制坐标，避免在画布边缘点击时把元素创建到可见区域之外
-  x = Math.max(0, Math.min(archimateCanvas.value.width - 120, x))
-  y = Math.max(0, Math.min(archimateCanvas.value.height - 80, y))
+  x = Math.max(0, Math.min(LOGICAL_W - 120, x))
+  y = Math.max(0, Math.min(LOGICAL_H - 80, y))
 
   // 防止双击时重复创建元素（与 UML 一致的防抖）
   const now = Date.now()
@@ -1872,9 +1872,9 @@ const getElementName = (type: string) => {
 
 const handleArchimateMouseDown = (e: MouseEvent) => {
   if (!archimateCanvas.value) return
-  const rect = archimateCanvas.value.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  const y = e.clientY - rect.top
+  const p = toLogical(e, archimateCanvas.value)
+  const x = p.x
+  const y = p.y
   
   const currentTool = selectedArchimateTool.value
   
@@ -1909,22 +1909,22 @@ const handleArchimateMouseDown = (e: MouseEvent) => {
 
 const handleArchimateMouseMove = (e: MouseEvent) => {
   if (!archimateCanvas.value) return
-  const rect = archimateCanvas.value.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  const y = e.clientY - rect.top
+  const p = toLogical(e, archimateCanvas.value)
+  const x = p.x
+  const y = p.y
   
   if (archimateIsDragging && archimateSelectedElement) {
-    archimateSelectedElement.x = Math.max(0, Math.min(archimateCanvas.value.width - archimateSelectedElement.width, x - archimateDragOffset.x))
-    archimateSelectedElement.y = Math.max(0, Math.min(archimateCanvas.value.height - archimateSelectedElement.height, y - archimateDragOffset.y))
+    archimateSelectedElement.x = Math.max(0, Math.min(LOGICAL_W - archimateSelectedElement.width, x - archimateDragOffset.x))
+    archimateSelectedElement.y = Math.max(0, Math.min(LOGICAL_H - archimateSelectedElement.height, y - archimateDragOffset.y))
     redrawArchimateCanvas()
   }
 }
 
 const handleArchimateMouseUp = (e: MouseEvent) => {
   if (!archimateCanvas.value) return
-  const rect = archimateCanvas.value.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  const y = e.clientY - rect.top
+  const p = toLogical(e, archimateCanvas.value)
+  const x = p.x
+  const y = p.y
   
   if (archimateIsConnecting && archimateConnectStartElement) {
     for (let i = archimateElements.length - 1; i >= 0; i--) {
@@ -1955,9 +1955,9 @@ const handleArchimateMouseUp = (e: MouseEvent) => {
 
 const handleArchimateDoubleClick = (e: MouseEvent) => {
   if (!archimateCanvas.value) return
-  const rect = archimateCanvas.value.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  const y = e.clientY - rect.top
+  const p = toLogical(e, archimateCanvas.value)
+  const x = p.x
+  const y = p.y
   
   for (let i = archimateElements.length - 1; i >= 0; i--) {
     const elem = archimateElements[i]
@@ -2028,9 +2028,9 @@ const redoArchimate = () => {
 const handleArchimateContextMenu = (e: MouseEvent) => {
   e.preventDefault()
   if (!archimateCanvas.value) return
-  const rect = archimateCanvas.value.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  const y = e.clientY - rect.top
+  const p = toLogical(e, archimateCanvas.value)
+  const x = p.x
+  const y = p.y
   
   for (let i = archimateElements.length - 1; i >= 0; i--) {
     const elem = archimateElements[i]
