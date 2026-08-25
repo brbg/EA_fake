@@ -4147,7 +4147,6 @@ onMounted(() => {
   border-radius: 8px;
   margin: 8px 0;
   flex-wrap: wrap;
-  overflow-x: auto;
 }
 .ribbon-group {
   display: flex;
@@ -4304,15 +4303,6 @@ onMounted(() => {
 .canvas-container:hover {
   transform: none;
   box-shadow: var(--shadow-sm);
-}
-
-.canvas-toolbar {
-  padding: 15px;
-  background: white;
-  border-bottom: 1px solid #e8ecf0;
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
 }
 
 .toolbar-btn {
