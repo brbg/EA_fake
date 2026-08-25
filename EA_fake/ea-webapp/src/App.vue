@@ -2108,21 +2108,21 @@ const initErCanvas = () => {
 
 const redrawErCanvas = () => {
   if (!erCtx || !erCanvas.value) return
-  erCtx.clearRect(0, 0, erCanvas.value.width, erCanvas.value.height)
+  erCtx.clearRect(0, 0, LOGICAL_W, LOGICAL_H)
   
   // 绘制网格背景
   erCtx.strokeStyle = '#e8e8e8'
   erCtx.lineWidth = 1
-  for (let x = 0; x < erCanvas.value.width; x += 20) {
+  for (let x = 0; x < LOGICAL_W; x += 20) {
     erCtx.beginPath()
     erCtx.moveTo(x, 0)
-    erCtx.lineTo(x, erCanvas.value.height)
+    erCtx.lineTo(x, LOGICAL_H)
     erCtx.stroke()
   }
-  for (let y = 0; y < erCanvas.value.height; y += 20) {
+  for (let y = 0; y < LOGICAL_H; y += 20) {
     erCtx.beginPath()
     erCtx.moveTo(0, y)
-    erCtx.lineTo(erCanvas.value.width, y)
+    erCtx.lineTo(LOGICAL_W, y)
     erCtx.stroke()
   }
   
@@ -2318,12 +2318,12 @@ const drawErRelation = (start: any, end: any, type: string) => {
 
 const handleErClick = (e: MouseEvent) => {
   if (!erCanvas.value) return
-  const rect = erCanvas.value.getBoundingClientRect()
-  let x = e.clientX - rect.left
-  let y = e.clientY - rect.top
+  const p = toLogical(e, erCanvas.value)
+  let x = p.x
+  let y = p.y
   // 钳制坐标，避免在画布边缘点击时把实体创建到可见区域之外
-  x = Math.max(0, Math.min(erCanvas.value.width - 150, x))
-  y = Math.max(0, Math.min(erCanvas.value.height - 80, y))
+  x = Math.max(0, Math.min(LOGICAL_W - 150, x))
+  y = Math.max(0, Math.min(LOGICAL_H - 80, y))
 
   // 防止双击时重复创建实体（与 UML 一致的防抖）
   const now = Date.now()
@@ -2367,9 +2367,9 @@ const handleErClick = (e: MouseEvent) => {
 
 const handleErMouseDown = (e: MouseEvent) => {
   if (!erCanvas.value) return
-  const rect = erCanvas.value.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  const y = e.clientY - rect.top
+  const p = toLogical(e, erCanvas.value)
+  const x = p.x
+  const y = p.y
   
   const currentTool = selectedErTool.value
   
@@ -2404,22 +2404,22 @@ const handleErMouseDown = (e: MouseEvent) => {
 
 const handleErMouseMove = (e: MouseEvent) => {
   if (!erCanvas.value) return
-  const rect = erCanvas.value.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  const y = e.clientY - rect.top
+  const p = toLogical(e, erCanvas.value)
+  const x = p.x
+  const y = p.y
   
   if (erIsDragging && erSelectedEntity) {
-    erSelectedEntity.x = Math.max(0, Math.min(erCanvas.value.width - erSelectedEntity.width, x - erDragOffset.x))
-    erSelectedEntity.y = Math.max(0, Math.min(erCanvas.value.height - erSelectedEntity.displayHeight, y - erDragOffset.y))
+    erSelectedEntity.x = Math.max(0, Math.min(LOGICAL_W - erSelectedEntity.width, x - erDragOffset.x))
+    erSelectedEntity.y = Math.max(0, Math.min(LOGICAL_H - erSelectedEntity.displayHeight, y - erDragOffset.y))
     redrawErCanvas()
   }
 }
 
 const handleErMouseUp = (e: MouseEvent) => {
   if (!erCanvas.value) return
-  const rect = erCanvas.value.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  const y = e.clientY - rect.top
+  const p = toLogical(e, erCanvas.value)
+  const x = p.x
+  const y = p.y
   
   if (erIsConnecting && erConnectStartEntity) {
     for (let i = erEntities.length - 1; i >= 0; i--) {
@@ -2456,9 +2456,9 @@ const handleErMouseUp = (e: MouseEvent) => {
 
 const handleErDoubleClick = (e: MouseEvent) => {
   if (!erCanvas.value) return
-  const rect = erCanvas.value.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  const y = e.clientY - rect.top
+  const p = toLogical(e, erCanvas.value)
+  const x = p.x
+  const y = p.y
   
   for (let i = erEntities.length - 1; i >= 0; i--) {
     const entity = erEntities[i]
@@ -2546,9 +2546,9 @@ const redoEr = () => {
 const handleErContextMenu = (e: MouseEvent) => {
   e.preventDefault()
   if (!erCanvas.value) return
-  const rect = erCanvas.value.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  const y = e.clientY - rect.top
+  const p = toLogical(e, erCanvas.value)
+  const x = p.x
+  const y = p.y
   
   for (let i = erEntities.length - 1; i >= 0; i--) {
     const entity = erEntities[i]
