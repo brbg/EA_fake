@@ -11,10 +11,15 @@
 - **企业架构建模（ArchiMate）**：业务 / 应用 / 技术三层，角色、流程、服务、组件、节点等
 - **数据建模（ER 图）**：实体、字段、主/外键、关系，SQL 生成
 - **代码生成**：Java / Python / TypeScript，实体 / Controller / Service 多输出类型
-- **AI 助手**：基于大模型的多轮上下文问答，**流式输出**（SSE），配置（api_key / 地址 / 模型）落库持久化，重启不丢失
+- **画布体验**：DPR 高清渲染（高分屏不模糊）、容器自适应、Word 风格 **Ribbon 功能区**、底部专业状态栏
+- **AI 助手**：基于大模型的多轮上下文问答，**流式输出**（SSE），**项目记忆库**（记忆自动注入 + 「记住：xxx」自动保存），配置（api_key / 地址 / 模型 / 推理模型）落库持久化，重启不丢失
 - **AI 校验**：UML 模型一键校验，结构规则 + LLM 语义分析（命名、关系、职责等）
 - **AI 架构评审**：ArchiMate 画布一键评审，结构检查 + LLM 语义分析（层间依赖、缺失组件等）
 - **AI 元素分析**：UML / ArchiMate / ER 画布选中单个元素，AI 给出总体评价、优点、问题与改进建议
+- **AI 对话式编辑**：UML / ArchiMate / ER 三种图都能用自然语言直接改（加/删元素、改字段、改关系）
+- **AI 文档/报表生成**：从当前模型生成架构设计 / 项目概览 / 数据库设计文档，导出 Markdown / HTML
+- **代码反向工程**：粘贴源代码 → AI 反推 UML 类图 / ER 模型并画到画布
+- **AI 推理分层**：复杂任务（评审/校验/编辑/分析）可配置走独立推理模型（如 deepseek-reasoner）
 - **实时协作**：基于 Socket.IO 的多人在线协同（元素更新广播）
 - **项目/版本管理**：项目增删改查、模型保存与加载
 
@@ -22,7 +27,7 @@
 
 | 层 | 技术 |
 |---|---|
-| 前端 | Vue 3 + TypeScript + Vite，原生 Canvas 2D 画布 |
+| 前端 | Vue 3 + TypeScript + Vite，原生 Canvas 2D 画布，自定义设计令牌体系（「精密工程图纸」视觉） |
 | 后端 | Flask + Flask-SocketIO（Python） |
 | 存储 | SQLite（轻量 KV 层 `db.py`）+ 模型/项目等结构化数据 |
 | 认证 | 会话（`X-Session-Id`）+ bcrypt 密码哈希 |
@@ -43,9 +48,10 @@ EA_fake/
     │   ├── prompts.py           # LLM 系统提示词集中管理
     │   └── constants.py         # 元素/关系类型、颜色等常量
     ├── src/                     # Vue 3 前端源码
-    │   ├── App.vue              # 主界面（登录门禁 + 仪表盘/建模画布）
+    │   ├── App.vue              # 主界面（登录门禁 + 仪表盘/Ribbon/建模画布）
     │   ├── LoginView.vue        # 登录 / 注册页
-    │   ├── AIAssistant.vue      # AI 助手组件（流式对话）
+    │   ├── AIAssistant.vue      # AI 助手组件（流式对话 + 记忆库）
+    │   ├── canvasUtils.ts       # 画布 DPR 高清 + 逻辑坐标换算工具
     │   ├── aiService.ts         # AI API 封装（含 SSE 流式解析）
     │   └── projectContext.ts    # 项目上下文 → prompt
     ├── requirements.txt         # Python 依赖
