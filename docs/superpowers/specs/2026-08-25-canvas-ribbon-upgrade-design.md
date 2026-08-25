@@ -44,7 +44,7 @@ export function setupCanvasTransform(canvas: HTMLCanvasElement, logicalW: number
   const ctx = canvas.getContext('2d')!
   const sx = logicalW / rect.width                     // 逻辑→CSS 缩放
   const sy = logicalH / rect.height
-  ctx.setTransform(dpr * sx, 0, 0, dpr * sy, 0, 0)     // 一次搞定 DPR + 自适应
+  ctx.setTransform(dpr / sx, 0, 0, dpr / sy, 0, 0)     // 一次搞定 DPR + 自适应（dpr/sx = 设备像素/逻辑单位）
   return { sx, sy, dpr }
 }
 
