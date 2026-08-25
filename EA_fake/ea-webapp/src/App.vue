@@ -95,6 +95,9 @@ const logout = async () => {
 const activeTab = ref('dashboard')
 const showCreateModal = ref(false)
 const selectedTool = ref('select')
+const selectedToolName = computed(() => tools.find((t) => t.id === selectedTool.value)?.name || '选择')
+const selectedArchimateToolName = computed(() => archimateTools.find((t) => t.id === selectedArchimateTool.value)?.name || '选择')
+const selectedErToolName = computed(() => erTools.find((t) => t.id === selectedErTool.value)?.name || '选择')
 const stats = ref({
   models: 0,
   elements: 0,
@@ -1179,7 +1182,7 @@ const drawElement = (elem: any) => {
   if (!ctx) return
   
   ctx.fillStyle = elem.color || '#ffffff'
-  ctx.strokeStyle = selectedElement?.id === elem.id ? '#667eea' : '#333'
+  ctx.strokeStyle = selectedElement?.id === elem.id ? '#1f5eff' : '#333'
   ctx.lineWidth = selectedElement?.id === elem.id ? 3 : 2
   
   ctx.beginPath()
@@ -1187,7 +1190,7 @@ const drawElement = (elem: any) => {
   ctx.fill()
   ctx.stroke()
 
-  ctx.fillStyle = elem.headerColor || '#667eea'
+  ctx.fillStyle = elem.headerColor || '#1f5eff'
   ctx.beginPath()
   roundRectPath(ctx, elem.x, elem.y, elem.width, 25, [8, 8, 0, 0])
   ctx.fill()
@@ -1365,7 +1368,7 @@ const handleCanvasClick = (e: MouseEvent) => {
       width: 120,
       height: 100,
       color: '#ffffff',
-      headerColor: '#667eea',
+      headerColor: '#1f5eff',
       attributes: ['- name: String', '- age: int']
     })
     redraw()
@@ -3282,7 +3285,7 @@ onMounted(() => {
 
     <div v-if="activeTab === 'dashboard'" class="dashboard-grid">
       <div class="card">
-        <div class="card-icon" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+        <div class="card-icon" style="background: linear-gradient(135deg, #1f5eff 0%, #764ba2 100%);">
           <i class="fas fa-folder-open"></i>
         </div>
         <h3 class="card-title">项目管理</h3>
@@ -3357,7 +3360,7 @@ onMounted(() => {
         <svg width="100%" height="200" viewBox="0 0 1000 200">
           <!-- 流程节点 -->
           <g class="workflow-node" @click="activeTab = 'projects'">
-            <rect x="50" y="70" width="160" height="60" rx="10" fill="#667eea" />
+            <rect x="50" y="70" width="160" height="60" rx="10" fill="#1f5eff" />
             <text x="130" y="95" text-anchor="middle" fill="white" font-size="14" font-weight="bold">创建项目</text>
             <text x="130" y="115" text-anchor="middle" fill="white" font-size="11">新建或选择项目</text>
           </g>
@@ -3392,15 +3395,15 @@ onMounted(() => {
           <line x1="650" y1="100" x2="700" y2="100" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)" />
 
           <!-- 步骤标签 -->
-          <text x="130" y="50" text-anchor="middle" fill="#667eea" font-size="16" font-weight="bold">步骤 1</text>
+          <text x="130" y="50" text-anchor="middle" fill="#1f5eff" font-size="16" font-weight="bold">步骤 1</text>
           <text x="350" y="50" text-anchor="middle" fill="#11998e" font-size="16" font-weight="bold">步骤 2</text>
           <text x="570" y="50" text-anchor="middle" fill="#eb3349" font-size="16" font-weight="bold">步骤 3</text>
           <text x="790" y="50" text-anchor="middle" fill="#43e97b" font-size="16" font-weight="bold">步骤 4</text>
         </svg>
       </div>
-      <div style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #667eea;">
+      <div style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #1f5eff;">
         <p style="margin: 0; color: #666; font-size: 14px;">
-          <i class="fas fa-info-circle" style="color: #667eea; margin-right: 8px;"></i>
+          <i class="fas fa-info-circle" style="color: #1f5eff; margin-right: 8px;"></i>
           <strong>快速开始：</strong>点击「创建项目」开始您的建模之旅，然后使用UML工具设计类图，保存模型后即可自动生成代码。
         </p>
       </div>
@@ -3449,11 +3452,12 @@ onMounted(() => {
         @dblclick="handleDoubleClick"
         @contextmenu="handleUmlContextMenu"
       ></canvas>
-      <div style="padding: 10px; background: #f0f0f0; font-size: 12px; color: #666;">
-        <span style="margin-right: 20px;"><i class="fas fa-info-circle"></i> 双击元素可编辑属性</span>
-        <span style="margin-right: 20px;"><i class="fas fa-mouse-pointer"></i> 选择工具拖拽移动元素</span>
-        <span style="margin-right: 20px;"><i class="fas fa-mouse-right"></i> 右键删除元素或关系</span>
-        <span><i class="fas fa-link"></i> 关联/继承/组合工具：点击起始元素，再点击目标元素创建关系</span>
+      <div class="canvas-statusbar">
+        <div class="status-item"><i class="fas fa-folder"></i> <strong>{{ currentModelName || '未选择项目' }}</strong></div>
+        <div class="status-item"><i class="fas fa-box"></i> {{ elements.length }} 元素</div>
+        <div class="status-item"><i class="fas fa-link"></i> {{ connections.length }} 关系</div>
+        <div class="status-item"><i class="fas fa-mouse-pointer"></i> {{ selectedToolName }}</div>
+        <div class="status-item status-right"><i class="fas fa-info-circle"></i> 双击编辑 · 右键删除 · 连线工具点两元素</div>
       </div>
     </div>
 
@@ -3470,11 +3474,12 @@ onMounted(() => {
         @contextmenu="handleArchimateContextMenu"
       ></canvas>
       
-      <div style="padding: 10px; background: #f0f0f0; font-size: 12px; color: #666;">
-        <span style="margin-right: 20px;"><i class="fas fa-info-circle"></i> 双击元素可编辑属性</span>
-        <span style="margin-right: 20px;"><i class="fas fa-mouse-pointer"></i> 选择工具拖拽移动元素</span>
-        <span style="margin-right: 20px;"><i class="fas fa-mouse-right"></i> 右键删除元素或关系</span>
-        <span><i class="fas fa-link"></i> 关系工具：点击起始元素，再点击目标元素创建关系</span>
+      <div class="canvas-statusbar">
+        <div class="status-item"><i class="fas fa-folder"></i> <strong>{{ currentModelName || '未选择项目' }}</strong></div>
+        <div class="status-item"><i class="fas fa-cube"></i> {{ archimateElements.length }} 元素</div>
+        <div class="status-item"><i class="fas fa-link"></i> {{ archimateConnections.length }} 关系</div>
+        <div class="status-item"><i class="fas fa-mouse-pointer"></i> {{ selectedArchimateToolName }}</div>
+        <div class="status-item status-right"><i class="fas fa-info-circle"></i> 双击编辑 · 右键删除 · 连线工具点两元素</div>
       </div>
     </div>
 
@@ -3491,11 +3496,12 @@ onMounted(() => {
         @contextmenu="handleErContextMenu"
       ></canvas>
       
-      <div style="padding: 10px; background: #f0f0f0; font-size: 12px; color: #666;">
-        <span style="margin-right: 20px;"><i class="fas fa-info-circle"></i> 双击表可编辑字段</span>
-        <span style="margin-right: 20px;"><i class="fas fa-mouse-pointer"></i> 选择工具拖拽移动表</span>
-        <span style="margin-right: 20px;"><i class="fas fa-mouse-right"></i> 右键删除表或关系</span>
-        <span><i class="fas fa-link"></i> 关系工具：点击起始表，再点击目标表创建关系</span>
+      <div class="canvas-statusbar">
+        <div class="status-item"><i class="fas fa-folder"></i> <strong>{{ currentModelName || '未选择项目' }}</strong></div>
+        <div class="status-item"><i class="fas fa-table"></i> {{ erEntities.length }} 表</div>
+        <div class="status-item"><i class="fas fa-link"></i> {{ erRelations.length }} 关系</div>
+        <div class="status-item"><i class="fas fa-mouse-pointer"></i> {{ selectedErToolName }}</div>
+        <div class="status-item status-right"><i class="fas fa-info-circle"></i> 双击编辑 · 右键删除 · 连线工具点两表</div>
       </div>
     </div>
 
@@ -3564,7 +3570,7 @@ onMounted(() => {
       </div>
 
       <div style="margin-top: 36px; border-top: 1px solid #e8ecf0; padding-top: 24px;">
-        <h3 class="card-title"><i class="fas fa-arrow-left-long" style="color: #6366f1;"></i> 代码反向工程</h3>
+        <h3 class="card-title"><i class="fas fa-arrow-left-long" style="color: #1f5eff;"></i> 代码反向工程</h3>
         <p class="card-desc">粘贴源代码，AI 反推出 UML 类图或 ER 模型并画到画布上</p>
 
         <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px;">
@@ -4009,7 +4015,7 @@ onMounted(() => {
   justify-content: center;
   color: #fff;
   font-size: 20px;
-  box-shadow: 0 6px 16px rgba(99, 102, 241, 0.35);
+  box-shadow: 0 6px 16px rgba(31, 94, 255, 0.35);
   flex-shrink: 0;
 }
 .header-text h1 {
@@ -4134,7 +4140,7 @@ onMounted(() => {
 .nav-tab.active {
   background: var(--brand-grad);
   color: #fff;
-  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.35);
+  box-shadow: 0 4px 12px rgba(31, 94, 255, 0.35);
 }
 
 .ribbon {
@@ -4177,14 +4183,13 @@ onMounted(() => {
 .card {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: var(--radius);
   padding: 24px;
   box-shadow: var(--shadow-sm);
-  transition: transform 0.25s, box-shadow 0.25s;
+  transition: box-shadow 0.25s;
 }
 
 .card:hover {
-  transform: translateY(-3px);
   box-shadow: var(--shadow-md);
 }
 
@@ -4228,7 +4233,7 @@ onMounted(() => {
 .btn-primary {
   background: var(--brand-grad);
   color: white;
-  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+  box-shadow: 0 4px 12px rgba(31, 94, 255, 0.3);
 }
 
 .btn-primary:hover {
@@ -4296,13 +4301,47 @@ onMounted(() => {
 
 .canvas-container {
   background: #f8f9fa;
-  border-radius: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   overflow: hidden;
+  box-shadow: var(--shadow-sm);
 }
 
 .canvas-container:hover {
-  transform: none;
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-md);
+}
+
+/* 画布底部状态栏（签名元素：专业软件质感） */
+.canvas-statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding: 8px 14px;
+  background: #fff;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.status-item i {
+  color: var(--muted);
+  width: 14px;
+  text-align: center;
+}
+.status-item strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.status-right {
+  margin-left: auto;
+  color: var(--muted);
 }
 
 .toolbar-btn {
@@ -4323,9 +4362,9 @@ onMounted(() => {
 }
 
 .toolbar-btn.active {
-  background: #667eea;
+  background: #1f5eff;
   color: white;
-  border-color: #667eea;
+  border-color: #1f5eff;
 }
 
 /* AI 功能下拉菜单 */
@@ -4377,7 +4416,7 @@ onMounted(() => {
 .ai-dropdown-item i {
   width: 16px;
   text-align: center;
-  color: #6366f1;
+  color: #d97706; /* AI 强调色（琥珀） */
 }
 
 #canvas {
@@ -4481,7 +4520,7 @@ onMounted(() => {
 }
 
 .user .chat-bubble {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #1f5eff 0%, #764ba2 100%);
   color: white;
   border-bottom-right-radius: 5px;
 }
@@ -4508,14 +4547,14 @@ onMounted(() => {
 
 .chat-input input:focus {
   outline: none;
-  border-color: #667eea;
+  border-color: #1f5eff;
 }
 
 .chat-input button {
   padding: 12px 24px;
   border: none;
   border-radius: 25px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #1f5eff 0%, #764ba2 100%);
   color: white;
   cursor: pointer;
   font-size: 14px;
@@ -4592,7 +4631,7 @@ onMounted(() => {
 
 .form-group input:focus, .form-group textarea:focus {
   outline: none;
-  border-color: #667eea;
+  border-color: #1f5eff;
 }
 
 .form-group textarea {

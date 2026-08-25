@@ -668,7 +668,7 @@ const scrollToBottom = () => {
 }
 
 .chat-message.user .chat-bubble {
-  background: #007bff;
+  background: #1f5eff;
   color: white;
   border-bottom-right-radius: 4px;
 }
@@ -710,12 +710,12 @@ const scrollToBottom = () => {
 
 .chat-input textarea:focus {
   outline: none;
-  border-color: #007bff;
+  border-color: #1f5eff;
 }
 
 .chat-input button {
   padding: 12px 24px;
-  background: #007bff;
+  background: #1f5eff;
   color: white;
   border: none;
   border-radius: 8px;
@@ -725,7 +725,7 @@ const scrollToBottom = () => {
 }
 
 .chat-input button:hover:not(:disabled) {
-  background: #0056b3;
+  background: #1749cc;
 }
 
 .chat-input button:disabled {

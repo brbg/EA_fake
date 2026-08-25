@@ -255,7 +255,7 @@ const submit = () => {
   justify-content: center;
   padding: 24px;
   overflow: hidden;
-  background: linear-gradient(135deg, #312e81 0%, #4c1d95 50%, #6d28d9 100%);
+  background: linear-gradient(135deg, #0d1b3e 0%, #14295e 55%, #1f5eff 100%);
 }
 
 /* 背景光晕 + 网格纹理，让纯渐变更高级 */
@@ -271,15 +271,15 @@ const submit = () => {
   height: 480px;
   top: -120px;
   left: -100px;
-  background: #6366f1;
+  background: #1f5eff;
 }
 .auth-glow-2 {
   width: 520px;
   height: 520px;
   bottom: -160px;
   right: -120px;
-  background: #ec4899;
-  opacity: 0.35;
+  background: #d97706;
+  opacity: 0.3;
 }
 .auth-grid {
   position: absolute;
@@ -313,7 +313,7 @@ const submit = () => {
   height: 56px;
   margin: 0 auto 12px;
   border-radius: 16px;
-  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  background: linear-gradient(135deg, #1f5eff 0%, #7c5cff 100%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -354,7 +354,7 @@ const submit = () => {
 }
 .mode-tab.active {
   background: #fff;
-  color: #6366f1;
+  color: #1f5eff;
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.1);
 }
 
@@ -403,7 +403,7 @@ const submit = () => {
   transition: all 0.2s;
 }
 .input-wrap input:focus {
-  border-color: #6366f1;
+  border-color: #1f5eff;
   background: #fff;
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
 }
@@ -418,7 +418,7 @@ const submit = () => {
   font-size: 14px;
 }
 .eye-toggle:hover {
-  color: #6366f1;
+  color: #1f5eff;
 }
 
 .auth-success {
@@ -454,7 +454,7 @@ const submit = () => {
   padding: 12px;
   border: none;
   border-radius: 10px;
-  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  background: linear-gradient(135deg, #1f5eff 0%, #7c5cff 100%);
   color: #fff;
   font-size: 15px;
   font-weight: 600;
@@ -480,7 +480,7 @@ const submit = () => {
 .link-btn {
   border: none;
   background: transparent;
-  color: #6366f1;
+  color: #1f5eff;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
