@@ -45,6 +45,8 @@ data_dictionary_cache = {}
 versions_cache = {}
 branches_cache = {}
 reviews_cache = {}
+# SocketIO 协作：project_id -> {user_id: username}
+collab_users_cache = {}
 
 # 初始化 SQLite 持久化
 db.init_db()

@@ -49,6 +49,7 @@ from uml_ai import (
     extract_participants_from_text, _normalize_uml_type, _default_rel_type,
     _ai_validate_semantics, validate_uml_model, _elem_id, _rel_source, _rel_target,
 )
+import collab  # 注册 SocketIO 协作处理器（在线用户/加入离开/元素更新广播）
 
 @app.route('/api/test')
 def test_route():
@@ -736,40 +737,7 @@ def get_element_colors():
     """获取元素颜色映射"""
     return jsonify(ELEMENT_COLORS)
 
-# === SocketIO实时协作 ===
-
-@socketio.on('join_project')
-def handle_join_project(data):
-    """用户加入项目房间"""
-    project_id = data.get('project_id')
-    join_room(project_id)
-    emit('user_joined', {'message': '用户加入项目'}, room=project_id)
-
-@socketio.on('leave_project')
-def handle_leave_project(data):
-    """用户离开项目房间"""
-    project_id = data.get('project_id')
-    leave_room(project_id)
-    emit('user_left', {'message': '用户离开项目'}, room=project_id)
-
-@socketio.on('element_update')
-def handle_element_update(data):
-    """元素更新通知"""
-    project_id = data.get('project_id')
-    emit('element_updated', data, room=project_id, include_self=False)
-
-@socketio.on('cursor_move')
-def handle_cursor_move(data):
-    """光标移动通知"""
-    project_id = data.get('project_id')
-    emit('cursor_moved', data, room=project_id, include_self=False)
-
-@socketio.on('selection_change')
-def handle_selection_change(data):
-    """选择变化通知"""
-    project_id = data.get('project_id')
-    emit('selection_changed', data, room=project_id, include_self=False)
-
+# SocketIO 协作处理器（join/leave/元素更新/在线用户）已移至 collab.py
 # === 项目工程与基础管理扩展 API ===
 
 # 行业模板配置

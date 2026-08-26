@@ -3378,6 +3378,15 @@ watch(activeTab, (newTab) => {
 // === 实时协作（Socket.IO） ===
 let socket: any = null
 let joinedProjectId = ''
+// 在线协作
+const onlineUsers = ref<string[]>([])
+const collabToast = ref('')
+let collabToastTimer: number | null = null
+const showCollabToast = (text: string) => {
+  collabToast.value = text
+  if (collabToastTimer) window.clearTimeout(collabToastTimer)
+  collabToastTimer = window.setTimeout(() => { collabToast.value = '' }, 3000)
+}
 
 const initSocket = () => {
   if (socket) return
@@ -3386,39 +3395,51 @@ const initSocket = () => {
   })
   socket.on('connect', () => {
     if (currentModelId.value) {
-      socket.emit('join_project', { project_id: currentModelId.value })
+      socket.emit('join_project', { project_id: currentModelId.value, session_id: sessionStorage.getItem('sessionId') || '' })
       joinedProjectId = currentModelId.value
     }
   })
-  socket.on('element_updated', () => {
-    // 其他协作者有改动，重新拉取当前模型
+  // 在线协作：在线用户列表 / 加入离开 / 他人更新
+  socket.on('collab_users', (d: any) => {
+    onlineUsers.value = d?.users || []
+  })
+  socket.on('user_joined', (d: any) => {
+    showCollabToast(`${d?.username || '协作者'} 加入了协作`)
+  })
+  socket.on('user_left', (d: any) => {
+    showCollabToast(`${d?.username || '协作者'} 离开了协作`)
+  })
+  socket.on('element_updated', (d: any) => {
+    // 其他协作者有改动：提示并重新拉取当前模型
+    showCollabToast(`${d?.username || '协作者'} 更新了模型，已自动同步`)
     if (currentModelId.value) {
       loadModelFromServer(currentModelId.value)
     }
   })
   socket.on('disconnect', () => {
     joinedProjectId = ''
+    onlineUsers.value = []
   })
 }
 
 const joinProjectRoom = () => {
   if (!socket || !currentModelId.value) return
   if (joinedProjectId && joinedProjectId !== currentModelId.value) {
-    socket.emit('leave_project', { project_id: joinedProjectId })
+    socket.emit('leave_project', { project_id: joinedProjectId, session_id: sessionStorage.getItem('sessionId') || '' })
   }
-  socket.emit('join_project', { project_id: currentModelId.value })
+  socket.emit('join_project', { project_id: currentModelId.value, session_id: sessionStorage.getItem('sessionId') || '' })
   joinedProjectId = currentModelId.value
 }
 
 const leaveProjectRoom = (projectId: string) => {
   if (!socket) return
-  socket.emit('leave_project', { project_id: projectId })
+  socket.emit('leave_project', { project_id: projectId, session_id: sessionStorage.getItem('sessionId') || '' })
   if (joinedProjectId === projectId) joinedProjectId = ''
 }
 
 const broadcastElementUpdate = () => {
   if (!socket || !currentModelId.value) return
-  socket.emit('element_update', { project_id: currentModelId.value })
+  socket.emit('element_update', { project_id: currentModelId.value, session_id: sessionStorage.getItem('sessionId') || '' })
 }
 
 // 键盘快捷键：Ctrl+Z 撤销 / Ctrl+Y（或 Ctrl+Shift+Z）重做，按当前画布分派
@@ -3461,6 +3482,11 @@ onMounted(() => {
 <template>
   <!-- 液态玻璃背景光斑（在登录页与主界面下方） -->
   <div class="bg-blobs" aria-hidden="true"></div>
+
+  <!-- 协作提示 toast -->
+  <transition name="fade">
+    <div v-if="collabToast" class="collab-toast"><i class="fas fa-people-group"></i> {{ collabToast }}</div>
+  </transition>
 
   <!-- 登录门禁：未认证前不渲染主界面 -->
   <div v-if="!authChecked" class="app-loading">
@@ -3790,6 +3816,13 @@ onMounted(() => {
         <div class="status-item"><i class="fas fa-box"></i> {{ elements.length }} 元素</div>
         <div class="status-item"><i class="fas fa-link"></i> {{ connections.length }} 关系</div>
         <div class="status-item"><i class="fas fa-mouse-pointer"></i> {{ selectedToolName }}</div>
+        <div v-if="onlineUsers.length" class="status-item collab-chip">
+          <i class="fas fa-users"></i>
+          <span class="collab-avatars">
+            <span v-for="(u, i) in onlineUsers" :key="i" class="collab-avatar" :title="u">{{ (u || '?').charAt(0).toUpperCase() }}</span>
+          </span>
+          在线 {{ onlineUsers.length }}
+        </div>
         <div class="status-item status-right"><i class="fas fa-info-circle"></i> 双击编辑 · 右键删除 · 连线工具点两元素</div>
       </div>
     </div>
@@ -5145,6 +5178,54 @@ onMounted(() => {
 .status-right {
   margin-left: auto;
   color: var(--muted);
+}
+/* 在线协作 */
+.collab-chip {
+  color: var(--brand);
+}
+.collab-avatars {
+  display: inline-flex;
+  gap: 2px;
+}
+.collab-avatar {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--brand-grad);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #fff;
+}
+.collab-toast {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 9999;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-md);
+  padding: 10px 16px;
+  font-size: 13px;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  animation: modal-in 0.3s ease;
+}
+.collab-toast i {
+  color: var(--brand);
+}
+.fade-enter-active, .fade-leave-active {
+  transition: opacity 0.25s ease;
+}
+.fade-enter-from, .fade-leave-to {
+  opacity: 0;
 }
 
 .toolbar-btn {
