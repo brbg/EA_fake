@@ -8,8 +8,9 @@ import { getAIConfig } from './aiService'
 import { setupCanvasTransform, toLogical, LOGICAL_W, LOGICAL_H } from './canvasUtils'
 
 // === 登录门禁状态 ===
-const authUser = ref<{ username: string; email: string } | null>(null)
+const authUser = ref<{ username: string; email: string; role?: string; id?: string } | null>(null)
 const authChecked = ref(false)
+const isAdmin = computed(() => authUser.value?.role === 'admin')
 
 // 进入主界面（登录成功 or 会话恢复有效）
 const enterApp = () => {
@@ -43,7 +44,9 @@ const checkAuth = async () => {
       }
       authUser.value = {
         username: data.user?.username || saved?.username || '用户',
-        email: saved?.email || ''
+        email: saved?.email || '',
+        role: data.user?.role || saved?.role || '',
+        id: data.user?.id || saved?.id || ''
       }
       enterApp()
     } else {
@@ -58,9 +61,13 @@ const checkAuth = async () => {
   authChecked.value = true
 }
 
-const onAuthenticated = (user: { username: string; email: string }) => {
+const onAuthenticated = (user: { username: string; email: string; role?: string; id?: string; is_new?: boolean }) => {
   authUser.value = user
   enterApp()
+  // 首次注册后的首次登录：自动弹出引导（仅一次）
+  if (user.is_new) {
+    setTimeout(() => startTour(), 700)
+  }
 }
 
 const logout = async () => {
@@ -106,15 +113,17 @@ const stats = ref({
 })
 
 const tabs = [
-  { id: 'dashboard', name: '仪表盘' },
-  { id: 'projects', name: '项目管理' },
-  { id: 'uml', name: 'UML建模' },
-  { id: 'archimate', name: 'ArchiMate' },
-  { id: 'data', name: '数据建模' },
-  { id: 'code', name: '代码生成' },
-  { id: 'dev', name: '研发管理' },
-  { id: 'ai', name: 'AI助手' }
+  { id: 'dashboard', name: '仪表盘', icon: 'fas fa-gauge-high' },
+  { id: 'projects', name: '项目管理', icon: 'fas fa-folder-open' },
+  { id: 'uml', name: 'UML建模', icon: 'fas fa-diagram-project' },
+  { id: 'archimate', name: 'ArchiMate', icon: 'fas fa-cubes' },
+  { id: 'data', name: '数据建模', icon: 'fas fa-database' },
+  { id: 'code', name: '代码生成', icon: 'fas fa-code' },
+  { id: 'dev', name: '研发管理', icon: 'fas fa-tasks' },
+  { id: 'ai', name: 'AI助手', icon: 'fas fa-robot' }
 ]
+// 管理员专属 tab（非 admin 不显示）
+const navTabs = computed(() => (isAdmin.value ? [...tabs, { id: 'admin', name: '后台管理', icon: 'fas fa-shield-halved' }] : tabs))
 
 const tools = [
   { id: 'select', name: '选择', icon: 'fas fa-mouse-pointer' },
@@ -163,6 +172,24 @@ interface Model {
 const models = ref<Model[]>([])
 const newModel = ref({ name: '', description: '' })
 
+// 项目图标：按项目名哈希取渐变色 + 首字母（Notion/Linear 式专业图标）
+const PROJECT_GRADIENTS = [
+  'linear-gradient(135deg, #6366f1, #8b5cf6)',
+  'linear-gradient(135deg, #0ea5e9, #06b6d4)',
+  'linear-gradient(135deg, #f59e0b, #f97316)',
+  'linear-gradient(135deg, #10b981, #059669)',
+  'linear-gradient(135deg, #ef4444, #f43f5e)',
+  'linear-gradient(135deg, #ec4899, #a855f7)',
+  'linear-gradient(135deg, #14b8a6, #0d9488)',
+  'linear-gradient(135deg, #8b5cf6, #d946ef)',
+]
+const projectIconStyle = (name: string) => {
+  let h = 0
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0
+  return { background: PROJECT_GRADIENTS[h % PROJECT_GRADIENTS.length] }
+}
+const projectInitial = (name: string) => (name || '?').charAt(0).toUpperCase()
+
 // ArchiMate 建模相关变量
 const archimateCanvas = ref<HTMLCanvasElement | null>(null)
 let archimateCtx: CanvasRenderingContext2D | null = null
@@ -199,6 +226,14 @@ const codeGenerating = ref(false)
 
 // 代码反向工程（代码 → 模型）
 const reverseConfig = ref({ code: '', language: 'auto', target: 'uml' })
+
+// AI 从描述生成图（UML/ER）
+const showGenDiagramModal = ref(false)
+const genDiagramKind = ref<'uml' | 'er'>('uml')
+const genDiagramText = ref('')
+const genDiagramViewType = ref('class')
+const genDiagramLoading = ref(false)
+const genDiagramError = ref('')
 const reversing = ref(false)
 const reverseError = ref('')
 
@@ -232,6 +267,80 @@ const editModelInstruction = ref('')
 const editModelSubmitting = ref(false)
 const editModelError = ref('')
 const editModelSuccess = ref('')
+
+// 新手教程引导
+const showHelpModal = ref(false)
+
+// === 引导式使用教学（tour）===
+const showTour = ref(false)
+const tourStep = ref(0)
+const tourHighlightStyle = ref<Record<string, string>>({})
+const tourSteps = [
+  { target: '.header', tab: 'dashboard', title: '欢迎使用 👋', desc: '这是你的建模工作台。右上角是账号信息、帮助入口与退出；顶部是各个功能模块的导航。' },
+  { target: '[data-tab="projects"]', tab: 'projects', title: '项目管理', desc: '在这里创建或打开项目。每个项目是一套独立的模型，项目之间互不可见。' },
+  { target: '[data-tab="uml"]', tab: 'uml', title: 'UML 建模', desc: '用类图设计系统结构：在工具栏选图形再点画布添加，双击编辑，右键删除。' },
+  { target: '[data-tour="ai"]', tab: 'uml', title: 'AI 功能', desc: '画布顶部的「AI」按钮包含：校验、架构评审、元素分析、对话式编辑、从描述生成图。' },
+  { target: '[data-tab="code"]', tab: 'code', title: '代码生成', desc: '模型一键转代码、粘贴代码反推模型、AI 生成设计文档/报表。' },
+  { target: '[data-tab="ai"]', tab: 'ai', title: 'AI 助手', desc: '和 AI 对话提问，说「记住：xxx」会把内容存入项目记忆库。' },
+  { target: '[data-tab="dev"]', tab: 'dev', title: '研发管理', desc: '管理项目的需求、测试用例、缺陷与任务，支持 AI 一键生成。' },
+  { target: '', tab: '', title: '完成 🎉', desc: '你已经掌握了基本用法。点击下方「开始探索」进入工作台，随时可在右上角「帮助」里重新引导。' },
+]
+const currentTourStep = computed(() => tourSteps[tourStep.value])
+const isLastTourStep = computed(() => tourStep.value >= tourSteps.length - 1)
+
+let tourOpenedAt = 0  // 打开时刻，用于吸收开启瞬间的误触点击
+const positionTourHighlight = () => {
+  nextTick(() => {
+    const step = tourSteps[tourStep.value]
+    if (!step || !step.target) {
+      tourHighlightStyle.value = {}
+      return
+    }
+    if (step.tab) activeTab.value = step.tab
+    nextTick(() => {
+      const el = document.querySelector(step.target)
+      if (el) {
+        const r = el.getBoundingClientRect()
+        tourHighlightStyle.value = {
+          left: `${r.left - 6}px`,
+          top: `${r.top - 6}px`,
+          width: `${r.width + 12}px`,
+          height: `${r.height + 12}px`
+        }
+        // nearest：元素已在视口内就不滚动，避免打开瞬间页面跳动
+        el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+      } else {
+        tourHighlightStyle.value = {}
+      }
+    })
+  })
+}
+
+const startTour = () => {
+  tourStep.value = 0
+  tourOpenedAt = Date.now()
+  showTour.value = true
+  showHelpModal.value = false
+  positionTourHighlight()
+}
+const nextTourStep = () => {
+  // 打开后 500ms 内的点击视为误触（吸收开启按钮的残余点击），防止第一步瞬间跳过
+  if (Date.now() - tourOpenedAt < 500) return
+  if (isLastTourStep.value) return finishTour()
+  tourStep.value++
+  positionTourHighlight()
+}
+const prevTourStep = () => {
+  if (tourStep.value > 0) {
+    tourStep.value--
+    positionTourHighlight()
+  }
+}
+const skipTour = () => finishTour()
+const finishTour = () => {
+  showTour.value = false
+  if (authUser.value?.id) localStorage.setItem('tour_seen_' + authUser.value.id, '1')
+}
 
 // AI 功能下拉菜单（每画布一个入口）
 const openAiMenu = ref<'uml' | 'archimate' | 'er' | null>(null)
@@ -350,6 +459,7 @@ const loadDevList = async () => {
 // 切到研发管理页时自动加载当前子 tab 的列表（默认需求），避免首屏空白
 watch(activeTab, (v) => {
   if (v === 'dev') loadDevList()
+  if (v === 'admin') loadAdminUsers()
 })
 
 const openDevModal = (item: any | null) => {
@@ -394,6 +504,17 @@ const removeDev = async (item: any) => {
 
 // === 研发管理：AI 生成（需求/测试/任务；缺陷无 AI） ===
 const showDevAiModal = ref(false)
+
+// 后台管理（仅 admin）
+const adminUsers = ref<any[]>([])
+const adminLoading = ref(false)
+const adminError = ref('')
+const showAdminUserModal = ref(false)
+const editingAdminUser = ref<any>(null)
+const adminUserForm = ref({ username: '', email: '', password: '', role: 'user' })
+const showAdminProjectsModal = ref(false)
+const viewingAdminUser = ref<any>(null)
+const adminProjects = ref<any[]>([])
 const devAiText = ref('')
 const devAiGenerating = ref(false)
 // 测试/任务生成时选择的关联需求（保留原始 id 类型，便于后端匹配）
@@ -464,6 +585,89 @@ const generateDevAi = async () => {
     loadDevList()
   } catch (e: any) { devError.value = e?.message || '生成失败' }
   finally { devAiGenerating.value = false }
+}
+
+// 后台管理函数
+const loadAdminUsers = async () => {
+  adminLoading.value = true
+  adminError.value = ''
+  try {
+    const res = await fetch('/api/admin/users', {
+      headers: { 'X-Session-Id': sessionStorage.getItem('sessionId') || '' }
+    })
+    const data = await res.json()
+    if (!res.ok || data.error) { adminError.value = data.error || '加载失败'; return }
+    adminUsers.value = data.users || []
+  } catch (e: any) { adminError.value = e?.message || '加载失败' }
+  finally { adminLoading.value = false }
+}
+
+const openAdminUserModal = (u: any | null) => {
+  editingAdminUser.value = u
+  adminUserForm.value = u ? { username: u.username, email: u.email, password: '', role: u.role || 'user' } : { username: '', email: '', password: '', role: 'user' }
+  showAdminUserModal.value = true
+}
+
+const saveAdminUser = async () => {
+  const f = adminUserForm.value
+  adminError.value = ''
+  try {
+    const body: Record<string, unknown> = { ...f }
+    const url = editingAdminUser.value ? `/api/admin/users/${editingAdminUser.value.id}` : '/api/admin/users'
+    const res = await fetch(url, {
+      method: editingAdminUser.value ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Session-Id': sessionStorage.getItem('sessionId') || '' },
+      body: JSON.stringify(body)
+    })
+    const data = await res.json()
+    if (!res.ok || data.error) { adminError.value = data.error || '保存失败'; return }
+    showAdminUserModal.value = false
+    loadAdminUsers()
+  } catch (e: any) { adminError.value = e?.message || '保存失败' }
+}
+
+const removeAdminUser = async (u: any) => {
+  if (!confirm(`删除用户「${u.username}」将级联删除其所有项目，确定？`)) return
+  adminError.value = ''
+  try {
+    const res = await fetch(`/api/admin/users/${u.id}`, {
+      method: 'DELETE',
+      headers: { 'X-Session-Id': sessionStorage.getItem('sessionId') || '' }
+    })
+    const data = await res.json()
+    if (!res.ok || data.error) { adminError.value = data.error || '删除失败'; return }
+    loadAdminUsers()
+  } catch (e: any) { adminError.value = e?.message || '删除失败' }
+}
+
+const viewUserProjects = async (u: any) => {
+  viewingAdminUser.value = u
+  adminProjects.value = []
+  adminError.value = ''
+  try {
+    const res = await fetch(`/api/admin/users/${u.id}/projects`, {
+      headers: { 'X-Session-Id': sessionStorage.getItem('sessionId') || '' }
+    })
+    const data = await res.json()
+    if (!res.ok || data.error) { adminError.value = data.error || '加载失败'; return }
+    adminProjects.value = data.projects || []
+    showAdminProjectsModal.value = true
+  } catch (e: any) { adminError.value = e?.message || '加载失败' }
+}
+
+const removeAdminProject = async (p: any) => {
+  if (!confirm(`确定删除项目「${p.name || p.id}」？`)) return
+  adminError.value = ''
+  try {
+    const res = await fetch(`/api/admin/projects/${p.id}`, {
+      method: 'DELETE',
+      headers: { 'X-Session-Id': sessionStorage.getItem('sessionId') || '' }
+    })
+    const data = await res.json()
+    if (!res.ok || data.error) { adminError.value = data.error || '删除失败'; return }
+    if (viewingAdminUser.value) viewUserProjects(viewingAdminUser.value)
+    loadAdminUsers()
+  } catch (e: any) { adminError.value = e?.message || '删除失败' }
 }
 
 const projectContext = computed<ProjectContext>(() => {
@@ -826,6 +1030,68 @@ const reverseCode = async () => {
     reverseError.value = e?.message || '反推请求失败，请检查后端服务'
   } finally {
     reversing.value = false
+  }
+}
+
+// AI 从描述生成图（UML/ER）
+const openGenerateDiagram = (kind: 'uml' | 'er') => {
+  openAiMenu.value = null
+  genDiagramKind.value = kind
+  genDiagramText.value = ''
+  genDiagramViewType.value = 'class'
+  genDiagramError.value = ''
+  showGenDiagramModal.value = true
+}
+
+const generateDiagram = async () => {
+  const text = genDiagramText.value.trim()
+  if (!text) {
+    genDiagramError.value = '请输入业务描述'
+    return
+  }
+  if (!currentModelId.value) {
+    genDiagramError.value = '请先创建或选择一个项目'
+    return
+  }
+  const kind = genDiagramKind.value
+  genDiagramError.value = ''
+  genDiagramLoading.value = true
+  try {
+    const res = await fetch(`/api/v1/project/${currentModelId.value}/ai/generate-diagram`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
+      },
+      body: JSON.stringify({ text, kind, view_type: genDiagramViewType.value })
+    })
+    const data = await res.json()
+    if (!res.ok || data.error) {
+      genDiagramError.value = data.error || `生成失败: HTTP ${res.status}`
+      return
+    }
+    if (kind === 'uml') {
+      saveUmlHistory()
+      elements = data.elements || []
+      connections = data.relationships || []
+      selectedElement = null
+      activeTab.value = 'uml'
+      redraw()
+    } else {
+      saveErHistory()
+      erEntities = data.entities || []
+      erRelations = data.relationships || []
+      erSelectedEntity = null
+      activeTab.value = 'data'
+      redrawErCanvas()
+    }
+    updateStats()
+    showGenDiagramModal.value = false
+    alert(`生成成功：已画到${kind === 'uml' ? 'UML' : 'ER'}画布，记得点「保存」落盘`)
+  } catch (e: any) {
+    genDiagramError.value = e?.message || '生成请求失败，请检查后端服务'
+  } finally {
+    genDiagramLoading.value = false
   }
 }
 
@@ -3350,6 +3616,9 @@ onMounted(() => {
 </script>
 
 <template>
+  <!-- 液态玻璃背景光斑（在登录页与主界面下方） -->
+  <div class="bg-blobs" aria-hidden="true"></div>
+
   <!-- 登录门禁：未认证前不渲染主界面 -->
   <div v-if="!authChecked" class="app-loading">
     <i class="fas fa-spinner fa-spin"></i> 正在加载...
@@ -3367,6 +3636,10 @@ onMounted(() => {
         </div>
       </div>
       <div class="header-right">
+        <button class="btn-help" @click="showHelpModal = true" title="新手教程">
+          <i class="fas fa-circle-question"></i>
+          <span>帮助</span>
+        </button>
         <div class="user-chip">
           <div class="user-avatar">{{ (authUser?.username || 'U').charAt(0).toUpperCase() }}</div>
           <span class="user-name">{{ authUser?.username }}</span>
@@ -3405,12 +3678,13 @@ onMounted(() => {
 
     <div class="nav-tabs">
       <button 
-        v-for="tab in tabs" 
-        :key="tab.id" 
+        v-for="tab in navTabs"
+        :key="tab.id"
         :class="['nav-tab', { active: activeTab === tab.id }]"
+        :data-tab="tab.id"
         @click="activeTab = tab.id"
       >
-        {{ tab.name }}
+        <i :class="tab.icon"></i> {{ tab.name }}
       </button>
     </div>
 
@@ -3434,7 +3708,7 @@ onMounted(() => {
     <div class="ribbon-group">
       <div class="ribbon-group-label">AI</div>
       <div style="position:relative; display:inline-block;">
-        <button class="toolbar-btn" @click="toggleAiMenu('uml')" :class="{ active: openAiMenu === 'uml' }" title="AI 功能">
+        <button class="toolbar-btn" @click="toggleAiMenu('uml')" :class="{ active: openAiMenu === 'uml' }" title="AI 功能" data-tour="ai">
           <i class="fas fa-robot"></i> AI <i class="fas fa-chevron-down" style="font-size:10px;"></i>
         </button>
         <div v-if="openAiMenu === 'uml'" class="ai-dropdown">
@@ -3447,6 +3721,9 @@ onMounted(() => {
           </button>
           <button class="ai-dropdown-item" @click="runAiAction('uml', 'edit')">
             <i class="fas fa-comment-dots"></i> AI对话式编辑
+          </button>
+          <button class="ai-dropdown-item" @click="openGenerateDiagram('uml')">
+            <i class="fas fa-wand-magic-sparkles"></i> 从描述生成图
           </button>
         </div>
       </div>
@@ -3540,6 +3817,9 @@ onMounted(() => {
         <button class="ai-dropdown-item" @click="runAiAction('er', 'edit')">
           <i class="fas fa-comment-dots"></i> AI对话式编辑
         </button>
+        <button class="ai-dropdown-item" @click="openGenerateDiagram('er')">
+          <i class="fas fa-wand-magic-sparkles"></i> 从描述生成图
+        </button>
       </div>
     </div>
   </div>
@@ -3564,7 +3844,7 @@ onMounted(() => {
 
       <div class="card">
         <div class="card-icon" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
-          <i class="fas fa-sitemap"></i>
+          <i class="fas fa-diagram-project"></i>
         </div>
         <h3 class="card-title">UML建模</h3>
         <p class="card-desc">创建类图、序列图、活动图等UML图表</p>
@@ -3575,7 +3855,7 @@ onMounted(() => {
 
       <div class="card">
         <div class="card-icon" style="background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);">
-          <i class="fas fa-building"></i>
+          <i class="fas fa-cubes"></i>
         </div>
         <h3 class="card-title">ArchiMate建模</h3>
         <p class="card-desc">企业架构可视化与分析</p>
@@ -3618,64 +3898,6 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- 操作流程图 -->
-    <div v-if="activeTab === 'dashboard'" class="card" style="margin-top: 30px;">
-      <h3 class="card-title" style="margin-bottom: 20px;">
-        <i class="fas fa-project-diagram"></i> 操作流程图
-      </h3>
-      <div class="workflow-container">
-        <svg width="100%" height="200" viewBox="0 0 1000 200">
-          <!-- 流程节点 -->
-          <g class="workflow-node" @click="activeTab = 'projects'">
-            <rect x="50" y="70" width="160" height="60" rx="10" fill="#1f5eff" />
-            <text x="130" y="95" text-anchor="middle" fill="white" font-size="14" font-weight="bold">创建项目</text>
-            <text x="130" y="115" text-anchor="middle" fill="white" font-size="11">新建或选择项目</text>
-          </g>
-
-          <g class="workflow-node" @click="activeTab = 'uml'">
-            <rect x="270" y="70" width="160" height="60" rx="10" fill="#11998e" />
-            <text x="350" y="95" text-anchor="middle" fill="white" font-size="14" font-weight="bold">UML建模</text>
-            <text x="350" y="115" text-anchor="middle" fill="white" font-size="11">设计类图和关系</text>
-          </g>
-
-          <g class="workflow-node">
-            <rect x="490" y="70" width="160" height="60" rx="10" fill="#eb3349" />
-            <text x="570" y="95" text-anchor="middle" fill="white" font-size="14" font-weight="bold">保存模型</text>
-            <text x="570" y="115" text-anchor="middle" fill="white" font-size="11">保存到服务器</text>
-          </g>
-
-          <g class="workflow-node" @click="activeTab = 'code'">
-            <rect x="710" y="70" width="160" height="60" rx="10" fill="#43e97b" />
-            <text x="790" y="95" text-anchor="middle" fill="white" font-size="14" font-weight="bold">生成代码</text>
-            <text x="790" y="115" text-anchor="middle" fill="white" font-size="11">自动生成代码</text>
-          </g>
-
-          <!-- 箭头 -->
-          <defs>
-            <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-              <polygon points="0 0, 10 3.5, 0 7" fill="#666" />
-            </marker>
-          </defs>
-
-          <line x1="210" y1="100" x2="260" y2="100" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)" />
-          <line x1="430" y1="100" x2="480" y2="100" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)" />
-          <line x1="650" y1="100" x2="700" y2="100" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)" />
-
-          <!-- 步骤标签 -->
-          <text x="130" y="50" text-anchor="middle" fill="#1f5eff" font-size="16" font-weight="bold">步骤 1</text>
-          <text x="350" y="50" text-anchor="middle" fill="#11998e" font-size="16" font-weight="bold">步骤 2</text>
-          <text x="570" y="50" text-anchor="middle" fill="#eb3349" font-size="16" font-weight="bold">步骤 3</text>
-          <text x="790" y="50" text-anchor="middle" fill="#43e97b" font-size="16" font-weight="bold">步骤 4</text>
-        </svg>
-      </div>
-      <div style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #1f5eff;">
-        <p style="margin: 0; color: #666; font-size: 14px;">
-          <i class="fas fa-info-circle" style="color: #1f5eff; margin-right: 8px;"></i>
-          <strong>快速开始：</strong>点击「创建项目」开始您的建模之旅，然后使用UML工具设计类图，保存模型后即可自动生成代码。
-        </p>
-      </div>
-    </div>
-
     <div v-if="activeTab === 'projects'" class="card">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
         <h3 class="card-title" style="margin: 0;">项目列表</h3>
@@ -3686,6 +3908,7 @@ onMounted(() => {
       
       <div class="model-list">
         <div v-for="model in models" :key="model.id" class="model-item">
+          <div class="model-icon" :style="projectIconStyle(model.name)">{{ projectInitial(model.name) }}</div>
           <div class="model-info">
             <h4>{{ model.name }}</h4>
             <p>{{ model.description || '暂无描述' }}</p>
@@ -3955,6 +4178,49 @@ onMounted(() => {
       <p v-else style="color:#999;">暂无{{ devTabs.find(t => t.id === activeDevTab)?.name }}数据，点「新增」或「AI 生成」创建。</p>
     </div>
 
+    <!-- 后台管理（仅 admin） -->
+    <div v-if="activeTab === 'admin'" class="card">
+      <h3 class="card-title"><i class="fas fa-shield-halved" style="color:#1f5eff;"></i> 后台管理</h3>
+      <p class="card-desc">管理系统所有账号与各账号下的项目</p>
+
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px;">
+        <button class="btn btn-primary" @click="openAdminUserModal(null)"><i class="fas fa-user-plus"></i> 新增用户</button>
+        <button class="btn btn-outline" @click="loadAdminUsers"><i class="fas fa-sync"></i> 刷新</button>
+      </div>
+
+      <div v-if="adminError" style="color:#d33; background:#fdf0f0; padding:10px; border-radius:8px; margin-bottom:12px;">
+        <i class="fas fa-exclamation-triangle"></i> {{ adminError }}
+      </div>
+
+      <table class="table" v-if="adminUsers.length">
+        <thead>
+          <tr>
+            <th>用户名</th>
+            <th>邮箱</th>
+            <th>角色</th>
+            <th>创建时间</th>
+            <th>项目数</th>
+            <th style="width:220px;">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="u in adminUsers" :key="u.id">
+            <td>{{ u.username }}</td>
+            <td>{{ u.email || '-' }}</td>
+            <td><span :class="['badge', u.role === 'admin' ? 'badge-warning' : 'badge-info']">{{ u.role === 'admin' ? '管理员' : '普通用户' }}</span></td>
+            <td>{{ (u.created_at || '').slice(0, 10) }}</td>
+            <td>{{ u.project_count }}</td>
+            <td>
+              <button class="btn btn-outline" style="padding:4px 8px; font-size:12px; margin-right:4px;" @click="viewUserProjects(u)">项目</button>
+              <button class="btn btn-outline" style="padding:4px 8px; font-size:12px; margin-right:4px;" @click="openAdminUserModal(u)">编辑</button>
+              <button class="btn-delete" @click="removeAdminUser(u)"><i class="fas fa-trash"></i></button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else style="color:#999;">暂无用户{{ adminLoading ? '（加载中）' : '' }}</p>
+    </div>
+
     <div v-if="activeTab === 'ai'" class="card" style="padding: 0; height: calc(100vh - 120px);">
       <AIAssistant :project-context="projectContext" :project-id="currentModelId || ''" />
     </div>
@@ -3962,6 +4228,82 @@ onMounted(() => {
 
   <!-- AI 下拉菜单的外层遮罩：点击任意空白关闭 -->
   <div v-if="openAiMenu" class="ai-menu-overlay" @click="openAiMenu = null"></div>
+
+  <!-- 新手教程 -->
+  <div v-if="showHelpModal" class="modal-overlay" @click.self="showHelpModal = false">
+    <div class="modal-content help-modal">
+      <span class="modal-close" @click="showHelpModal = false">&times;</span>
+      <h3 style="margin-top:0;"><i class="fas fa-circle-question" style="color:#1f5eff;"></i> 新手教程</h3>
+      <p style="color:#666; font-size:13px; margin-bottom:16px;">用 2 分钟了解这个平台能做什么，然后开始建模。</p>
+
+      <div class="help-section">
+        <h4><i class="fas fa-user-lock"></i> 一、账号</h4>
+        <ul>
+          <li>登录 / 注册在首页完成；右上角「退出」退出账号</li>
+          <li>每个账号的项目互相隔离，别人看不到你的模型</li>
+        </ul>
+      </div>
+
+      <div class="help-section">
+        <h4><i class="fas fa-compass"></i> 二、三步上手</h4>
+        <ol>
+          <li>进「项目管理」→ 新建项目，起个名字</li>
+          <li>打开项目，顶部导航选一种画布：<b>UML建模 / ArchiMate / 数据建模</b></li>
+          <li>点顶部工具栏的图形按钮，再点画布添加元素；拖动调整位置</li>
+        </ol>
+      </div>
+
+      <div class="help-section">
+        <h4><i class="fas fa-palette"></i> 三、三种画布</h4>
+        <ul>
+          <li><b>UML</b>：类 / 接口 / 关系（继承、组合、关联…）——画系统设计</li>
+          <li><b>ArchiMate</b>：业务 / 应用 / 技术三层——画企业架构</li>
+          <li><b>数据建模</b>：表 / 字段 / 主外键——画数据库，还能一键生成 SQL</li>
+          <li>通用操作：双击元素编辑 · 右键删除 · <b>Ctrl+Z</b> 撤销 / <b>Ctrl+Y</b> 重做 · 记得点「保存」</li>
+        </ul>
+      </div>
+
+      <div class="help-section">
+        <h4><i class="fas fa-robot"></i> 四、AI 功能（画布顶部「AI」按钮）</h4>
+        <ul>
+          <li><b>AI 校验</b>：检查 UML 模型问题；<b>AI 架构评审</b>：评审 ArchiMate 架构</li>
+          <li><b>AI 分析</b>：选中一个元素，让 AI 点评优缺点</li>
+          <li><b>AI 对话式编辑</b>：用一句话改模型，比如「给 Order 类加个 status 字段」</li>
+          <li>「代码生成」页：模型 → 代码 · 贴代码 → 反推模型 · AI 生成设计文档/报表</li>
+        </ul>
+      </div>
+
+      <div class="help-section">
+        <h4><i class="fas fa-comment-dots"></i> 五、AI 助手</h4>
+        <ul>
+          <li>右下角「AI助手」页对话问答，回复实时流式输出</li>
+          <li><b>记忆库</b>：说「记住：xxx」自动保存，以后 AI 会记住你的项目偏好</li>
+        </ul>
+      </div>
+
+      <div class="help-section">
+        <h4><i class="fas fa-tasks"></i> 六、研发管理</h4>
+        <ul>
+          <li>管理项目的<b>需求 / 测试用例 / 缺陷 / 任务</b>，支持 AI 一键生成</li>
+        </ul>
+      </div>
+
+      <div class="help-section">
+        <h4><i class="fas fa-lightbulb"></i> 七、小贴士</h4>
+        <ul>
+          <li>画布底部状态栏显示当前项目 / 元素数 / 当前工具</li>
+          <li>顶部功能区可导出图片；工具都带图标和文字提示，悬停可见说明</li>
+        </ul>
+      </div>
+
+      <div style="margin-top:18px; display:flex; justify-content:space-between; align-items:center; gap:10px;">
+        <button class="btn btn-outline" @click="startTour" style="border-color:#1f5eff; color:#1f5eff;">
+          <i class="fas fa-compass"></i> 遇到了问题？需要引导？
+        </button>
+        <button class="btn btn-primary" @click="showHelpModal = false">开始使用</button>
+      </div>
+    </div>
+  </div>
 
   <div v-if="showValidateModal" class="modal-overlay" @click.self="showValidateModal = false">
     <div class="modal-content" style="width: 660px; max-height: 80vh; overflow-y: auto;">
@@ -4367,6 +4709,128 @@ onMounted(() => {
       </div>
     </div>
   </div>
+
+  <!-- AI 从描述生成图 -->
+  <div v-if="showGenDiagramModal" class="modal-overlay" @click.self="showGenDiagramModal = false">
+    <div class="modal-content" style="width: 560px;">
+      <span class="modal-close" @click="showGenDiagramModal = false">&times;</span>
+      <h3 style="margin-bottom:12px;"><i class="fas fa-wand-magic-sparkles" style="color:#1f5eff;"></i> AI 从描述生成{{ genDiagramKind === 'uml' ? 'UML' : 'ER' }}图</h3>
+
+      <div class="form-group" v-if="genDiagramKind === 'uml'">
+        <label>图表类型</label>
+        <select v-model="genDiagramViewType" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:8px; font-size:14px;">
+          <option value="class">类图</option>
+          <option value="use_case">用例图</option>
+          <option value="activity">活动图</option>
+          <option value="sequence">时序图</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>业务描述</label>
+        <textarea v-model="genDiagramText" rows="6"
+          placeholder="用自然语言描述你的系统，例如：设计一个图书管理系统，有图书、读者、借阅记录，读者可以借阅和归还图书…"
+          style="width:100%; padding:12px; border:1px solid #ddd; border-radius:8px; font-size:14px; resize:vertical; font-family:inherit;"></textarea>
+      </div>
+
+      <div v-if="genDiagramError" style="color:#d33; background:#fdf0f0; padding:10px; border-radius:8px; margin-top:4px;">
+        <i class="fas fa-exclamation-triangle"></i> {{ genDiagramError }}
+      </div>
+
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:16px;">
+        <button class="btn btn-outline" @click="showGenDiagramModal = false">取消</button>
+        <button class="btn btn-primary" @click="generateDiagram" :disabled="genDiagramLoading || !genDiagramText.trim()">
+          <i v-if="genDiagramLoading" class="fas fa-spinner fa-spin"></i> {{ genDiagramLoading ? '生成中...' : '生成' }}
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 后台管理：新增/编辑用户 -->
+  <div v-if="showAdminUserModal" class="modal-overlay" @click.self="showAdminUserModal = false">
+    <div class="modal-content" style="width: 480px;">
+      <span class="modal-close" @click="showAdminUserModal = false">&times;</span>
+      <h3 style="margin-bottom:16px;">{{ editingAdminUser ? '编辑用户' : '新增用户' }}</h3>
+      <div class="form-group" v-if="!editingAdminUser">
+        <label>用户名</label>
+        <input v-model="adminUserForm.username" placeholder="请输入用户名" />
+      </div>
+      <div class="form-group">
+        <label>邮箱</label>
+        <input v-model="adminUserForm.email" placeholder="name@example.com" />
+      </div>
+      <div class="form-group">
+        <label>{{ editingAdminUser ? '新密码（留空不修改）' : '密码' }}</label>
+        <input v-model="adminUserForm.password" type="password" :placeholder="editingAdminUser ? '留空则不修改' : '请输入密码'" />
+      </div>
+      <div class="form-group">
+        <label>角色</label>
+        <select v-model="adminUserForm.role" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:8px; font-size:14px;">
+          <option value="user">普通用户</option>
+          <option value="admin">管理员</option>
+        </select>
+      </div>
+      <div v-if="adminError" style="color:#d33; background:#fdf0f0; padding:10px; border-radius:8px; margin-bottom:8px;">
+        <i class="fas fa-exclamation-triangle"></i> {{ adminError }}
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:16px;">
+        <button class="btn btn-outline" @click="showAdminUserModal = false">取消</button>
+        <button class="btn btn-primary" @click="saveAdminUser">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 后台管理：查看用户项目 -->
+  <div v-if="showAdminProjectsModal" class="modal-overlay" @click.self="showAdminProjectsModal = false">
+    <div class="modal-content" style="width: 640px; max-height: 80vh; overflow-y: auto;">
+      <span class="modal-close" @click="showAdminProjectsModal = false">&times;</span>
+      <h3 style="margin-bottom:12px;">用户「{{ viewingAdminUser?.username }}」的项目（{{ adminProjects.length }}）</h3>
+      <table class="table" v-if="adminProjects.length">
+        <thead>
+          <tr>
+            <th>名称</th>
+            <th>描述</th>
+            <th>可见性</th>
+            <th style="width:80px;">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="p in adminProjects" :key="p.id">
+            <td>{{ p.name }}</td>
+            <td>{{ p.description || '-' }}</td>
+            <td>{{ p.visibility || 'private' }}</td>
+            <td><button class="btn-delete" @click="removeAdminProject(p)"><i class="fas fa-trash"></i></button></td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else style="color:#999;">该用户暂无项目。</p>
+      <div style="margin-top:16px; text-align:right;">
+        <button class="btn btn-outline" @click="showAdminProjectsModal = false">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 引导式使用教学（根层，覆盖全站） -->
+  <div v-if="showTour">
+    <div class="tour-overlay" @click="nextTourStep"></div>
+    <div class="tour-highlight" :style="tourHighlightStyle"></div>
+    <div class="tour-tooltip">
+      <div class="tour-progress">
+        <div class="tour-progress-bar" :style="{ width: ((tourStep + 1) / tourSteps.length) * 100 + '%' }"></div>
+      </div>
+      <h4 style="margin: 12px 0 8px; flex-shrink:0;"><i class="fas fa-compass" style="color:#1f5eff; margin-right:6px;"></i>{{ currentTourStep.title }}</h4>
+      <div class="tour-desc">{{ currentTourStep.desc }}</div>
+      <div class="tour-footer">
+        <span style="font-size:12px; color:#8b98ab;">{{ tourStep + 1 }} / {{ tourSteps.length }}</span>
+        <div style="display:flex; gap:8px;">
+          <button v-if="tourStep > 0" class="btn btn-outline" @click="prevTourStep">上一步</button>
+          <button class="btn btn-outline" @click="skipTour">跳过</button>
+          <button v-if="!isLastTourStep" class="btn btn-primary" @click="nextTourStep">下一步</button>
+          <button v-else class="btn btn-primary" @click="finishTour">开始探索</button>
+        </div>
+      </div>
+    </div>
+  </div>
 </template>
 
 <style>
@@ -4384,6 +4848,8 @@ onMounted(() => {
 }
 
 .container {
+  position: relative;
+  z-index: 1;
   max-width: 1240px;
   margin: 0 auto;
   padding: 20px;
@@ -4477,6 +4943,59 @@ onMounted(() => {
   color: #dc2626;
 }
 
+.btn-help {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text-2);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-help:hover {
+  background: #eef4ff;
+  border-color: #1f5eff;
+  color: #1f5eff;
+}
+
+/* 新手教程弹窗 */
+.help-modal {
+  width: 640px;
+  max-height: 82vh;
+  overflow-y: auto;
+}
+.help-section {
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+}
+.help-section h4 {
+  font-size: 14px;
+  color: var(--text);
+  margin: 0 0 6px 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.help-section h4 i {
+  color: #1f5eff;
+  width: 16px;
+  text-align: center;
+}
+.help-section ul, .help-section ol {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.8;
+}
+
 .stats-row {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -4524,6 +5043,9 @@ onMounted(() => {
 }
 
 .nav-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   padding: 9px 18px;
   border: none;
   border-radius: 8px;
@@ -4533,6 +5055,14 @@ onMounted(() => {
   background: transparent;
   color: var(--text-2);
   transition: all 0.2s;
+}
+.nav-tab i {
+  font-size: 13px;
+  color: var(--muted);
+  transition: color 0.2s;
+}
+.nav-tab:hover i {
+  color: var(--brand);
 }
 
 .nav-tab:hover {
@@ -4544,6 +5074,9 @@ onMounted(() => {
   background: var(--brand-grad);
   color: #fff;
   box-shadow: 0 4px 12px rgba(31, 94, 255, 0.35);
+}
+.nav-tab.active i {
+  color: #fff;
 }
 
 .ribbon {
@@ -4661,14 +5194,37 @@ onMounted(() => {
 
 .model-item {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 16px;
-  background: #f8f9fa;
-  border-radius: 10px;
+  gap: 14px;
+  padding: 14px 16px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
   margin-bottom: 10px;
+  transition: transform 0.3s var(--spring), box-shadow 0.3s var(--smooth);
 }
-
+.model-item:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md), inset 0 1px 1px rgba(255, 255, 255, 0.5);
+}
+.model-icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 19px;
+  font-weight: 700;
+  flex-shrink: 0;
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.4), 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+.model-info {
+  flex: 1;
+}
 .model-info h4 {
   margin-bottom: 4px;
   color: #333;
@@ -4977,6 +5533,33 @@ onMounted(() => {
   font-size: 14px;
 }
 
+/* === 液态玻璃应用到关键界面元素（浅色适配）=== */
+.header, .nav-tabs, .ribbon, .stat-card, .card:not(.canvas-container), .modal-content {
+  position: relative;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  border-color: var(--glass-border);
+  box-shadow: var(--shadow-sm), inset 0 1px 1px rgba(255, 255, 255, 0.5);
+}
+/* 画布卡保持实底，保证画布内容清晰 */
+.canvas-container {
+  background: #fff;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-color: var(--border);
+}
+/* 弹窗内容保持近实心可读（0.3 透玻璃叠在暗遮罩上会看不清表单） */
+.modal-content {
+  background: rgba(255, 255, 255, 0.94);
+}
+/* 过渡动画 */
+.modal-overlay { animation: fade-in 0.2s ease; }
+.modal-content { animation: modal-in 0.3s var(--spring); }
+.card { animation: fade-up 0.3s var(--smooth); }
+.header { animation: fade-up 0.4s var(--smooth); }
+.nav-tabs, .ribbon { animation: fade-up 0.35s var(--smooth); }
+
 .modal-overlay {
   position: fixed;
   top: 0;
@@ -5075,20 +5658,77 @@ onMounted(() => {
   border-radius: 4px;
 }
 
-.workflow-container {
-  overflow-x: auto;
-}
-
-.workflow-node {
+/* === 引导式使用教学（tour）=== */
+.tour-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9988;
+  background: transparent;
   cursor: pointer;
-  transition: transform 0.2s;
+}
+.tour-highlight {
+  position: fixed;
+  z-index: 9990;
+  border-radius: 14px;
+  border: 2px solid #1f5eff;
+  box-shadow: 0 0 0 9999px rgba(15, 23, 42, 0.5);
+  pointer-events: none;
+  transition: left 0.35s cubic-bezier(0.25, 0.46, 0.45, 0.94),
+    top 0.35s cubic-bezier(0.25, 0.46, 0.45, 0.94),
+    width 0.35s cubic-bezier(0.25, 0.46, 0.45, 0.94),
+    height 0.35s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+.tour-tooltip {
+  position: fixed;
+  z-index: 9995;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 440px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 16px;
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.18);
+  padding: 14px 20px 16px;
+  animation: modal-in 0.3s ease;
+}
+.tour-desc {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  color: #5b6b82;
+  font-size: 14px;
+  line-height: 1.7;
+  margin: 0;
+}
+.tour-footer {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #e3e9f2;
+}
+.tour-progress {
+  height: 4px;
+  background: #e3e9f2;
+  border-radius: 2px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.tour-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #1f5eff, #8b5cf6);
+  border-radius: 2px;
+  transition: width 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
 }
 
-.workflow-node:hover {
-  transform: scale(1.05);
-}
-
-.workflow-node rect {
-  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
-}
 </style>

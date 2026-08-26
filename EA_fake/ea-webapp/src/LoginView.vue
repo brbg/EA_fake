@@ -4,7 +4,7 @@
 import { ref, computed } from 'vue'
 
 const emit = defineEmits<{
-  (e: 'authenticated', user: { username: string; email: string }): void
+  (e: 'authenticated', user: { username: string; email: string; role?: string; id?: string; is_new?: boolean }): void
 }>()
 
 type AuthMode = 'login' | 'register'
@@ -88,7 +88,10 @@ const doAuth = async () => {
       sessionStorage.setItem('ea_user', JSON.stringify(data.user || {}))
       emit('authenticated', {
         username: data.user?.username || form.value.username.trim(),
-        email: data.user?.email || ''
+        email: data.user?.email || '',
+        role: data.user?.role || '',
+        id: data.user?.id || '',
+        is_new: !!data.is_new
       })
     } else {
       // 注册成功 → 自动切换到登录页，填好用户名，方便直接登录
@@ -298,10 +301,14 @@ const submit = () => {
   z-index: 1;
   width: 100%;
   max-width: 420px;
-  background: #fff;
+  background: rgba(255, 255, 255, 0.42);
+  backdrop-filter: blur(22px) saturate(1.5);
+  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  border: 1px solid rgba(255, 255, 255, 0.55);
   border-radius: 20px;
-  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.6);
   padding: 36px 36px 28px;
+  animation: modal-in 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .auth-brand {

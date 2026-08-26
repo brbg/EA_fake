@@ -51,6 +51,68 @@ code, pre, .mono {
   font-family: ui-monospace, 'Cascadia Code', Consolas, 'Courier New', monospace;
 }
 
+/* === 液态玻璃（iOS 26 Liquid Glass，浅色适配）=== */
+:root {
+  --glass-blur: 18px;
+  --glass-saturation: 1.4;
+  --glass-bg: rgba(255, 255, 255, 0.3);
+  --glass-border: rgba(255, 255, 255, 0.5);
+  --glass-highlight: linear-gradient(135deg, rgba(255, 255, 255, 0.75) 0%, rgba(255, 255, 255, 0.18) 45%, transparent 68%);
+  --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --smooth: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+.glass {
+  position: relative;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-sm), inset 0 1px 1px rgba(255, 255, 255, 0.5);
+}
+.glass::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--glass-highlight);
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* 背景彩色光斑（液态玻璃靠它折射） */
+.bg-blobs {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background:
+    radial-gradient(650px 650px at 12% 18%, rgba(31, 94, 255, 0.4), transparent 62%),
+    radial-gradient(560px 560px at 82% 12%, rgba(124, 92, 255, 0.38), transparent 62%),
+    radial-gradient(600px 600px at 70% 78%, rgba(217, 119, 6, 0.32), transparent 62%),
+    radial-gradient(560px 560px at 22% 82%, rgba(22, 163, 74, 0.3), transparent 62%);
+  animation: blob-drift 22s ease-in-out infinite alternate;
+}
+@keyframes blob-drift {
+  0% { transform: translate3d(0, 0, 0) scale(1); }
+  100% { transform: translate3d(-18px, 22px, 0) scale(1.06); }
+}
+
+/* 过渡动画：模态淡入缩放 / 卡片上浮 / 通用 */
+@keyframes modal-in {
+  from { opacity: 0; transform: scale(0.95) translateY(10px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 /* 细滚动条，视觉更轻盈 */
 ::-webkit-scrollbar {
   width: 8px;
