@@ -4849,7 +4849,8 @@ onMounted(() => {
 
 .container {
   position: relative;
-  z-index: 1;
+  /* 不能设 z-index：会创建层叠上下文，把内部 AI 下拉(z-index:1000)封在容器(z-index:1)里，
+     被根层 .ai-menu-overlay(z-index:900) 盖住 → 菜单点了没反应 */
   max-width: 1240px;
   margin: 0 auto;
   padding: 20px;
