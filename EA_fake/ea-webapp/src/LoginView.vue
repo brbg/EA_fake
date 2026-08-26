@@ -2,6 +2,7 @@
 // 登录 / 注册页。作为主界面（App.vue）的登录门使用：
 // 未登录时全屏展示，登录或注册成功后把 session 存入 sessionStorage 并通知父组件进入主界面。
 import { ref, computed } from 'vue'
+import { authApi } from './api/auth'
 
 const emit = defineEmits<{
   (e: 'authenticated', user: { username: string; email: string; role?: string; id?: string; is_new?: boolean }): void
@@ -70,15 +71,12 @@ const doAuth = async () => {
           password: form.value.password
         }
 
-    const res = await fetch(isLogin ? '/api/auth/login' : '/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    })
+    const { ok, data } = isLogin
+      ? await authApi.login(body as { username: string; password: string })
+      : await authApi.register(body as { username: string; email: string; password: string })
 
-    const data = await res.json()
-    if (!res.ok) {
-      errorMsg.value = data.error || '请求失败，请稍后重试'
+    if (!ok) {
+      errorMsg.value = data?.error || '请求失败，请稍后重试'
       return
     }
 

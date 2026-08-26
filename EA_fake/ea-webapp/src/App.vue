@@ -6,6 +6,12 @@ import LoginView from './LoginView.vue'
 import type { ProjectContext } from './projectContext'
 import { getAIConfig } from './aiService'
 import { setupCanvasTransform, toLogical, LOGICAL_W, LOGICAL_H } from './canvasUtils'
+// 统一 API 层（借鉴 AI_EA_Web 分层：request.ts + 按域 api 模块）
+import { authApi } from './api/auth'
+import { modelApi } from './api/models'
+import { aiApi, codeApi } from './api/ai'
+import { devApi } from './api/dev'
+import { adminApi } from './api/admin'
 
 // === 登录门禁状态 ===
 const authUser = ref<{ username: string; email: string; role?: string; id?: string } | null>(null)
@@ -31,11 +37,8 @@ const checkAuth = async () => {
     return
   }
   try {
-    const res = await fetch('/api/auth/validate', {
-      headers: { 'X-Session-Id': sid }
-    })
-    if (res.ok) {
-      const data = await res.json()
+    const { ok, data } = await authApi.validate()
+    if (ok) {
       let saved = null
       try {
         saved = JSON.parse(sessionStorage.getItem('ea_user') || 'null')
@@ -43,10 +46,10 @@ const checkAuth = async () => {
         saved = null
       }
       authUser.value = {
-        username: data.user?.username || saved?.username || '用户',
+        username: data?.user?.username || saved?.username || '用户',
         email: saved?.email || '',
-        role: data.user?.role || saved?.role || '',
-        id: data.user?.id || saved?.id || ''
+        role: data?.user?.role || saved?.role || '',
+        id: data?.user?.id || saved?.id || ''
       }
       enterApp()
     } else {
@@ -72,13 +75,7 @@ const onAuthenticated = (user: { username: string; email: string; role?: string;
 
 const logout = async () => {
   try {
-    await fetch('/api/auth/logout', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
-      }
-    })
+    await authApi.logout()
   } catch (e) {
     // 忽略登出接口异常，前端仍然清理本地会话
   }
@@ -438,20 +435,15 @@ const DEV_LIST_KEY: Record<DevKind, string> = {
   defect: 'defects',
   task: 'tasks',
 }
-const devApi = (k: DevKind) => `/api/v1/project/${currentModelId.value}/${k}`
-
 const loadDevList = async () => {
   const k = activeDevTab.value
   if (!currentModelId.value) { devList.value = []; return }
   devLoading.value = true
   devError.value = ''
   try {
-    const res = await fetch(devApi(k), {
-      headers: { 'X-Session-Id': sessionStorage.getItem('sessionId') || '' }
-    })
-    const data = await res.json()
-    if (!res.ok || data.error) { devError.value = data.error || '加载失败'; return }
-    devList.value = data[DEV_LIST_KEY[k]] || []
+    const { ok, status, data } = await devApi.list(k, currentModelId.value)
+    if (!ok || data?.error) { devError.value = data?.error || `加载失败: HTTP ${status}`; return }
+    devList.value = (data as any)?.[DEV_LIST_KEY[k]] || []
   } catch (e: any) {
     devError.value = e?.message || '加载失败'
   } finally { devLoading.value = false }
@@ -471,13 +463,8 @@ const saveDev = async () => {
   const k = activeDevTab.value
   const body = editingDev.value ? { ...devForm.value, id: editingDev.value.id } : devForm.value
   try {
-    const res = await fetch(devApi(k), {
-      method: editingDev.value ? 'PUT' : 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Session-Id': sessionStorage.getItem('sessionId') || '' },
-      body: JSON.stringify(body)
-    })
-    const data = await res.json()
-    if (!res.ok || data.error) { devError.value = data.error || '保存失败'; return }
+    const { ok, status, data } = await devApi.crud(k, currentModelId.value, body)
+    if (!ok || data?.error) { devError.value = data?.error || `保存失败: HTTP ${status}`; return }
     showDevModal.value = false
     loadDevList()
   } catch (e: any) { devError.value = e?.message || '保存失败' }
@@ -486,14 +473,9 @@ const removeDev = async (item: any) => {
   const k = activeDevTab.value
   if (!confirm(`确定删除「${item.name || item.id}」？`)) return
   try {
-    const res = await fetch(devApi(k), {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json', 'X-Session-Id': sessionStorage.getItem('sessionId') || '' },
-      body: JSON.stringify({ id: item.id })
-    })
-    const data = await res.json()
-    if (!res.ok || data.error) {
-      devError.value = data.error || `删除失败: HTTP ${res.status}`
+    const { ok, status, data } = await devApi.remove(k, currentModelId.value, item.id)
+    if (!ok || data?.error) {
+      devError.value = data?.error || `删除失败: HTTP ${status}`
       return
     }
     loadDevList()
@@ -534,11 +516,8 @@ const canGenerateDevAi = computed(() => {
 const loadDevReqOptions = async () => {
   if (!currentModelId.value) { devReqOptions.value = []; return }
   try {
-    const res = await fetch(devApi('requirement'), {
-      headers: { 'X-Session-Id': sessionStorage.getItem('sessionId') || '' }
-    })
-    const data = await res.json()
-    devReqOptions.value = (!res.ok || data.error) ? [] : (data.requirements || [])
+    const { ok, data } = await devApi.list('requirement', currentModelId.value)
+    devReqOptions.value = (!ok || data?.error) ? [] : ((data as any)?.requirements || [])
   } catch {
     devReqOptions.value = []
   }
@@ -556,31 +535,21 @@ const openDevAi = () => {
 
 const generateDevAi = async () => {
   const k = activeDevTab.value
-  const base = `/api/v1/project/${currentModelId.value}`
-  let api = ''
-  let body: Record<string, unknown> = {}
-  if (k === 'requirement') {
-    api = `${base}/requirement/ai/generate`
-    body = { requirement_text: devAiText.value }
-  } else if (k === 'testcase') {
-    api = `${base}/testcase/ai/generate`
-    body = { req_id: devAiReqId.value, requirement_text: devAiText.value }
-  } else if (k === 'task') {
-    api = `${base}/task/ai/plan`
-    body = { req_ids: devAiReqIds.value }
-  } else {
-    return
-  }
+  const pid = currentModelId.value
   devAiGenerating.value = true
   devError.value = ''
   try {
-    const res = await fetch(api, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Session-Id': sessionStorage.getItem('sessionId') || '' },
-      body: JSON.stringify(body)
-    })
-    const data = await res.json()
-    if (!res.ok || data.error) { devError.value = data.error || '生成失败'; return }
+    let resp: { ok: boolean; status: number; data: any }
+    if (k === 'requirement') {
+      resp = await devApi.aiGenerate('requirement', pid, { requirement_text: devAiText.value })
+    } else if (k === 'testcase') {
+      resp = await devApi.aiGenerate('testcase', pid, { req_id: devAiReqId.value, requirement_text: devAiText.value })
+    } else if (k === 'task') {
+      resp = await devApi.aiPlan(pid, { req_ids: devAiReqIds.value })
+    } else {
+      return
+    }
+    if (!resp.ok || resp.data?.error) { devError.value = resp.data?.error || '生成失败'; return }
     showDevAiModal.value = false
     loadDevList()
   } catch (e: any) { devError.value = e?.message || '生成失败' }
@@ -592,12 +561,9 @@ const loadAdminUsers = async () => {
   adminLoading.value = true
   adminError.value = ''
   try {
-    const res = await fetch('/api/admin/users', {
-      headers: { 'X-Session-Id': sessionStorage.getItem('sessionId') || '' }
-    })
-    const data = await res.json()
-    if (!res.ok || data.error) { adminError.value = data.error || '加载失败'; return }
-    adminUsers.value = data.users || []
+    const { ok, data } = await adminApi.users()
+    if (!ok || data?.error) { adminError.value = data?.error || '加载失败'; return }
+    adminUsers.value = data?.users || []
   } catch (e: any) { adminError.value = e?.message || '加载失败' }
   finally { adminLoading.value = false }
 }
@@ -613,14 +579,10 @@ const saveAdminUser = async () => {
   adminError.value = ''
   try {
     const body: Record<string, unknown> = { ...f }
-    const url = editingAdminUser.value ? `/api/admin/users/${editingAdminUser.value.id}` : '/api/admin/users'
-    const res = await fetch(url, {
-      method: editingAdminUser.value ? 'PUT' : 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Session-Id': sessionStorage.getItem('sessionId') || '' },
-      body: JSON.stringify(body)
-    })
-    const data = await res.json()
-    if (!res.ok || data.error) { adminError.value = data.error || '保存失败'; return }
+    const resp = editingAdminUser.value
+      ? await adminApi.updateUser(editingAdminUser.value.id, body)
+      : await adminApi.createUser(body as { username: string; email: string; password: string; role: string })
+    if (!resp.ok || resp.data?.error) { adminError.value = resp.data?.error || '保存失败'; return }
     showAdminUserModal.value = false
     loadAdminUsers()
   } catch (e: any) { adminError.value = e?.message || '保存失败' }
@@ -630,12 +592,8 @@ const removeAdminUser = async (u: any) => {
   if (!confirm(`删除用户「${u.username}」将级联删除其所有项目，确定？`)) return
   adminError.value = ''
   try {
-    const res = await fetch(`/api/admin/users/${u.id}`, {
-      method: 'DELETE',
-      headers: { 'X-Session-Id': sessionStorage.getItem('sessionId') || '' }
-    })
-    const data = await res.json()
-    if (!res.ok || data.error) { adminError.value = data.error || '删除失败'; return }
+    const { ok, status, data } = await adminApi.deleteUser(u.id)
+    if (!ok || data?.error) { adminError.value = data?.error || `删除失败: HTTP ${status}`; return }
     loadAdminUsers()
   } catch (e: any) { adminError.value = e?.message || '删除失败' }
 }
@@ -645,12 +603,9 @@ const viewUserProjects = async (u: any) => {
   adminProjects.value = []
   adminError.value = ''
   try {
-    const res = await fetch(`/api/admin/users/${u.id}/projects`, {
-      headers: { 'X-Session-Id': sessionStorage.getItem('sessionId') || '' }
-    })
-    const data = await res.json()
-    if (!res.ok || data.error) { adminError.value = data.error || '加载失败'; return }
-    adminProjects.value = data.projects || []
+    const { ok, data } = await adminApi.userProjects(u.id)
+    if (!ok || data?.error) { adminError.value = data?.error || '加载失败'; return }
+    adminProjects.value = data?.projects || []
     showAdminProjectsModal.value = true
   } catch (e: any) { adminError.value = e?.message || '加载失败' }
 }
@@ -659,12 +614,8 @@ const removeAdminProject = async (p: any) => {
   if (!confirm(`确定删除项目「${p.name || p.id}」？`)) return
   adminError.value = ''
   try {
-    const res = await fetch(`/api/admin/projects/${p.id}`, {
-      method: 'DELETE',
-      headers: { 'X-Session-Id': sessionStorage.getItem('sessionId') || '' }
-    })
-    const data = await res.json()
-    if (!res.ok || data.error) { adminError.value = data.error || '删除失败'; return }
+    const { ok, status, data } = await adminApi.deleteProject(p.id)
+    if (!ok || data?.error) { adminError.value = data?.error || `删除失败: HTTP ${status}`; return }
     if (viewingAdminUser.value) viewUserProjects(viewingAdminUser.value)
     loadAdminUsers()
   } catch (e: any) { adminError.value = e?.message || '删除失败' }
@@ -753,16 +704,13 @@ let erRedo: ErHistoryState[] = []
 
 const loadModels = async () => {
   try {
-    const res = await fetch('/api/models', {
-      headers: { 'X-Session-Id': sessionStorage.getItem('sessionId') || '' }
-    })
-    if (!res.ok) {
-      console.error('Failed to load models:', res.status)
+    const { ok, data } = await modelApi.list()
+    if (!ok) {
+      console.error('Failed to load models:', data)
       alert('加载项目列表失败，请检查后端服务是否运行')
       return
     }
-    const data = await res.json()
-    models.value = Array.isArray(data.models) ? data.models : []
+    models.value = Array.isArray(data?.models) ? data.models : []
     updateStats()
   } catch (e) {
     console.error('Failed to load models:', e)
@@ -797,18 +745,10 @@ const createModel = async () => {
   }
   const modelName = newModel.value.name
   try {
-    const res = await fetch('/api/models', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
-      },
-      body: JSON.stringify(newModel.value)
-    })
-    const data = await res.json()
-    if (!res.ok || !data.id) {
-      console.error('Create failed:', res.status, data)
-      alert(data.error || `创建失败: HTTP ${res.status}`)
+    const { ok, status, data } = await modelApi.create(newModel.value)
+    if (!ok || !data?.id) {
+      console.error('Create failed:', status, data)
+      alert(data?.error || `创建失败: HTTP ${status}`)
       return
     }
     showCreateModal.value = false
@@ -846,14 +786,8 @@ const createModel = async () => {
 const deleteModel = async (id: string) => {
   if (!confirm('确定要删除这个项目吗？')) return
   try {
-    const res = await fetch(`/api/models/${id}`, {
-      method: 'DELETE',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
-      }
-    })
-    if (res.ok) {
+    const { ok, status, data } = await modelApi.remove(id)
+    if (ok) {
       await loadModels()
       if (currentModelId.value === id) {
         leaveProjectRoom(id)
@@ -872,14 +806,8 @@ const deleteModel = async (id: string) => {
       }
       alert('项目删除成功')
     } else {
-      const text = await res.text()
-      console.error('Delete failed:', res.status, text)
-      try {
-        const data = JSON.parse(text)
-        alert(data.error || '删除失败')
-      } catch {
-        alert(`删除失败: HTTP ${res.status}`)
-      }
+      console.error('Delete failed:', status, data)
+      alert(data?.error || `删除失败: HTTP ${status}`)
     }
   } catch (e: any) {
     console.error('Failed to delete model:', e)
@@ -928,16 +856,8 @@ const generateCode = async () => {
         payload.erEntities = erEntities
         payload.erRelations = erRelations
       }
-      const res = await fetch('/api/v1/ai/code/generate', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Session-Id': sessionStorage.getItem('sessionId') || ''
-        },
-        body: JSON.stringify(payload)
-      })
-      const data = await res.json()
-      if (!data.error && data.code) {
+      const { ok, data } = await codeApi.generate(payload)
+      if (ok && data?.code) {
         generatedCode.value = data.code
         codeGenerating.value = false
         return
@@ -996,30 +916,22 @@ const reverseCode = async () => {
   reverseError.value = ''
   reversing.value = true
   try {
-    const res = await fetch('/api/v1/ai/code/reverse', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
-      },
-      body: JSON.stringify({ code, language, target })
-    })
-    const data = await res.json()
-    if (!res.ok || data.error) {
-      reverseError.value = data.error || `反推失败: HTTP ${res.status}`
+    const { ok, status, data } = await codeApi.reverse({ code, language, target })
+    if (!ok || data?.error) {
+      reverseError.value = data?.error || `反推失败: HTTP ${status}`
       return
     }
     if (target === 'uml') {
       saveUmlHistory()
-      elements = data.elements || []
-      connections = data.relationships || []
+      elements = data?.elements || []
+      connections = data?.relationships || []
       selectedElement = null
       activeTab.value = 'uml'
       redraw()
     } else {
       saveErHistory()
-      erEntities = data.entities || []
-      erRelations = data.relationships || []
+      erEntities = data?.entities || []
+      erRelations = data?.relationships || []
       erSelectedEntity = null
       activeTab.value = 'data'
       redrawErCanvas()
@@ -1057,30 +969,24 @@ const generateDiagram = async () => {
   genDiagramError.value = ''
   genDiagramLoading.value = true
   try {
-    const res = await fetch(`/api/v1/project/${currentModelId.value}/ai/generate-diagram`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
-      },
-      body: JSON.stringify({ text, kind, view_type: genDiagramViewType.value })
+    const { ok, status, data } = await aiApi.generateDiagram(currentModelId.value, {
+      text, kind, view_type: genDiagramViewType.value
     })
-    const data = await res.json()
-    if (!res.ok || data.error) {
-      genDiagramError.value = data.error || `生成失败: HTTP ${res.status}`
+    if (!ok || data?.error) {
+      genDiagramError.value = data?.error || `生成失败: HTTP ${status}`
       return
     }
     if (kind === 'uml') {
       saveUmlHistory()
-      elements = data.elements || []
-      connections = data.relationships || []
+      elements = data?.elements || []
+      connections = data?.relationships || []
       selectedElement = null
       activeTab.value = 'uml'
       redraw()
     } else {
       saveErHistory()
-      erEntities = data.entities || []
-      erRelations = data.relationships || []
+      erEntities = data?.entities || []
+      erRelations = data?.relationships || []
       erSelectedEntity = null
       activeTab.value = 'data'
       redrawErCanvas()
@@ -1106,20 +1012,12 @@ const generateDoc = async () => {
   generatedDoc.value = ''
   docGenerating.value = true
   try {
-    const res = await fetch(`/api/v1/project/${currentModelId.value}/ai/document`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
-      },
-      body: JSON.stringify({ doc_type: docType, format })
-    })
-    const data = await res.json()
-    if (!res.ok || data.error) {
-      docError.value = data.error || `生成失败: HTTP ${res.status}`
+    const { ok, status, data } = await aiApi.document(currentModelId.value, { doc_type: docType, format })
+    if (!ok || data?.error) {
+      docError.value = data?.error || `生成失败: HTTP ${status}`
       return
     }
-    generatedDoc.value = data.content || '（生成结果为空）'
+    generatedDoc.value = data?.content || '（生成结果为空）'
   } catch (e: any) {
     docError.value = e?.message || '生成请求失败，请检查后端服务'
   } finally {
@@ -3216,30 +3114,17 @@ const saveModel = async () => {
     return
   }
   try {
-    const res = await fetch(`/api/models/${currentModelId.value}`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
-      },
-      body: JSON.stringify({
-        elements,
-        connections,
-        archimateElements,
-        archimateConnections,
-        erEntities,
-        erRelations
-      })
+    const { ok, status, data } = await modelApi.save(currentModelId.value, {
+      elements,
+      connections,
+      archimateElements,
+      archimateConnections,
+      erEntities,
+      erRelations
     })
-    if (!res.ok) {
-      const text = await res.text()
-      console.error('Save failed:', res.status, text)
-      try {
-        const data = JSON.parse(text)
-        alert(data.error || '保存失败')
-      } catch {
-        alert(`保存失败: HTTP ${res.status}`)
-      }
+    if (!ok) {
+      console.error('Save failed:', status, data)
+      alert(data?.error || `保存失败: HTTP ${status}`)
       return
     }
     alert('模型保存成功')
@@ -3264,25 +3149,10 @@ const aiValidateModel = async () => {
   showValidateModal.value = true
   try {
     // 校验读的是后端保存的模型，先把画布当前状态同步过去
-    await fetch(`/api/models/${currentModelId.value}`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
-      },
-      body: JSON.stringify({ elements, connections })
-    })
-    const res = await fetch(`/api/v1/project/${currentModelId.value}/ai/validate-uml`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
-      },
-      body: JSON.stringify({ view_id: null })
-    })
-    const data = await res.json()
-    if (!res.ok || data.error) {
-      validateError.value = data.error || `校验失败: HTTP ${res.status}`
+    await modelApi.save(currentModelId.value, { elements, connections })
+    const { ok, status, data } = await aiApi.validateUml(currentModelId.value, { view_id: null })
+    if (!ok || data?.error) {
+      validateError.value = data?.error || `校验失败: HTTP ${status}`
     } else {
       validateResult.value = data
     }
@@ -3312,17 +3182,9 @@ const aiReviewArchimate = async () => {
       },
       body: JSON.stringify({ archimateElements, archimateConnections })
     })
-    const res = await fetch(`/api/v1/project/${currentModelId.value}/ai/review-archimate`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
-      },
-      body: JSON.stringify({})
-    })
-    const data = await res.json()
-    if (!res.ok || data.error) {
-      reviewError.value = data.error || `评审失败: HTTP ${res.status}`
+    const { ok, status, data } = await aiApi.reviewArchimate(currentModelId.value)
+    if (!ok || data?.error) {
+      reviewError.value = data?.error || `评审失败: HTTP ${status}`
     } else {
       reviewResult.value = data
     }
@@ -3365,21 +3227,13 @@ const aiAnalyzeElement = async (kind: 'uml' | 'archimate' | 'er') => {
   analyzeResult.value = null
   showAnalyzeModal.value = true
   try {
-    const res = await fetch(`/api/v1/project/${currentModelId.value}/ai/analyze-element`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
-      },
-      body: JSON.stringify({
-        kind,
-        element,
-        context: { elements: ctxElements, relationships: ctxRelationships }
-      })
+    const { ok, status, data } = await aiApi.analyzeElement(currentModelId.value, {
+      kind,
+      element,
+      context: { elements: ctxElements, relationships: ctxRelationships }
     })
-    const data = await res.json()
-    if (!res.ok || data.error) {
-      analyzeError.value = data.error || `分析失败: HTTP ${res.status}`
+    if (!ok || data?.error) {
+      analyzeError.value = data?.error || `分析失败: HTTP ${status}`
     } else {
       analyzeResult.value = data
     }
@@ -3426,40 +3280,32 @@ const submitAiEditModel = async () => {
       payload.erEntities = erEntities
       payload.erRelations = erRelations
     }
-    const res = await fetch(`/api/v1/project/${currentModelId.value}/ai/edit-model`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
-      },
-      body: JSON.stringify(payload)
-    })
-    const data = await res.json()
-    if (!res.ok || data.error) {
-      editModelError.value = data.error || `编辑失败: HTTP ${res.status}`
+    const { ok, status, data } = await aiApi.editModel(currentModelId.value, payload)
+    if (!ok || data?.error) {
+      editModelError.value = data?.error || `编辑失败: HTTP ${status}`
       return
     }
     if (kind === 'uml') {
       saveUmlHistory()
-      elements = data.elements || elements
-      connections = data.connections || connections
+      elements = data?.elements || elements
+      connections = data?.connections || connections
       selectedElement = null
       redraw()
     } else if (kind === 'archimate') {
       saveArchimateHistory()
-      archimateElements = data.archimateElements || archimateElements
+      archimateElements = data?.archimateElements || archimateElements
       archimateConnections = data.archimateConnections || archimateConnections
       archimateSelectedElement = null
       redrawArchimateCanvas()
     } else {
       saveErHistory()
-      erEntities = data.erEntities || erEntities
-      erRelations = data.erRelations || erRelations
+      erEntities = data?.erEntities || erEntities
+      erRelations = data?.erRelations || erRelations
       erSelectedEntity = null
       redrawErCanvas()
     }
     updateStats()
-    editModelSuccess.value = `修改完成（应用了 ${data.applied_ops ?? 0} 步操作），画布已刷新。记得点「保存」落盘。`
+    editModelSuccess.value = `修改完成（应用了 ${data?.applied_ops ?? 0} 步操作），画布已刷新。记得点「保存」落盘。`
   } catch (e: any) {
     editModelError.value = e?.message || '编辑请求失败，请检查后端服务'
   } finally {
@@ -3469,16 +3315,13 @@ const submitAiEditModel = async () => {
 
 const loadModelFromServer = async (modelId: string) => {
   try {
-    const res = await fetch(`/api/models/${modelId}`, {
-      headers: { 'X-Session-Id': sessionStorage.getItem('sessionId') || '' }
-    })
-    const data = await res.json()
-    elements = data.elements || []
-    connections = data.relationships || data.connections || []
-    archimateElements = data.archimate_elements || []
-    archimateConnections = data.archimate_connections || []
-    erEntities = data.er_entities || []
-    erRelations = data.er_relations || []
+    const { data } = await modelApi.get(modelId)
+    elements = data?.elements || []
+    connections = data?.relationships || data?.connections || []
+    archimateElements = data?.archimate_elements || []
+    archimateConnections = data?.archimate_connections || []
+    erEntities = data?.er_entities || []
+    erRelations = data?.er_relations || []
     redraw()
     updateStats()
   } catch (e) {

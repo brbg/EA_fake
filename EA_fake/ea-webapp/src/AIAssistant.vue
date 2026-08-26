@@ -158,6 +158,7 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, nextTick, computed, watch } from 'vue'
 import { getAIConfig, updateAIConfig, chatWithAIStream } from './aiService'
+import { aiApi } from './api/ai'
 import { ProjectContext, buildMessagesWithContext } from './projectContext'
 
 const props = defineProps<{
@@ -226,11 +227,8 @@ const loadMemories = async () => {
     return
   }
   try {
-    const res = await fetch(`/api/v1/project/${props.projectId}/ai/memory`, {
-      headers: { 'X-Session-Id': sessionStorage.getItem('sessionId') || '' }
-    })
-    const data = await res.json()
-    if (data.memories) {
+    const { data } = await aiApi.memoryList(props.projectId)
+    if (data?.memories) {
       memories.value = data.memories
     }
   } catch (e) {
@@ -244,19 +242,11 @@ const addMemory = async () => {
   savingMemory.value = true
   memoryMsg.value = null
   try {
-    const res = await fetch(`/api/v1/project/${props.projectId}/ai/memory`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
-      },
-      body: JSON.stringify({ content })
-    })
-    const data = await res.json()
-    if (data.error) {
-      memoryMsg.value = { type: 'error', text: data.error }
+    const { ok, data } = await aiApi.memoryAdd(props.projectId, { content })
+    if (data?.error || !ok) {
+      memoryMsg.value = { type: 'error', text: data?.error || '保存失败' }
     } else {
-      memories.value = data.memories || memories.value
+      memories.value = data?.memories || memories.value
       newMemory.value = ''
       memoryMsg.value = { type: 'success', text: '已记入记忆库' }
     }
@@ -270,12 +260,8 @@ const addMemory = async () => {
 const deleteMemory = async (id: string) => {
   if (!props.projectId) return
   try {
-    const res = await fetch(`/api/v1/project/${props.projectId}/ai/memory/${id}`, {
-      method: 'DELETE',
-      headers: { 'X-Session-Id': sessionStorage.getItem('sessionId') || '' }
-    })
-    const data = await res.json()
-    if (data.memories) {
+    const { data } = await aiApi.memoryDelete(props.projectId, id)
+    if (data?.memories) {
       memories.value = data.memories
     }
   } catch (e) {
@@ -287,14 +273,7 @@ const deleteMemory = async (id: string) => {
 const saveMemorySilently = async (content: string) => {
   if (!props.projectId || !content) return
   try {
-    await fetch(`/api/v1/project/${props.projectId}/ai/memory`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
-      },
-      body: JSON.stringify({ content })
-    })
+    await aiApi.memoryAdd(props.projectId, { content })
     await loadMemories()
     memoryMsg.value = { type: 'success', text: '已记入项目记忆库' }
   } catch (e) {
