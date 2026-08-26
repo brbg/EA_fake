@@ -9960,10 +9960,6 @@ class TraceRelation:
         }
 
 # 缓存
-requirements_cache = {}
-test_cases_cache = {}
-defects_cache = {}
-tasks_cache = {}
 milestones_cache = {}
 trace_relations_cache = {}
 
@@ -10110,32 +10106,32 @@ def generate_project_report(project_id, report_type):
     
     if report_type == 'requirement':
         # 需求报表
-        reqs = [r for r in requirements_cache.values() if r.project_id == project_id]
+        reqs = _load_dev_entries('req', project_id)
         report['content'] = {
             'total_requirements': len(reqs),
             'by_status': {},
             'by_priority': {},
             'by_type': {}
         }
-        
+
         for req in reqs:
             # 按状态统计
-            status = req.status
+            status = req.get('status')
             report['content']['by_status'][status] = report['content']['by_status'].get(status, 0) + 1
-            
+
             # 按优先级统计
-            priority = req.priority
+            priority = req.get('priority')
             report['content']['by_priority'][priority] = report['content']['by_priority'].get(priority, 0) + 1
-            
+
             # 按类型统计
-            req_type = req.type
+            req_type = req.get('type')
             report['content']['by_type'][req_type] = report['content']['by_type'].get(req_type, 0) + 1
-    
+
     elif report_type == 'test':
         # 测试报表
-        cases = [c for c in test_cases_cache.values() if c.project_id == project_id]
-        defects = [d for d in defects_cache.values() if d.project_id == project_id]
-        
+        cases = _load_dev_entries('tc', project_id)
+        defects = _load_dev_entries('def', project_id)
+
         report['content'] = {
             'total_test_cases': len(cases),
             'total_defects': len(defects),
@@ -10143,31 +10139,31 @@ def generate_project_report(project_id, report_type):
             'defects_by_status': {},
             'test_coverage': '75%'
         }
-        
+
         for defect in defects:
-            level = defect.level
+            level = defect.get('level')
             report['content']['defects_by_level'][level] = report['content']['defects_by_level'].get(level, 0) + 1
-            
-            status = defect.status
+
+            status = defect.get('status')
             report['content']['defects_by_status'][status] = report['content']['defects_by_status'].get(status, 0) + 1
-    
+
     elif report_type == 'task':
         # 任务报表
-        task_list = [t for t in tasks_cache.values() if t.project_id == project_id]
-        
+        task_list = _load_dev_entries('task', project_id)
+
         report['content'] = {
             'total_tasks': len(task_list),
             'by_status': {},
             'by_type': {},
-            'total_work_hours': sum(t.work_hours for t in task_list),
+            'total_work_hours': sum((t.get('work_hours') or 0) for t in task_list),
             'completion_rate': '60%'
         }
-        
+
         for task in task_list:
-            status = task.status
+            status = task.get('status')
             report['content']['by_status'][status] = report['content']['by_status'].get(status, 0) + 1
-            
-            task_type = task.type
+
+            task_type = task.get('type')
             report['content']['by_type'][task_type] = report['content']['by_type'].get(task_type, 0) + 1
     
     elif report_type == 'trace':
@@ -10727,15 +10723,15 @@ def manage_gantt(project_id):
     
     if request.method == 'GET':
         # 获取甘特图数据
-        tasks = [t for t in tasks_cache.values() if t.project_id == project_id]
+        tasks = _load_dev_entries('task', project_id)
         milestones = [m.to_dict() for m in milestones_cache.values() if m.project_id == project_id]
-        
+
         gantt_data = {
-            'tasks': [t.to_dict() for t in tasks],
+            'tasks': tasks,
             'milestones': milestones,
             'critical_path': []
         }
-        
+
         return jsonify({'gantt': gantt_data})
     
     elif request.method == 'POST':
@@ -11061,15 +11057,26 @@ def ai_generate_document(project_id, template_id, style='technical'):
     # 获取项目信息
     project = projects_cache.get(project_id, {'name': '未命名项目', 'description': ''})
     
-    # 获取需求
-    reqs = [r for r in requirements_cache.values() if r.project_id == project_id]
-    
-    # 获取测试用例
-    cases = [c for c in test_cases_cache.values() if c.project_id == project_id]
-    
-    # 获取任务
-    tasks = [t for t in tasks_cache.values() if t.project_id == project_id]
-    
+    # 获取需求（重建 Requirement 对象供文档生成使用）
+    reqs = []
+    for e in _load_dev_entries('req', project_id):
+        r = Requirement(e.get('project_id', project_id), e.get('name', ''), e.get('description', ''), e.get('type', 'functional'))
+        r.id = e.get('id')
+        r.priority = e.get('priority', 'medium')
+        r.status = e.get('status', 'draft')
+        reqs.append(r)
+
+    # 获取测试用例（文档生成仅用到数量，dict 即可）
+    cases = _load_dev_entries('tc', project_id)
+
+    # 获取任务（重建 Task 对象供文档生成使用）
+    tasks = []
+    for e in _load_dev_entries('task', project_id):
+        t = Task(e.get('project_id', project_id), e.get('name', ''), e.get('description', ''), e.get('type', 'development'))
+        t.id = e.get('id')
+        t.status = e.get('status', 'pending')
+        tasks.append(t)
+
     # 获取模型
     models = [m for m in models_cache.values() if m.get('project_id') == project_id]
     
@@ -11282,23 +11289,23 @@ def generate_element_report(project_id, report):
 
 def generate_requirement_report(project_id, report):
     """生成需求统计报表"""
-    reqs = [r for r in requirements_cache.values() if r.project_id == project_id]
-    
+    reqs = _load_dev_entries('req', project_id)
+
     report['data'] = {
         'total_requirements': len(reqs),
         'by_status': {},
         'by_priority': {},
         'by_type': {}
     }
-    
+
     for req in reqs:
-        status = req.status
+        status = req.get('status')
         report['data']['by_status'][status] = report['data']['by_status'].get(status, 0) + 1
-        
-        priority = req.priority
+
+        priority = req.get('priority')
         report['data']['by_priority'][priority] = report['data']['by_priority'].get(priority, 0) + 1
-        
-        req_type = req.type
+
+        req_type = req.get('type')
         report['data']['by_type'][req_type] = report['data']['by_type'].get(req_type, 0) + 1
     
     report['charts'].append({
@@ -11317,21 +11324,21 @@ def generate_requirement_report(project_id, report):
 
 def generate_test_report(project_id, report):
     """生成测试统计报表"""
-    cases = [c for c in test_cases_cache.values() if c.project_id == project_id]
-    defects = [d for d in defects_cache.values() if d.project_id == project_id]
-    
+    cases = _load_dev_entries('tc', project_id)
+    defects = _load_dev_entries('def', project_id)
+
     report['data'] = {
         'total_test_cases': len(cases),
         'total_defects': len(defects),
         'defects_by_level': {},
         'defects_by_status': {}
     }
-    
+
     for defect in defects:
-        level = defect.level
+        level = defect.get('level')
         report['data']['defects_by_level'][level] = report['data']['defects_by_level'].get(level, 0) + 1
-        
-        status = defect.status
+
+        status = defect.get('status')
         report['data']['defects_by_status'][status] = report['data']['defects_by_status'].get(status, 0) + 1
     
     report['charts'].append({
@@ -11344,21 +11351,21 @@ def generate_test_report(project_id, report):
 
 def generate_task_report(project_id, report):
     """生成任务统计报表"""
-    tasks = [t for t in tasks_cache.values() if t.project_id == project_id]
-    
+    tasks = _load_dev_entries('task', project_id)
+
     report['data'] = {
         'total_tasks': len(tasks),
-        'total_work_hours': sum(t.work_hours for t in tasks),
+        'total_work_hours': sum((t.get('work_hours') or 0) for t in tasks),
         'by_status': {},
         'by_type': {},
-        'completion_rate': round(len([t for t in tasks if t.status == 'completed']) / max(len(tasks), 1) * 100, 1)
+        'completion_rate': round(len([t for t in tasks if t.get('status') == 'completed']) / max(len(tasks), 1) * 100, 1)
     }
-    
+
     for task in tasks:
-        status = task.status
+        status = task.get('status')
         report['data']['by_status'][status] = report['data']['by_status'].get(status, 0) + 1
-        
-        task_type = task.type
+
+        task_type = task.get('type')
         report['data']['by_type'][task_type] = report['data']['by_type'].get(task_type, 0) + 1
     
     report['charts'].append({
