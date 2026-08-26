@@ -13,301 +13,45 @@ import requests
 import bcrypt
 import db
 from constants import ELEMENT_TYPES, RELATIONSHIP_TYPES, ELEMENT_COLORS, get_default_color
-from models import Project, SimpleModel
+from models import Project, SimpleModel, Requirement, TestCase, Defect, Task
 from prompts import uml_system_prompt, ER_SYSTEM_PROMPT, code_system_prompt, VALIDATE_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT, ELEMENT_ANALYSIS_SYSTEM_PROMPT, code_reverse_system_prompt, edit_model_system_prompt, document_system_prompt
 from flask import Flask, request, jsonify, send_from_directory, render_template, session, stream_with_context, Response
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room, leave_room
 
-# 初始化Flask应用
-app = Flask(__name__, template_folder='templates', static_folder='../dist')
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY') or secrets.token_hex(32)
-app.config['UPLOAD_FOLDER'] = '../uploads'
-app.config['MODEL_FOLDER'] = '../models'
-app.config['USER_FOLDER'] = '../users'
-app.config['VERSION_FOLDER'] = '../versions'
+# === 共享基础设施（app/缓存/公共辅助/AI服务）已移至 core.py ===
+from core import (
+    app, socketio,
+    models_cache, users_cache, projects_cache, sessions_cache,
+    bookmarks_cache, snapshots_cache, operation_logs_cache, file_locks_cache,
+    hash_password, verify_password, load_users, save_users, ensure_admin_account,
+    load_projects, save_project, AIServiceConfig, ai_service_config, AIService,
+    load_model_from_cache, save_model, _require_user_id, _model_owned_by,
+    _load_dev_entries, _save_dev_entries,
+    er_views_cache, data_dictionary_cache, versions_cache, branches_cache, reviews_cache,
+    _require_admin, _find_user_by_id, _delete_project_data,
+    _ai_parse_json_response,
+)
 
-# 确保目录存在
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-os.makedirs(app.config['MODEL_FOLDER'], exist_ok=True)
-os.makedirs(app.config['USER_FOLDER'], exist_ok=True)
-os.makedirs(app.config['VERSION_FOLDER'], exist_ok=True)
-
-# 初始化CORS和SocketIO
-CORS(app)
-socketio = SocketIO(app, cors_allowed_origins="*")
-
-# 内存缓存（读穿缓存：命中直接返回，未命中从 db 加载并回填）
-models_cache = {}
-users_cache = {}
-projects_cache = {}
-sessions_cache = {}
-bookmarks_cache = {}
-snapshots_cache = {}
-operation_logs_cache = {}
-file_locks_cache = {}
-
-# 初始化 SQLite 持久化
-db.init_db()
-
-
-def migrate_json_to_db():
-    """一次性迁移：把旧的 JSON 文件数据导入 SQLite（仅当 DB 为空时执行）。"""
-    if db.keys():
-        return
-    # 模型
-    model_dir = app.config['MODEL_FOLDER']
-    if os.path.isdir(model_dir):
-        for filename in os.listdir(model_dir):
-            if filename.endswith('.json') and not filename.endswith('_project.json') and not filename.endswith('_comments.json'):
-                model_id = filename[:-5]
-                try:
-                    with open(os.path.join(model_dir, filename), 'r', encoding='utf-8') as f:
-                        db.set(f'model:{model_id}', json.load(f))
-                except (json.JSONDecodeError, OSError):
-                    pass
-            elif filename.endswith('_project.json'):
-                project_id = filename[:-13]
-                try:
-                    with open(os.path.join(model_dir, filename), 'r', encoding='utf-8') as f:
-                        db.set(f'project:{project_id}', json.load(f))
-                except (json.JSONDecodeError, OSError):
-                    pass
-    # 用户
-    users_path = os.path.join(app.config['USER_FOLDER'], 'users.json')
-    if os.path.exists(users_path):
-        try:
-            with open(users_path, 'r', encoding='utf-8') as f:
-                db.set('users', json.load(f))
-        except (json.JSONDecodeError, OSError):
-            pass
-
-
-migrate_json_to_db()
+# 注册 Blueprint（按「拆巨石」计划逐步从 app.py 抽出）
+from auth_routes import auth_bp
+app.register_blueprint(auth_bp)
+from dev_routes import dev_bp
+app.register_blueprint(dev_bp)
+from admin_routes import admin_bp
+app.register_blueprint(admin_bp)
+from er_routes import er_bp, _ai_generate_er_data, extract_entities_from_requirements
+app.register_blueprint(er_bp)
 
 @app.route('/api/test')
 def test_route():
     return jsonify({'message': 'test_v1', 'models': list(models_cache.keys())})
 
-# === 用户管理 ===
-
-def hash_password(password):
-    """使用 bcrypt 对密码进行加盐哈希"""
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
-
-def verify_password(password, hashed):
-    """校验密码（bcrypt），哈希格式非法时安全返回 False"""
-    try:
-        return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
-    except (ValueError, TypeError):
-        return False
-
-def load_users():
-    """加载用户数据"""
-    return db.get('users', {})
-
-def save_users(users):
-    """保存用户数据"""
-    db.set('users', users)
+# === 用户管理（hash_password/verify_password/load_users/save_users/ensure_admin_account 已移至 core.py）===
 
 # === 项目管理 ===
 
-def load_projects():
-    """加载项目数据"""
-    projects = {}
-    for key in db.keys('project:'):
-        project_id = key[len('project:'):]
-        data = db.get(key)
-        if data is not None:
-            try:
-                projects[project_id] = Project.from_dict(data)
-            except Exception:
-                pass
-    return projects
-
-def save_project(project):
-    """保存项目"""
-    db.set(f'project:{project.id}', project.to_dict())
-
-# === AI服务配置 ===
-class AIServiceConfig:
-    """AI服务配置类"""
-    def __init__(self):
-        self.provider = 'openai'  # openai, anthropic, azure, custom
-        self.api_key = os.getenv('OPENAI_API_KEY', '')
-        self.base_url = os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')
-        self.model = os.getenv('OPENAI_MODEL', 'gpt-4')
-        self.reasoning_model = os.getenv('OPENAI_REASONING_MODEL', '')  # 复杂任务专用推理模型（如 deepseek-reasoner）
-        self.max_tokens = 2000
-        self.temperature = 0.7
-        self.stream = True
-        self.include_context = True  # 是否把项目上下文拼进 prompt（前端配置项）
-        self.enabled = bool(self.api_key)  # 如果没有API key则禁用
-
-    def to_dict(self):
-        return {
-            'provider': self.provider,
-            'base_url': self.base_url,
-            'model': self.model,
-            'reasoning_model': self.reasoning_model,
-            'max_tokens': self.max_tokens,
-            'temperature': self.temperature,
-            'stream': self.stream,
-            'includeContext': self.include_context,
-            'enabled': self.enabled,
-            'has_api_key': bool(self.api_key)
-        }
-
-    def to_storage_dict(self):
-        """落库用的完整配置（含 api_key，只写入本地 SQLite，不对外返回）"""
-        return {
-            'provider': self.provider,
-            'api_key': self.api_key,
-            'base_url': self.base_url,
-            'model': self.model,
-            'reasoning_model': self.reasoning_model,
-            'max_tokens': self.max_tokens,
-            'temperature': self.temperature,
-            'stream': self.stream,
-            'includeContext': self.include_context,
-            'enabled': self.enabled
-        }
-
-    def update(self, config_dict):
-        """更新配置"""
-        if 'provider' in config_dict:
-            self.provider = config_dict['provider']
-        if 'api_key' in config_dict:
-            self.api_key = config_dict['api_key']
-            self.enabled = bool(self.api_key)
-        if 'base_url' in config_dict:
-            self.base_url = config_dict['base_url']
-        if 'model' in config_dict:
-            self.model = config_dict['model']
-        if 'reasoning_model' in config_dict:
-            self.reasoning_model = config_dict['reasoning_model']
-        if 'max_tokens' in config_dict:
-            self.max_tokens = config_dict['max_tokens']
-        if 'temperature' in config_dict:
-            self.temperature = config_dict['temperature']
-        if 'stream' in config_dict:
-            self.stream = config_dict['stream']
-        if 'includeContext' in config_dict:
-            self.include_context = bool(config_dict['includeContext'])
-
-# AI服务单例
-ai_service_config = AIServiceConfig()
-
-
-def _load_ai_config_from_db():
-    """启动时从持久层恢复 AI 配置（环境变量作默认，落库配置优先）"""
-    saved = db.get('ai_config')
-    if isinstance(saved, dict) and saved:
-        ai_service_config.update(saved)
-
-
-_load_ai_config_from_db()
-
-
-class AIService:
-    """AI服务类 - 统一接口调用大模型（兼容OpenAI格式）"""
-    
-    @staticmethod
-    def chat_completion(messages, config=None, max_tokens=None, temperature=None, use_reasoning=False):
-        """调用大模型进行对话。max_tokens/temperature 可覆盖全局配置（结构化生成常用）。
-        use_reasoning=True 时走推理模型（config.reasoning_model，未配置则回退普通模型）。"""
-        if config is None:
-            config = ai_service_config
-
-        if not config.enabled:
-            return {'error': 'AI服务未启用，请配置API密钥'}
-
-        try:
-            return AIService._call_api(messages, config, max_tokens=max_tokens,
-                                       temperature=temperature, use_reasoning=use_reasoning)
-        except Exception as e:
-            return {'error': f'AI服务调用失败: {str(e)}'}
-
-    @staticmethod
-    def _call_api(messages, config, max_tokens=None, temperature=None, use_reasoning=False):
-        """通用API调用（兼容OpenAI格式）。use_reasoning=True 时切换推理模型并去掉 temperature（推理模型通常不支持）。"""
-        model = config.model
-        include_temperature = True
-        if use_reasoning and getattr(config, 'reasoning_model', ''):
-            model = config.reasoning_model
-            include_temperature = False  # 推理模型（如 deepseek-reasoner）不支持 temperature
-
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {config.api_key}'
-        }
-
-        payload = {
-            'model': model,
-            'messages': messages,
-            'max_tokens': max_tokens if max_tokens is not None else config.max_tokens,
-            'stream': False
-        }
-        if include_temperature:
-            payload['temperature'] = temperature if temperature is not None else config.temperature
-
-        response = requests.post(
-            f'{config.base_url.rstrip("/")}/chat/completions',
-            headers=headers,
-            json=payload,
-            timeout=60
-        )
-        
-        if response.status_code != 200:
-            return {'error': f'API调用失败: {response.status_code} - {response.text}'}
-        
-        return response.json()
-    
-    @staticmethod
-    def chat_stream(messages, config=None):
-        """流式调用大模型"""
-        if config is None:
-            config = ai_service_config
-        
-        if not config.enabled:
-            yield f'data: {json.dumps({"error": "AI服务未启用，请配置API密钥"})}\n\n'
-            return
-        
-        try:
-            headers = {
-                'Content-Type': 'application/json',
-                'Authorization': f'Bearer {config.api_key}'
-            }
-            
-            payload = {
-                'model': config.model,
-                'messages': messages,
-                'max_tokens': config.max_tokens,
-                'temperature': config.temperature,
-                'stream': True
-            }
-            
-            response = requests.post(
-                f'{config.base_url.rstrip("/")}/chat/completions',
-                headers=headers,
-                json=payload,
-                timeout=60,
-                stream=True
-            )
-            
-            if response.status_code != 200:
-                yield f'data: {json.dumps({"error": f"API调用失败: {response.status_code}"})}\n\n'
-                return
-            
-            for line in response.iter_lines():
-                if line:
-                    decoded_line = line.decode('utf-8')
-                    if decoded_line.startswith('data:'):
-                        yield decoded_line + '\n\n'
-        except Exception as e:
-            yield f'data: {json.dumps({"error": str(e)})}\n\n'
-    
+# === AI服务配置（AIServiceConfig/AIService/ai_service_config 已移至 core.py）===
 # === 路由 ===
 
 @app.route('/')
@@ -322,105 +66,11 @@ def serve_assets(filename):
 def editor(model_id):
     return send_from_directory('../frontend/templates', 'editor.html')
 
-# === 用户认证 API ===
+# === 用户认证 API（register/login/logout/validate 已移至 auth_routes.py Blueprint）===
 
-@app.route('/api/auth/register', methods=['POST'])
-def register():
-    """用户注册"""
-    data = request.json
-    username = data.get('username')
-    email = data.get('email')
-    password = data.get('password')
-    
-    if not username or not email or not password:
-        return jsonify({'error': '缺少必要字段'}), 400
-    
-    users = load_users()
-    
-    if username in users:
-        return jsonify({'error': '用户名已存在'}), 400
-    
-    if email in [u['email'] for u in users.values()]:
-        return jsonify({'error': '邮箱已被注册'}), 400
-    
-    user_id = str(uuid.uuid4())[:8]
-    users[username] = {
-        'id': user_id,
-        'username': username,
-        'email': email,
-        'password': hash_password(password),
-        'created_at': datetime.datetime.now().isoformat(),
-        'role': 'user'
-    }
-    
-    save_users(users)
-    
-    return jsonify({
-        'message': '注册成功',
-        'user': {
-            'id': user_id,
-            'username': username,
-            'email': email
-        }
-    })
 
-@app.route('/api/auth/login', methods=['POST'])
-def login():
-    """用户登录"""
-    data = request.json
-    username = data.get('username')
-    password = data.get('password')
-    
-    users = load_users()
-    
-    if username not in users:
-        return jsonify({'error': '用户名或密码错误'}), 401
-    
-    user = users[username]
-    if not verify_password(password, user['password']):
-        return jsonify({'error': '用户名或密码错误'}), 401
-    
-    # 创建会话
-    session_id = str(uuid.uuid4())
-    sessions_cache[session_id] = {
-        'user_id': user['id'],
-        'username': username,
-        'login_time': datetime.datetime.now().isoformat()
-    }
-    
-    return jsonify({
-        'message': '登录成功',
-        'session_id': session_id,
-        'user': {
-            'id': user['id'],
-            'username': username,
-            'email': user['email'],
-            'role': user['role']
-        }
-    })
+# _require_admin/_find_user_by_id/_delete_project_data 及后台管理路由已移至 core.py / admin_routes.py
 
-@app.route('/api/auth/logout', methods=['POST'])
-def logout():
-    """用户登出"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id in sessions_cache:
-        del sessions_cache[session_id]
-    return jsonify({'message': '登出成功'})
-
-@app.route('/api/auth/validate', methods=['GET'])
-def validate_session():
-    """验证会话"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id in sessions_cache:
-        session_data = sessions_cache[session_id]
-        return jsonify({
-            'valid': True,
-            'user': {
-                'id': session_data['user_id'],
-                'username': session_data['username']
-            }
-        })
-    return jsonify({'valid': False}), 401
 
 # === 项目管理 API ===
 
@@ -680,34 +330,7 @@ def perform_health_check(model, project):
         'suggestions': suggestions
     }
 
-# === 模型管理 API ===
-
-def load_model_from_cache(model_id):
-    """从缓存加载模型（缓存未命中时从 db 读穿）"""
-    if model_id in models_cache:
-        return models_cache[model_id]
-
-    data = db.get(f'model:{model_id}')
-    if data is not None:
-        model = SimpleModel.from_dict(data)
-        models_cache[model_id] = model
-        return model
-
-    return None
-
-
-def _require_user_id():
-    """从请求头取会话，返回当前用户 id；未登录返回 None"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id in sessions_cache:
-        return sessions_cache[session_id]['user_id']
-    return None
-
-
-def _model_owned_by(model, user_id):
-    """模型是否属于该用户（无 owner 的旧数据不属于任何人）"""
-    return model is not None and getattr(model, 'owner_id', '') == user_id
-
+# === 模型管理 API（load_model_from_cache/_require_user_id/_model_owned_by 已移至 core.py）===
 
 @app.route('/api/models', methods=['GET'])
 def get_models():
@@ -2121,28 +1744,7 @@ def ai_generate_uml_v1(project_id):
 
 # === AI生成UML（结构化JSON） ===
 
-def _ai_parse_json_response(content):
-    """从LLM返回内容中提取JSON对象（容忍markdown代码围栏/前后杂文本）。"""
-    content = content.strip()
-    if content.startswith('```'):
-        lines = content.split('\n')
-        if lines and lines[0].strip().startswith('```'):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == '```':
-            lines = lines[:-1]
-        content = '\n'.join(lines).strip()
-    try:
-        return json.loads(content)
-    except (json.JSONDecodeError, TypeError):
-        start = content.find('{')
-        end = content.rfind('}')
-        if start != -1 and end != -1 and end > start:
-            try:
-                return json.loads(content[start:end + 1])
-            except (json.JSONDecodeError, TypeError):
-                return None
-        return None
-
+# _ai_parse_json_response 已移至 core.py
 
 def _normalize_uml_type(t):
     """把LLM返回的元素类型归一化成画布认识的UML类型。"""
@@ -3344,11 +2946,6 @@ def ai_recommend_permissions(project, member_role):
         audit_report['redundancy_notes'].append("建议为大量查看用户创建统一查看组")
     
     return audit_report
-
-def save_model(model_id, model):
-    """保存模型"""
-    db.set(f'model:{model_id}', model.to_dict())
-    models_cache[model_id] = model
 
 # === 新增API接口 ===
 
@@ -6797,924 +6394,7 @@ DATA_TYPE_MAPPING = {
 
 # === ER视图管理类 ===
 
-class ERView:
-    """ER实体关系图视图"""
-    def __init__(self, project_id, name, description='', package_id=None):
-        self.id = str(uuid.uuid4())[:8]
-        self.project_id = project_id
-        self.name = name
-        self.description = description
-        self.package_id = package_id
-        self.entities = []
-        self.relationships = []
-        self.indexes = []
-        self.created_at = datetime.datetime.now().isoformat()
-        self.updated_at = datetime.datetime.now().isoformat()
-        self.user_id = ''
-        self.config = {}
-    
-    def add_entity(self, name, description='', table_name=None, is_weak_entity=False, x=100, y=100):
-        """添加实体"""
-        entity = {
-            'id': str(uuid.uuid4())[:8],
-            'name': name,
-            'description': description,
-            'table_name': table_name or name.lower().replace(' ', '_'),
-            'is_weak_entity': is_weak_entity,
-            'attributes': [],
-            'x': x,
-            'y': y,
-            'width': 180,
-            'height': 120,
-            'created_at': datetime.datetime.now().isoformat()
-        }
-        self.entities.append(entity)
-        return entity
-    
-    def add_attribute(self, entity_id, name, description='', data_type='string', length=255, 
-                      is_primary_key=False, is_foreign_key=False, is_unique=False, 
-                      is_nullable=True, default_value=None):
-        """添加属性"""
-        entity = next((e for e in self.entities if e['id'] == entity_id), None)
-        if not entity:
-            return None
-        
-        attribute = {
-            'id': str(uuid.uuid4())[:8],
-            'name': name,
-            'description': description,
-            'column_name': name.lower().replace(' ', '_'),
-            'data_type': data_type,
-            'length': length,
-            'precision': None,
-            'scale': None,
-            'is_primary_key': is_primary_key,
-            'is_foreign_key': is_foreign_key,
-            'is_unique': is_unique,
-            'is_nullable': is_nullable,
-            'default_value': default_value,
-            'created_at': datetime.datetime.now().isoformat()
-        }
-        entity['attributes'].append(attribute)
-        return attribute
-    
-    def add_relationship(self, source_entity_id, target_entity_id, relationship_type='many_to_one',
-                         source_cardinality='*', target_cardinality='1', is_identifying=False):
-        """添加关系"""
-        relationship = {
-            'id': str(uuid.uuid4())[:8],
-            'type': relationship_type,
-            'source_entity_id': source_entity_id,
-            'target_entity_id': target_entity_id,
-            'source_cardinality': source_cardinality,
-            'target_cardinality': target_cardinality,
-            'is_identifying': is_identifying,
-            'cascade_rule': {'delete': 'NO ACTION', 'update': 'CASCADE'},
-            'description': '',
-            'created_at': datetime.datetime.now().isoformat()
-        }
-        self.relationships.append(relationship)
-        return relationship
-    
-    def add_index(self, entity_id, index_name, columns, index_type='btree', is_unique=False):
-        """添加索引"""
-        index = {
-            'id': str(uuid.uuid4())[:8],
-            'entity_id': entity_id,
-            'name': index_name,
-            'type': index_type,
-            'columns': columns,
-            'is_unique': is_unique,
-            'is_primary_key': False,
-            'description': '',
-            'created_at': datetime.datetime.now().isoformat()
-        }
-        self.indexes.append(index)
-        return index
-    
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'project_id': self.project_id,
-            'name': self.name,
-            'description': self.description,
-            'package_id': self.package_id,
-            'entities': self.entities,
-            'relationships': self.relationships,
-            'indexes': self.indexes,
-            'created_at': self.created_at,
-            'updated_at': self.updated_at,
-            'user_id': self.user_id,
-            'config': self.config
-        }
-
-# ER视图缓存
-er_views_cache = {}
-
-# 数据字典缓存
-data_dictionary_cache = {}
-
-# === AI数据建模功能 ===
-
-def _ai_generate_er_data(requirements):
-    """调用LLM从业务需求提取ER模型（实体/属性/关系）。AI未启用/失败返回None。"""
-    if not ai_service_config.enabled:
-        return None
-
-    system_prompt = ER_SYSTEM_PROMPT
-    messages = [
-        {'role': 'system', 'content': system_prompt},
-        {'role': 'user', 'content': requirements}
-    ]
-    result = AIService.chat_completion(messages, max_tokens=4096, temperature=0.3)
-    if not isinstance(result, dict) or 'error' in result:
-        return None
-    try:
-        content = result['choices'][0]['message']['content']
-    except (KeyError, IndexError, TypeError):
-        return None
-    data = _ai_parse_json_response(content)
-    if not isinstance(data, dict) or not isinstance(data.get('entities'), list):
-        return None
-    relationships = data.get('relationships')
-    if not isinstance(relationships, list):
-        relationships = []
-    data['relationships'] = relationships
-    return data
-
-
-def _build_er_from_llm(view, data):
-    """把LLM返回的ER结构化数据写入ERView（实体/属性/关系）。"""
-    entities = data.get('entities', [])
-    id_by_name = {}
-
-    for i, ent in enumerate(entities):
-        if not isinstance(ent, dict) or not ent.get('name'):
-            continue
-        entity = view.add_entity(
-            ent['name'],
-            ent.get('description', ''),
-            x=100 + (i % 3) * 250,
-            y=50 + (i // 3) * 180
-        )
-        id_by_name[ent['name']] = entity['id']
-
-        for attr in (ent.get('attributes') or []):
-            if not isinstance(attr, dict) or not attr.get('name'):
-                continue
-            view.add_attribute(
-                entity['id'],
-                attr['name'],
-                attr.get('description', ''),
-                data_type=attr.get('data_type', 'string'),
-                length=attr.get('length', 255),
-                is_primary_key=bool(attr.get('is_primary_key')),
-                is_foreign_key=bool(attr.get('is_foreign_key')),
-                is_nullable=attr.get('is_nullable', True)
-            )
-
-    for rel in data.get('relationships', []):
-        if not isinstance(rel, dict):
-            continue
-        src = id_by_name.get(rel.get('source'))
-        tgt = id_by_name.get(rel.get('target'))
-        if not src or not tgt or src == tgt:
-            continue
-        view.add_relationship(
-            src,
-            tgt,
-            relationship_type=rel.get('type', 'many_to_one'),
-            source_cardinality=str(rel.get('source_cardinality') or '1'),
-            target_cardinality=str(rel.get('target_cardinality') or '1')
-        )
-
-    return view
-
-
-def ai_generate_er_model(view, requirements):
-    """AI生成ER模型（优先LLM，失败/未启用时回退关键词解析）"""
-    ai_data = _ai_generate_er_data(requirements)
-    if ai_data is not None:
-        return _build_er_from_llm(view, ai_data)
-
-    # 从业务需求中提取实体
-    entities_to_create = extract_entities_from_requirements(requirements)
-    
-    # 创建实体
-    y_offset = 50
-    for i, entity_info in enumerate(entities_to_create):
-        entity = view.add_entity(
-            entity_info['name'],
-            entity_info['description'],
-            x=100 + (i % 3) * 250,
-            y=y_offset + (i // 3) * 180
-        )
-        
-        # 为每个实体添加属性
-        for attr in entity_info['attributes']:
-            view.add_attribute(
-                entity['id'],
-                attr['name'],
-                attr['description'],
-                data_type=attr.get('data_type', 'string'),
-                length=attr.get('length', 255),
-                is_primary_key=attr.get('is_primary_key', False),
-                is_nullable=attr.get('is_nullable', True)
-            )
-    
-    # 添加关系
-    add_relationships_between_entities(view, entities_to_create)
-    
-    return view
-
-def extract_entities_from_requirements(requirements):
-    """从业务需求中提取实体"""
-    req_lower = requirements.lower()
-    
-    entities = []
-    
-    # 用户实体
-    if any(keyword in req_lower for keyword in ['用户', '会员', 'customer', 'user']):
-        entities.append({
-            'name': '用户',
-            'description': '系统用户信息',
-            'attributes': [
-                {'name': '用户ID', 'description': '用户唯一标识', 'data_type': 'integer', 'is_primary_key': True},
-                {'name': '用户名', 'description': '登录用户名', 'data_type': 'string', 'length': 50, 'is_nullable': False},
-                {'name': '密码', 'description': '加密后的密码', 'data_type': 'string', 'length': 255, 'is_nullable': False},
-                {'name': '邮箱', 'description': '用户邮箱', 'data_type': 'string', 'length': 100},
-                {'name': '手机号', 'description': '用户手机号', 'data_type': 'string', 'length': 20},
-                {'name': '创建时间', 'description': '用户创建时间', 'data_type': 'datetime'}
-            ]
-        })
-    
-    # 订单实体
-    if any(keyword in req_lower for keyword in ['订单', 'order', '交易']):
-        entities.append({
-            'name': '订单',
-            'description': '订单信息',
-            'attributes': [
-                {'name': '订单ID', 'description': '订单唯一标识', 'data_type': 'integer', 'is_primary_key': True},
-                {'name': '用户ID', 'description': '关联用户', 'data_type': 'integer', 'is_foreign_key': True},
-                {'name': '订单编号', 'description': '订单编号', 'data_type': 'string', 'length': 50},
-                {'name': '订单金额', 'description': '订单总金额', 'data_type': 'decimal', 'length': '10,2'},
-                {'name': '订单状态', 'description': '订单状态', 'data_type': 'string', 'length': 20},
-                {'name': '创建时间', 'description': '订单创建时间', 'data_type': 'datetime'}
-            ]
-        })
-    
-    # 产品实体
-    if any(keyword in req_lower for keyword in ['产品', '商品', 'product', 'goods']):
-        entities.append({
-            'name': '产品',
-            'description': '产品信息',
-            'attributes': [
-                {'name': '产品ID', 'description': '产品唯一标识', 'data_type': 'integer', 'is_primary_key': True},
-                {'name': '产品名称', 'description': '产品名称', 'data_type': 'string', 'length': 100, 'is_nullable': False},
-                {'name': '产品编码', 'description': '产品编码', 'data_type': 'string', 'length': 50},
-                {'name': '价格', 'description': '产品价格', 'data_type': 'decimal', 'length': '10,2'},
-                {'name': '库存数量', 'description': '库存数量', 'data_type': 'integer'},
-                {'name': '创建时间', 'description': '创建时间', 'data_type': 'datetime'}
-            ]
-        })
-    
-    # 订单明细实体
-    if '订单' in requirements and '产品' in requirements:
-        entities.append({
-            'name': '订单明细',
-            'description': '订单明细信息',
-            'attributes': [
-                {'name': '明细ID', 'description': '明细唯一标识', 'data_type': 'integer', 'is_primary_key': True},
-                {'name': '订单ID', 'description': '关联订单', 'data_type': 'integer', 'is_foreign_key': True},
-                {'name': '产品ID', 'description': '关联产品', 'data_type': 'integer', 'is_foreign_key': True},
-                {'name': '数量', 'description': '购买数量', 'data_type': 'integer'},
-                {'name': '单价', 'description': '单价', 'data_type': 'decimal', 'length': '10,2'},
-                {'name': '金额', 'description': '明细金额', 'data_type': 'decimal', 'length': '10,2'}
-            ]
-        })
-    
-    # 角色实体
-    if any(keyword in req_lower for keyword in ['角色', '权限', 'role', 'permission']):
-        entities.append({
-            'name': '角色',
-            'description': '角色信息',
-            'attributes': [
-                {'name': '角色ID', 'description': '角色唯一标识', 'data_type': 'integer', 'is_primary_key': True},
-                {'name': '角色名称', 'description': '角色名称', 'data_type': 'string', 'length': 50, 'is_nullable': False},
-                {'name': '角色描述', 'description': '角色描述', 'data_type': 'string', 'length': 200},
-                {'name': '创建时间', 'description': '创建时间', 'data_type': 'datetime'}
-            ]
-        })
-    
-    return entities
-
-def add_relationships_between_entities(view, entities):
-    """添加实体间的关系"""
-    # 查找实体
-    user_entity = next((e for e in view.entities if e['name'] == '用户'), None)
-    order_entity = next((e for e in view.entities if e['name'] == '订单'), None)
-    product_entity = next((e for e in view.entities if e['name'] == '产品'), None)
-    order_detail_entity = next((e for e in view.entities if e['name'] == '订单明细'), None)
-    role_entity = next((e for e in view.entities if e['name'] == '角色'), None)
-    
-    # 用户 -> 订单 (一对多)
-    if user_entity and order_entity:
-        view.add_relationship(user_entity['id'], order_entity['id'], 'one_to_many', '1', '*')
-    
-    # 订单 -> 订单明细 (一对多)
-    if order_entity and order_detail_entity:
-        view.add_relationship(order_entity['id'], order_detail_entity['id'], 'one_to_many', '1', '*')
-    
-    # 产品 -> 订单明细 (一对多)
-    if product_entity and order_detail_entity:
-        view.add_relationship(product_entity['id'], order_detail_entity['id'], 'one_to_many', '1', '*')
-
-def ai_optimize_er_model(view):
-    """AI数据库设计优化"""
-    issues = []
-    suggestions = []
-    
-    # 检查范式
-    normal_form_issues = check_normal_forms(view)
-    issues.extend(normal_form_issues)
-    
-    # 检查索引
-    index_issues = check_indexes(view)
-    issues.extend(index_issues)
-    
-    # 检查数据类型
-    data_type_issues = check_data_types(view)
-    issues.extend(data_type_issues)
-    
-    # 检查命名规范
-    naming_issues = check_naming_conventions(view)
-    issues.extend(naming_issues)
-    
-    # 生成优化建议
-    if len(issues) > 0:
-        suggestions.append('根据以下问题进行优化：')
-        for issue in issues[:3]:
-            suggestions.append(f"• {issue['suggestion']}")
-    
-    return {
-        'valid': len(issues) == 0,
-        'total_entities': len(view.entities),
-        'total_attributes': sum(len(e['attributes']) for e in view.entities),
-        'total_relationships': len(view.relationships),
-        'issues': issues,
-        'suggestions': suggestions,
-        'summary': f'优化分析完成：{len(issues)}个问题'
-    }
-
-def check_normal_forms(view):
-    """检查数据库范式"""
-    issues = []
-    
-    # 检查1NF：所有属性都是原子值
-    for entity in view.entities:
-        for attr in entity['attributes']:
-            if attr['data_type'] in ['text', 'json'] and attr.get('is_primary_key', False):
-                issues.append({
-                    'type': '1nf_violation',
-                    'severity': 'error',
-                    'message': f"实体'{entity['name']}'的属性'{attr['name']}'使用TEXT/JSON类型作为主键，违反1NF",
-                    'suggestion': '请使用原子类型（如INT、BIGINT）作为主键'
-                })
-    
-    # 检查主键是否存在
-    for entity in view.entities:
-        has_pk = any(a.get('is_primary_key', False) for a in entity['attributes'])
-        if not has_pk:
-            issues.append({
-                'type': 'no_primary_key',
-                'severity': 'error',
-                'message': f"实体'{entity['name']}'没有定义主键",
-                'suggestion': '请为实体添加主键'
-            })
-    
-    # 检查外键引用
-    for rel in view.relationships:
-        source_entity = next((e for e in view.entities if e['id'] == rel['source_entity_id']), None)
-        target_entity = next((e for e in view.entities if e['id'] == rel['target_entity_id']), None)
-        
-        if source_entity and target_entity:
-            # 检查目标实体是否有主键
-            target_has_pk = any(a.get('is_primary_key', False) for a in target_entity['attributes'])
-            if not target_has_pk:
-                issues.append({
-                    'type': 'fk_target_no_pk',
-                    'severity': 'warning',
-                    'message': f"关系中目标实体'{target_entity['name']}'没有主键",
-                    'suggestion': '请先为目标实体定义主键'
-                })
-    
-    return issues
-
-def check_indexes(view):
-    """检查索引"""
-    issues = []
-    
-    for entity in view.entities:
-        # 检查外键是否有索引
-        fk_columns = [a for a in entity['attributes'] if a.get('is_foreign_key', False)]
-        indexed_columns = set()
-        
-        for idx in view.indexes:
-            if idx['entity_id'] == entity['id']:
-                indexed_columns.update(idx['columns'])
-        
-        for fk in fk_columns:
-            if fk['name'] not in indexed_columns:
-                issues.append({
-                    'type': 'missing_fk_index',
-                    'severity': 'warning',
-                    'message': f"实体'{entity['name']}'的外键'{fk['name']}'缺少索引",
-                    'suggestion': '建议为外键创建索引以提高查询性能'
-                })
-    
-    # 检查重复索引
-    for entity in view.entities:
-        entity_indexes = [idx for idx in view.indexes if idx['entity_id'] == entity['id']]
-        for i, idx1 in enumerate(entity_indexes):
-            for j, idx2 in enumerate(entity_indexes):
-                if i < j and set(idx1['columns']) == set(idx2['columns']):
-                    issues.append({
-                        'type': 'duplicate_index',
-                        'severity': 'warning',
-                        'message': f"实体'{entity['name']}'存在重复索引: {idx1['name']} 和 {idx2['name']}",
-                        'suggestion': '请删除重复的索引'
-                    })
-    
-    return issues
-
-def check_data_types(view):
-    """检查数据类型"""
-    issues = []
-    
-    for entity in view.entities:
-        for attr in entity['attributes']:
-            # 检查ID字段是否使用合适的类型
-            if 'id' in attr['name'].lower() or 'ID' in attr['name']:
-                if attr['data_type'] not in ['integer', 'bigint']:
-                    issues.append({
-                        'type': 'wrong_id_type',
-                        'severity': 'warning',
-                        'message': f"实体'{entity['name']}'的属性'{attr['name']}'使用了不合适的数据类型'{attr['data_type']}'",
-                        'suggestion': '建议使用integer或bigint类型作为ID字段'
-                    })
-            
-            # 检查金额字段是否使用decimal
-            if any(keyword in attr['name'].lower() for keyword in ['金额', '价格', 'price', 'amount', 'cost']):
-                if attr['data_type'] not in ['decimal']:
-                    issues.append({
-                        'type': 'wrong_amount_type',
-                        'severity': 'warning',
-                        'message': f"实体'{entity['name']}'的金额字段'{attr['name']}'使用了'{attr['data_type']}'类型",
-                        'suggestion': '建议使用decimal类型存储金额以避免精度丢失'
-                    })
-            
-            # 检查字符串长度是否合理
-            if attr['data_type'] == 'string' and attr.get('length', 255) > 1000:
-                issues.append({
-                    'type': 'string_too_long',
-                    'severity': 'warning',
-                    'message': f"实体'{entity['name']}'的属性'{attr['name']}'字符串长度{attr['length']}过长",
-                    'suggestion': '如果需要存储大量文本，建议使用text类型'
-                })
-    
-    return issues
-
-def check_naming_conventions(view):
-    """检查命名规范"""
-    issues = []
-    
-    for entity in view.entities:
-        # 检查实体命名是否包含空格
-        if ' ' in entity['name']:
-            issues.append({
-                'type': 'entity_name_space',
-                'severity': 'warning',
-                'message': f"实体'{entity['name']}'名称包含空格",
-                'suggestion': '建议使用下划线或驼峰命名，避免空格'
-            })
-        
-        for attr in entity['attributes']:
-            # 检查属性命名
-            if ' ' in attr['name']:
-                issues.append({
-                    'type': 'attr_name_space',
-                    'severity': 'minor',
-                    'message': f"实体'{entity['name']}'的属性'{attr['name']}'名称包含空格",
-                    'suggestion': '建议使用下划线或驼峰命名'
-                })
-    
-    return issues
-
-def generate_ddl(view, db_type='mysql'):
-    """生成DDL脚本"""
-    ddl = []
-    type_mapping = DATA_TYPE_MAPPING.get(db_type, DATA_TYPE_MAPPING['mysql'])
-    
-    # 添加注释
-    ddl.append(f"-- ER模型: {view.name}")
-    ddl.append(f"-- 生成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    ddl.append(f"-- 目标数据库: {DATABASE_TYPES.get(db_type, {'name': db_type})['name']}")
-    ddl.append("")
-    
-    # 生成表
-    for entity in view.entities:
-        table_name = entity['table_name']
-        ddl.append(f"CREATE TABLE IF NOT EXISTS `{table_name}` (")
-        
-        columns = []
-        pk_columns = []
-        
-        for attr in entity['attributes']:
-            col_type = type_mapping.get(attr['data_type'], 'VARCHAR')
-            col_name = attr['column_name']
-            
-            # 处理数据类型参数
-            if col_type == 'VARCHAR' and attr.get('length'):
-                col_spec = f"`{col_name}` {col_type}({attr['length']})"
-            elif col_type in ['DECIMAL', 'NUMERIC'] and attr.get('length'):
-                col_spec = f"`{col_name}` {col_type}({attr['length']})"
-            else:
-                col_spec = f"`{col_name}` {col_type}"
-            
-            # 添加约束
-            if not attr.get('is_nullable', True):
-                col_spec += ' NOT NULL'
-            if attr.get('default_value'):
-                col_spec += f" DEFAULT '{attr['default_value']}'"
-            if attr.get('is_unique'):
-                col_spec += ' UNIQUE'
-            
-            columns.append(f"    {col_spec}")
-            
-            if attr.get('is_primary_key'):
-                pk_columns.append(col_name)
-        
-        ddl.extend(columns)
-        
-        # 添加主键
-        if pk_columns:
-            ddl.append(f"    PRIMARY KEY (`{pk_columns[0]}`)")
-        
-        ddl.append(") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;")
-        ddl.append("")
-    
-    # 生成外键约束
-    for rel in view.relationships:
-        source_entity = next((e for e in view.entities if e['id'] == rel['source_entity_id']), None)
-        target_entity = next((e for e in view.entities if e['id'] == rel['target_entity_id']), None)
-        
-        if source_entity and target_entity:
-            # 找到外键字段
-            fk_attr = next((a for a in source_entity['attributes'] if a.get('is_foreign_key')), None)
-            target_pk = next((a for a in target_entity['attributes'] if a.get('is_primary_key')), None)
-            
-            if fk_attr and target_pk:
-                ddl.append(f"ALTER TABLE `{source_entity['table_name']}`")
-                ddl.append(f"ADD CONSTRAINT `fk_{source_entity['table_name']}_{target_entity['table_name']}`")
-                ddl.append(f"FOREIGN KEY (`{fk_attr['column_name']}`)")
-                ddl.append(f"REFERENCES `{target_entity['table_name']}`(`{target_pk['column_name']}`)")
-                ddl.append(f"ON DELETE {rel['cascade_rule'].get('delete', 'NO ACTION')}")
-                ddl.append(f"ON UPDATE {rel['cascade_rule'].get('update', 'CASCADE')};")
-                ddl.append("")
-    
-    # 生成索引
-    for idx in view.indexes:
-        entity = next((e for e in view.entities if e['id'] == idx['entity_id']), None)
-        if entity:
-            unique_str = 'UNIQUE' if idx['is_unique'] else ''
-            columns_str = ', '.join([f"`{c}`" for c in idx['columns']])
-            ddl.append(f"CREATE {unique_str} INDEX `{idx['name']}` ON `{entity['table_name']}`({columns_str});")
-    
-    return '\n'.join(ddl)
-
-def ai_generate_data_dictionary(project_id, view_id=None):
-    """AI生成数据字典"""
-    dictionary = {
-        'project_id': project_id,
-        'fields': [],
-        'generated_at': datetime.datetime.now().isoformat()
-    }
-    
-    # 如果指定了视图，从视图中提取字段
-    if view_id and view_id in er_views_cache:
-        view = er_views_cache[view_id]
-        for entity in view.entities:
-            for attr in entity['attributes']:
-                field_info = {
-                    'field_name': attr['column_name'],
-                    'description': attr['description'] or f"{entity['name']}的{attr['name']}",
-                    'data_type': attr['data_type'],
-                    'length': attr.get('length'),
-                    'precision': attr.get('precision'),
-                    'scale': attr.get('scale'),
-                    'default_value': attr.get('default_value'),
-                    'is_primary_key': attr.get('is_primary_key', False),
-                    'is_foreign_key': attr.get('is_foreign_key', False),
-                    'is_unique': attr.get('is_unique', False),
-                    'is_nullable': attr.get('is_nullable', True),
-                    'entity_name': entity['name'],
-                    'table_name': entity['table_name']
-                }
-                dictionary['fields'].append(field_info)
-    
-    return dictionary
-
-# === ER建模API ===
-
-@app.route('/api/v1/project/<project_id>/er/view/create', methods=['POST'])
-def create_er_view(project_id):
-    """创建ER视图"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
-        return jsonify({'error': '未登录'}), 401
-    
-    data = request.json
-    name = data.get('name', '未命名ER视图')
-    description = data.get('description', '')
-    package_id = data.get('package_id')
-    
-    view = ERView(project_id, name, description, package_id)
-    view.user_id = sessions_cache[session_id]['user_id']
-    
-    er_views_cache[view.id] = view
-    
-    return jsonify({
-        'message': 'ER视图创建成功',
-        'view': view.to_dict()
-    })
-
-@app.route('/api/v1/project/<project_id>/er/view/list', methods=['GET'])
-def get_er_views(project_id):
-    """获取ER视图列表"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
-        return jsonify({'error': '未登录'}), 401
-    
-    views = [v.to_dict() for v in er_views_cache.values() if v.project_id == project_id]
-    
-    return jsonify({'views': views})
-
-@app.route('/api/v1/er/view/<view_id>', methods=['GET'])
-def get_er_view(view_id):
-    """获取ER视图详情"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
-        return jsonify({'error': '未登录'}), 401
-    
-    if view_id not in er_views_cache:
-        return jsonify({'error': '视图不存在'}), 404
-    
-    view = er_views_cache[view_id]
-    
-    return jsonify({'view': view.to_dict()})
-
-@app.route('/api/v1/er/view/<view_id>/save', methods=['PUT'])
-def save_er_view(view_id):
-    """保存ER模型"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
-        return jsonify({'error': '未登录'}), 401
-    
-    if view_id not in er_views_cache:
-        return jsonify({'error': '视图不存在'}), 404
-    
-    view = er_views_cache[view_id]
-    data = request.json
-    
-    if 'name' in data:
-        view.name = data['name']
-    if 'description' in data:
-        view.description = data['description']
-    if 'entities' in data:
-        view.entities = data['entities']
-    if 'relationships' in data:
-        view.relationships = data['relationships']
-    if 'indexes' in data:
-        view.indexes = data['indexes']
-    
-    view.updated_at = datetime.datetime.now().isoformat()
-    
-    return jsonify({'message': 'ER模型保存成功', 'view': view.to_dict()})
-
-@app.route('/api/v1/er/view/<view_id>/ai/generate', methods=['POST'])
-def ai_generate_er_model_api(view_id):
-    """AI生成ER模型"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
-        return jsonify({'error': '未登录'}), 401
-    
-    if view_id not in er_views_cache:
-        return jsonify({'error': '视图不存在'}), 404
-    
-    view = er_views_cache[view_id]
-    data = request.json
-    requirements = data.get('requirements', '')
-    
-    ai_generate_er_model(view, requirements)
-    
-    return jsonify({
-        'message': 'AI ER模型生成成功',
-        'view': view.to_dict(),
-        'generated_entities': len(view.entities),
-        'generated_relationships': len(view.relationships)
-    })
-
-@app.route('/api/v1/er/view/<view_id>/ai/optimize', methods=['POST'])
-def ai_optimize_er_model_api(view_id):
-    """AI数据库设计优化"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
-        return jsonify({'error': '未登录'}), 401
-    
-    if view_id not in er_views_cache:
-        return jsonify({'error': '视图不存在'}), 404
-    
-    view = er_views_cache[view_id]
-    result = ai_optimize_er_model(view)
-    
-    return jsonify({
-        'message': 'AI设计优化完成',
-        'optimization': result
-    })
-
-@app.route('/api/v1/er/view/<view_id>/ddl/generate', methods=['POST'])
-def generate_ddl_api(view_id):
-    """生成DDL脚本"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
-        return jsonify({'error': '未登录'}), 401
-    
-    if view_id not in er_views_cache:
-        return jsonify({'error': '视图不存在'}), 404
-    
-    view = er_views_cache[view_id]
-    data = request.json
-    db_type = data.get('db_type', 'mysql')
-    
-    ddl = generate_ddl(view, db_type)
-    
-    return jsonify({
-        'message': 'DDL脚本生成成功',
-        'db_type': db_type,
-        'ddl': ddl,
-        'entity_count': len(view.entities)
-    })
-
-@app.route('/api/v1/er/reverse/import', methods=['POST'])
-def reverse_engineering_api():
-    """数据库逆向工程"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
-        return jsonify({'error': '未登录'}), 401
-    
-    data = request.json
-    db_type = data.get('db_type', 'mysql')
-    connection_info = data.get('connection', {})
-    tables = data.get('tables', [])
-    
-    # 模拟逆向工程结果
-    project_id = data.get('project_id', 'default')
-    view = ERView(project_id, f"逆向工程_{db_type}", "通过逆向工程生成")
-    
-    # 模拟导入的表
-    sample_tables = [
-        {
-            'name': 'users',
-            'columns': [
-                {'name': 'id', 'type': 'integer', 'is_pk': True},
-                {'name': 'username', 'type': 'string', 'length': 50},
-                {'name': 'email', 'type': 'string', 'length': 100},
-                {'name': 'created_at', 'type': 'datetime'}
-            ]
-        },
-        {
-            'name': 'orders',
-            'columns': [
-                {'name': 'id', 'type': 'integer', 'is_pk': True},
-                {'name': 'user_id', 'type': 'integer', 'is_fk': True},
-                {'name': 'amount', 'type': 'decimal', 'length': '10,2'},
-                {'name': 'status', 'type': 'string', 'length': 20}
-            ]
-        }
-    ]
-    
-    for i, table in enumerate(sample_tables):
-        entity = view.add_entity(
-            table['name'].replace('_', ' ').title(),
-            f"{table['name']}表",
-            table['name'],
-            x=100 + i * 250,
-            y=100
-        )
-        
-        for col in table['columns']:
-            view.add_attribute(
-                entity['id'],
-                col['name'].replace('_', ' ').title(),
-                f"{col['name']}字段",
-                data_type=col['type'],
-                length=col.get('length', 255),
-                is_primary_key=col.get('is_pk', False),
-                is_foreign_key=col.get('is_fk', False)
-            )
-    
-    # 添加关系
-    if len(view.entities) >= 2:
-        view.add_relationship(view.entities[0]['id'], view.entities[1]['id'], 'one_to_many')
-    
-    er_views_cache[view.id] = view
-    
-    return jsonify({
-        'message': '逆向工程完成',
-        'view': view.to_dict(),
-        'imported_tables': len(sample_tables),
-        'imported_columns': sum(len(t['columns']) for t in sample_tables)
-    })
-
-@app.route('/api/v1/project/<project_id>/data/dictionary', methods=['GET', 'PUT'])
-def manage_data_dictionary(project_id):
-    """数据字典管理"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
-        return jsonify({'error': '未登录'}), 401
-    
-    if request.method == 'GET':
-        # 获取数据字典
-        if project_id in data_dictionary_cache:
-            return jsonify({'dictionary': data_dictionary_cache[project_id]})
-        return jsonify({'dictionary': {'project_id': project_id, 'fields': []}})
-    
-    elif request.method == 'PUT':
-        # 保存数据字典
-        data = request.json
-        data_dictionary_cache[project_id] = data
-        return jsonify({'message': '数据字典保存成功', 'dictionary': data})
-
-@app.route('/api/v1/project/<project_id>/data/dictionary/ai/generate', methods=['POST'])
-def ai_generate_data_dictionary_api(project_id):
-    """AI生成数据字典"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
-        return jsonify({'error': '未登录'}), 401
-    
-    data = request.json
-    view_id = data.get('view_id')
-    
-    dictionary = ai_generate_data_dictionary(project_id, view_id)
-    data_dictionary_cache[project_id] = dictionary
-    
-    return jsonify({
-        'message': 'AI数据字典生成成功',
-        'dictionary': dictionary,
-        'field_count': len(dictionary['fields'])
-    })
-
-@app.route('/api/v1/er/view/<view_id>/export', methods=['POST'])
-def export_er_view(view_id):
-    """导出ER视图"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
-        return jsonify({'error': '未登录'}), 401
-    
-    if view_id not in er_views_cache:
-        return jsonify({'error': '视图不存在'}), 404
-    
-    view = er_views_cache[view_id]
-    data = request.json
-    export_format = data.get('format', 'json')
-    
-    export_data = {
-        'view': view.to_dict(),
-        'exported_at': datetime.datetime.now().isoformat(),
-        'format': export_format
-    }
-    
-    return jsonify({
-        'message': 'ER视图导出成功',
-        'export_data': export_data
-    })
-
-@app.route('/api/v1/er/database/types', methods=['GET'])
-def get_database_types():
-    """获取支持的数据库类型"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
-        return jsonify({'error': '未登录'}), 401
-    
-    types = []
-    for key, value in DATABASE_TYPES.items():
-        types.append({
-            'id': key,
-            'name': value['name'],
-            'port': value['port']
-        })
-    
-    return jsonify({'types': types})
+# ER 模块（ERView 类 / AI 生成优化 / DDL / ER 路由）已移至 er_routes.py
 
 # === 模块六：代码双向工程 ===
 
@@ -8127,6 +6807,16 @@ def ai_code_generate_v1():
 
 # === 代码反向工程 ===
 
+def _normalize_er_rel_type(rtype):
+    """把 LLM/后端 snake_case 关系类型归一化为前端画布 camelCase（oneToOne/oneToMany/manyToMany）。"""
+    return {
+        'one_to_one': 'oneToOne',
+        'one_to_many': 'oneToMany',
+        'many_to_one': 'oneToMany',   # 前端无 many_to_one，归到 1:N
+        'many_to_many': 'manyToMany',
+    }.get(rtype, 'oneToMany')
+
+
 def _layout_ai_er(entities_raw, relations_raw):
     """把 LLM 返回的 ER 实体/关系布局成前端画布结构（分配 id/坐标/宽高，字段映射）。"""
     name_to_id = {}
@@ -8179,10 +6869,26 @@ def _layout_ai_er(entities_raw, relations_raw):
                 rtype = 'one_to_many'
             relations.append({
                 'id': len(relations) + 1,
-                'type': rtype,
+                'type': _normalize_er_rel_type(rtype),
                 'startEntity': s,
                 'endEntity': t
             })
+
+    # 回退：LLM 未给关系时，按外键字段推断一对多关系（字段形如 <实体名>_id）
+    if not relations:
+        for ent in entities:
+            for f in ent.get('fields', []):
+                fname = (f.get('name') or '').strip().lower().replace(' ', '').replace('_', '')
+                if not fname.endswith('id'):
+                    continue
+                for other in entities:
+                    if other['id'] == ent['id']:
+                        continue
+                    oname = (other.get('name') or '').strip().lower().replace(' ', '').replace('_', '')
+                    if oname and fname.startswith(oname + 'id'):
+                        relations.append({'id': len(relations) + 1, 'type': 'oneToMany',
+                                          'startEntity': other['id'], 'endEntity': ent['id']})
+                        break
     return entities, relations
 
 
@@ -8210,6 +6916,23 @@ def reverse_code_to_model(code, language, target):
     return data
 
 
+def _uuid_elements_to_canvas(elements, relationships):
+    """把 _layout_ai_elements 的 uuid 结果重写为前端画布 id 结构（uuid→数字 id，source/target→startElement/endElement）。"""
+    uuid_to_id = {e['uuid']: i + 1 for i, e in enumerate(elements)}
+    for e in elements:
+        e['id'] = uuid_to_id[e.pop('uuid')]
+    for r in relationships:
+        r.pop('uuid', None)
+        r['id'] = len(relationships)  # 占位，前端会用 startElement/endElement
+        r['startElement'] = uuid_to_id.get(r.get('source'))
+        r['endElement'] = uuid_to_id.get(r.get('target'))
+        r.pop('source', None)
+        r.pop('target', None)
+        r.pop('source_name', None)
+        r.pop('target_name', None)
+    return elements, relationships
+
+
 @app.route('/api/v1/ai/code/reverse', methods=['POST'])
 def ai_code_reverse_v1():
     """代码反向工程：粘贴代码 → 反推 UML 类图 / ER 模型（LLM）。"""
@@ -8235,25 +6958,58 @@ def ai_code_reverse_v1():
         if not isinstance(relationships_raw, list):
             relationships_raw = []
         elements, relationships = _layout_ai_elements(elements_raw, relationships_raw, 'class')
-        # 把 uuid 映射为顺序 id（前端画布用 id 引用）
-        uuid_to_id = {e['uuid']: i + 1 for i, e in enumerate(elements)}
-        for e in elements:
-            e['id'] = uuid_to_id[e.pop('uuid')]
-        for r in relationships:
-            r.pop('uuid', None)
-            r['id'] = len(relationships)  # 占位，前端会用 startElement/endElement
-            r['startElement'] = uuid_to_id.get(r.get('source'))
-            r['endElement'] = uuid_to_id.get(r.get('target'))
-            r.pop('source', None)
-            r.pop('target', None)
-            r.pop('source_name', None)
-            r.pop('target_name', None)
+        elements, relationships = _uuid_elements_to_canvas(elements, relationships)
         return jsonify({'target': 'uml', 'elements': elements, 'relationships': relationships})
 
     entities_raw = result.get('entities')
     if not isinstance(entities_raw, list) or not entities_raw:
         return jsonify({'error': '未能从代码中提取出实体'}), 422
     entities, relations = _layout_ai_er(entities_raw, result.get('relationships') or [])
+    return jsonify({'target': 'er', 'entities': entities, 'relationships': relations})
+
+
+@app.route('/api/v1/project/<project_id>/ai/generate-diagram', methods=['POST'])
+def ai_generate_diagram_v1(project_id):
+    """自然语言 → UML/ER 图，返回前端画布可直接使用的形状（不落盘，前端画上后走保存）。"""
+    user_id = _require_user_id()
+    if user_id is None:
+        return jsonify({'error': '未登录'}), 401
+
+    project = load_projects().get(project_id)
+    if project is None:
+        return jsonify({'error': '项目不存在'}), 404
+    if project.owner_id != user_id and project.permissions.get(user_id) not in ('owner', 'editor'):
+        return jsonify({'error': '无权限'}), 403
+
+    data = request.json or {}
+    text = (data.get('text') or '').strip()
+    kind = data.get('kind', 'uml')
+    view_type = data.get('view_type', 'class')
+    if not text:
+        return jsonify({'error': '请输入业务描述'}), 400
+    if kind not in ('uml', 'er'):
+        return jsonify({'error': 'kind 必须是 uml 或 er'}), 400
+
+    if kind == 'uml':
+        # generate_uml_from_prompt 内部已布局（含 uuid），只需转前端 id 结构
+        elements_raw, relationships_raw = generate_uml_from_prompt(text, view_type)
+        if not elements_raw:
+            return jsonify({'error': 'AI 服务不可用或未能解析描述，请确认已配置 API 密钥后重试'}), 422
+        elements, relationships = _uuid_elements_to_canvas(elements_raw, relationships_raw)
+        return jsonify({'target': 'uml', 'elements': elements, 'relationships': relationships})
+
+    # ER：LLM 原始数据 → 画布布局（关系类型已归一化 camelCase）
+    ai_data = _ai_generate_er_data(text)
+    entities_raw = ai_data.get('entities') if isinstance(ai_data, dict) else None
+    relations_raw = ai_data.get('relationships') if isinstance(ai_data, dict) else []
+    if not isinstance(entities_raw, list) or not entities_raw:
+        entities_raw = extract_entities_from_requirements(text)
+        relations_raw = []
+    if not isinstance(relations_raw, list):
+        relations_raw = []
+    if not isinstance(entities_raw, list) or not entities_raw:
+        return jsonify({'error': '未能从描述中提取出实体，请补充更明确的业务信息'}), 422
+    entities, relations = _layout_ai_er(entities_raw, relations_raw)
     return jsonify({'target': 'er', 'entities': entities, 'relationships': relations})
 
 
@@ -8463,7 +7219,7 @@ def _apply_er_edits(erEntities, erRelations, ops):
             rtype = str(op.get('type') or 'one_to_many').strip()
             if rtype not in ('one_to_one', 'one_to_many', 'many_to_one', 'many_to_many'):
                 rtype = 'one_to_many'
-            new_relations.append({'id': next_id, 'type': rtype, 'startEntity': s, 'endEntity': t})
+            new_relations.append({'id': next_id, 'type': _normalize_er_rel_type(rtype), 'startEntity': s, 'endEntity': t})
             next_id += 1
         elif o == 'delete_relation':
             s = name_to_id.get(str(op.get('source') or '').strip())
@@ -9665,247 +8421,7 @@ TASK_STATUS = {
 
 # === 需求管理类 ===
 
-class Requirement:
-    """需求类"""
-    def __init__(self, project_id, name, description='', req_type='functional'):
-        self.id = str(uuid.uuid4())[:8]
-        self.project_id = project_id
-        self.parent_id = None
-        self.name = name
-        self.description = description
-        self.type = req_type
-        self.priority = 'medium'
-        self.difficulty = 'medium'
-        self.status = 'draft'
-        self.version = '1.0.0'
-        self.user_id = ''
-        self.assignee_id = ''
-        self.plan_start_time = None
-        self.plan_end_time = None
-        self.actual_start_time = None
-        self.actual_end_time = None
-        self.created_at = datetime.datetime.now().isoformat()
-        self.updated_at = datetime.datetime.now().isoformat()
-        self.children = []
-        self.trace_relations = []
-    
-    def add_child(self, child_req):
-        """添加子需求"""
-        self.children.append(child_req)
-        child_req.parent_id = self.id
-    
-    def add_trace_relation(self, target_type, target_id, relation_type='implements'):
-        """添加追溯关系"""
-        relation = {
-            'id': str(uuid.uuid4())[:8],
-            'source_type': 'requirement',
-            'source_id': self.id,
-            'target_type': target_type,
-            'target_id': target_id,
-            'relation_type': relation_type,
-            'created_at': datetime.datetime.now().isoformat()
-        }
-        self.trace_relations.append(relation)
-        return relation
-    
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'project_id': self.project_id,
-            'parent_id': self.parent_id,
-            'name': self.name,
-            'description': self.description,
-            'type': self.type,
-            'priority': self.priority,
-            'difficulty': self.difficulty,
-            'status': self.status,
-            'version': self.version,
-            'user_id': self.user_id,
-            'assignee_id': self.assignee_id,
-            'plan_start_time': self.plan_start_time,
-            'plan_end_time': self.plan_end_time,
-            'actual_start_time': self.actual_start_time,
-            'actual_end_time': self.actual_end_time,
-            'created_at': self.created_at,
-            'updated_at': self.updated_at,
-            'children': [c.to_dict() for c in self.children],
-            'trace_relations': self.trace_relations
-        }
-
-# === 测试用例管理类 ===
-
-class TestCase:
-    """测试用例类"""
-    def __init__(self, project_id, name, description='', level='normal'):
-        self.id = str(uuid.uuid4())[:8]
-        self.project_id = project_id
-        self.req_id = None
-        self.use_case_id = None
-        self.name = name
-        self.description = description
-        self.scene = ''
-        self.level = level
-        self.status = 'draft'
-        self.version = '1.0.0'
-        self.assignee_id = ''
-        self.created_at = datetime.datetime.now().isoformat()
-        self.updated_at = datetime.datetime.now().isoformat()
-        self.steps = []
-        self.trace_relations = []
-    
-    def add_step(self, step_num, content, expected_result):
-        """添加测试步骤"""
-        step = {
-            'id': str(uuid.uuid4())[:8],
-            'step_num': step_num,
-            'content': content,
-            'expected_result': expected_result,
-            'created_at': datetime.datetime.now().isoformat()
-        }
-        self.steps.append(step)
-        return step
-    
-    def add_trace_relation(self, target_type, target_id, relation_type='tests'):
-        """添加追溯关系"""
-        relation = {
-            'id': str(uuid.uuid4())[:8],
-            'source_type': 'testcase',
-            'source_id': self.id,
-            'target_type': target_type,
-            'target_id': target_id,
-            'relation_type': relation_type,
-            'created_at': datetime.datetime.now().isoformat()
-        }
-        self.trace_relations.append(relation)
-        return relation
-    
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'project_id': self.project_id,
-            'req_id': self.req_id,
-            'use_case_id': self.use_case_id,
-            'name': self.name,
-            'description': self.description,
-            'scene': self.scene,
-            'level': self.level,
-            'status': self.status,
-            'version': self.version,
-            'assignee_id': self.assignee_id,
-            'created_at': self.created_at,
-            'updated_at': self.updated_at,
-            'steps': self.steps,
-            'trace_relations': self.trace_relations
-        }
-
-# === 缺陷管理类 ===
-
-class Defect:
-    """缺陷类"""
-    def __init__(self, project_id, name, description='', level='medium'):
-        self.id = str(uuid.uuid4())[:8]
-        self.project_id = project_id
-        self.case_id = None
-        self.req_id = None
-        self.element_id = None
-        self.name = name
-        self.description = description
-        self.reproduce_step = ''
-        self.actual_result = ''
-        self.expected_result = ''
-        self.level = level
-        self.status = 'new'
-        self.assignee_id = ''
-        self.created_at = datetime.datetime.now().isoformat()
-        self.updated_at = datetime.datetime.now().isoformat()
-    
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'project_id': self.project_id,
-            'case_id': self.case_id,
-            'req_id': self.req_id,
-            'element_id': self.element_id,
-            'name': self.name,
-            'description': self.description,
-            'reproduce_step': self.reproduce_step,
-            'actual_result': self.actual_result,
-            'expected_result': self.expected_result,
-            'level': self.level,
-            'status': self.status,
-            'assignee_id': self.assignee_id,
-            'created_at': self.created_at,
-            'updated_at': self.updated_at
-        }
-
-# === 任务管理类 ===
-
-class Task:
-    """任务类"""
-    def __init__(self, project_id, name, description='', task_type='development'):
-        self.id = str(uuid.uuid4())[:8]
-        self.project_id = project_id
-        self.parent_id = None
-        self.req_id = None
-        self.element_id = None
-        self.name = name
-        self.description = description
-        self.type = task_type
-        self.priority = 'medium'
-        self.status = 'pending'
-        self.progress = 0
-        self.work_hours = 0
-        self.assignee_id = ''
-        self.plan_start_time = None
-        self.plan_end_time = None
-        self.actual_start_time = None
-        self.actual_end_time = None
-        self.created_at = datetime.datetime.now().isoformat()
-        self.updated_at = datetime.datetime.now().isoformat()
-        self.children = []
-        self.dependencies = []
-    
-    def add_child(self, child_task):
-        """添加子任务"""
-        self.children.append(child_task)
-        child_task.parent_id = self.id
-    
-    def add_dependency(self, pre_task_id, dependency_type='finish_to_start'):
-        """添加依赖关系"""
-        dependency = {
-            'id': str(uuid.uuid4())[:8],
-            'task_id': self.id,
-            'pre_task_id': pre_task_id,
-            'dependency_type': dependency_type,
-            'created_at': datetime.datetime.now().isoformat()
-        }
-        self.dependencies.append(dependency)
-        return dependency
-    
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'project_id': self.project_id,
-            'parent_id': self.parent_id,
-            'req_id': self.req_id,
-            'element_id': self.element_id,
-            'name': self.name,
-            'description': self.description,
-            'type': self.type,
-            'priority': self.priority,
-            'status': self.status,
-            'progress': self.progress,
-            'work_hours': self.work_hours,
-            'assignee_id': self.assignee_id,
-            'plan_start_time': self.plan_start_time,
-            'plan_end_time': self.plan_end_time,
-            'actual_start_time': self.actual_start_time,
-            'actual_end_time': self.actual_end_time,
-            'created_at': self.created_at,
-            'updated_at': self.updated_at,
-            'children': [c.to_dict() for c in self.children],
-            'dependencies': self.dependencies
-        }
+# 研发实体类（Requirement/TestCase/Defect/Task）已移至 models.py
 
 # === 里程碑管理类 ===
 
@@ -9965,94 +8481,8 @@ trace_relations_cache = {}
 
 # === AI需求工程功能 ===
 
-def ai_generate_requirements(project_id, requirement_text):
-    """AI生成需求"""
-    requirements = []
-    
-    # 分析需求文本
-    lines = requirement_text.split('\n')
-    for i, line in enumerate(lines):
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-        
-        # 识别需求类型
-        req_type = 'functional'
-        if any(keyword in line.lower() for keyword in ['性能', '安全', '可靠', '扩展', '兼容']):
-            req_type = 'non_functional'
-        elif '用户故事' in line or '作为' in line:
-            req_type = 'user_story'
-        elif any(keyword in line.lower() for keyword in ['技术', '架构', '接口', '数据库']):
-            req_type = 'technical'
-        
-        # 确定优先级
-        priority = 'medium'
-        if any(keyword in line.lower() for keyword in ['紧急', '关键', '必须', '核心']):
-            priority = 'critical'
-        elif any(keyword in line.lower() for keyword in ['重要', '优先', '主要']):
-            priority = 'high'
-        elif any(keyword in line.lower() for keyword in ['次要', '可选', '未来']):
-            priority = 'low'
-        
-        req = Requirement(project_id, line[:50], line, req_type)
-        req.priority = priority
-        requirements.append(req)
-    
-    return requirements
+# ai_generate_requirements/ai_generate_test_cases/ai_plan_tasks 已移至 dev_routes.py
 
-def ai_generate_test_cases(project_id, req_id, requirement_text):
-    """AI生成测试用例"""
-    test_cases = []
-    
-    # 基础测试用例
-    base_case = TestCase(project_id, '正常流程测试', '验证正常业务流程', 'normal')
-    base_case.req_id = req_id
-    base_case.add_step(1, '执行正常业务流程', '流程正常执行')
-    base_case.add_step(2, '验证结果', '结果符合预期')
-    test_cases.append(base_case)
-    
-    # 边界测试用例
-    boundary_case = TestCase(project_id, '边界值测试', '验证边界条件', 'complex')
-    boundary_case.req_id = req_id
-    boundary_case.add_step(1, '输入边界值', '系统正常处理')
-    boundary_case.add_step(2, '验证边界值+1', '系统正常处理')
-    boundary_case.add_step(3, '验证边界值-1', '系统正常处理')
-    test_cases.append(boundary_case)
-    
-    # 异常测试用例
-    exception_case = TestCase(project_id, '异常场景测试', '验证异常处理', 'complex')
-    exception_case.req_id = req_id
-    exception_case.add_step(1, '输入异常数据', '系统给出正确提示')
-    exception_case.add_step(2, '验证错误处理', '系统正确处理异常')
-    test_cases.append(exception_case)
-    
-    return test_cases
-
-def ai_plan_tasks(project_id, requirements):
-    """AI规划任务"""
-    tasks = []
-    
-    for req in requirements:
-        # 为每个需求创建开发任务
-        dev_task = Task(project_id, f'开发：{req.name}', f'实现需求：{req.description}', 'development')
-        dev_task.req_id = req.id
-        dev_task.priority = req.priority
-        dev_task.work_hours = 8
-        dev_task.status = 'pending'
-        
-        # 创建测试任务
-        test_task = Task(project_id, f'测试：{req.name}', f'测试需求：{req.description}', 'testing')
-        test_task.req_id = req.id
-        test_task.priority = req.priority
-        test_task.work_hours = 4
-        test_task.status = 'pending'
-        
-        # 添加依赖关系：测试任务依赖开发任务
-        test_task.add_dependency(dev_task.id, 'finish_to_start')
-        
-        tasks.extend([dev_task, test_task])
-    
-    return tasks
 
 def analyze_trace_impact(project_id, element_type, element_id):
     """分析追溯影响"""
@@ -10190,541 +8620,11 @@ def generate_project_report(project_id, report_type):
     return report
 
 
-def _load_dev_entries(kind, project_id):
-    """读取项目某类研发条目（kind: req/tc/def/task）。"""
-    data = db.get(f'{kind}:{project_id}', {}) or {}
-    entries = data.get('entries')
-    return entries if isinstance(entries, list) else []
-
-
-def _save_dev_entries(kind, project_id, entries):
-    """保存项目某类研发条目。"""
-    db.set(f'{kind}:{project_id}', {'entries': entries})
-
+# _load_dev_entries/_save_dev_entries 已移至 core.py
 
 # === 需求/测试/任务管理API ===
 
-@app.route('/api/v1/project/<project_id>/requirement/ai/generate', methods=['POST'])
-def ai_generate_requirements_api(project_id):
-    """AI生成需求"""
-    user_id = _require_user_id()
-    if user_id is None:
-        return jsonify({'error': '未登录'}), 401
-
-    model = load_model_from_cache(project_id)
-    if not _model_owned_by(model, user_id):
-        return jsonify({'error': '项目不存在'}), 404
-
-    data = request.json
-    requirement_text = data.get('requirement_text', '')
-
-    requirements = ai_generate_requirements(project_id, requirement_text)
-
-    # 保存需求（持久化）
-    entries = _load_dev_entries('req', project_id)
-    for req in requirements:
-        req.user_id = user_id
-        entries.append(req.to_dict())
-    _save_dev_entries('req', project_id, entries)
-
-    return jsonify({
-        'message': 'AI需求生成成功',
-        'requirements': [r.to_dict() for r in requirements],
-        'count': len(requirements)
-    })
-
-@app.route('/api/v1/project/<project_id>/requirement', methods=['GET', 'POST', 'PUT', 'DELETE'])
-def manage_requirements(project_id):
-    """需求管理"""
-    user_id = _require_user_id()
-    if user_id is None:
-        return jsonify({'error': '未登录'}), 401
-
-    model = load_model_from_cache(project_id)
-    if not _model_owned_by(model, user_id):
-        return jsonify({'error': '项目不存在'}), 404
-
-    if request.method == 'GET':
-        # 获取需求列表
-        entries = _load_dev_entries('req', project_id)
-        return jsonify({'requirements': entries})
-
-    elif request.method == 'POST':
-        # 创建需求
-        data = request.json
-        req = Requirement(project_id, data.get('name', ''), data.get('description', ''), data.get('type', 'functional'))
-        req.user_id = user_id
-        req.assignee_id = data.get('assignee_id', '')
-        req.priority = data.get('priority', 'medium')
-        req.status = data.get('status', 'draft')
-
-        entries = _load_dev_entries('req', project_id)
-        entry = req.to_dict()
-        entries.append(entry)
-        _save_dev_entries('req', project_id, entries)
-
-        return jsonify({
-            'message': '需求创建成功',
-            'requirement': entry
-        })
-
-    elif request.method == 'PUT':
-        # 更新需求
-        data = request.json
-        req_id = data.get('id')
-
-        entries = _load_dev_entries('req', project_id)
-        entry = next((e for e in entries if e.get('id') == req_id), None)
-        if entry is None:
-            return jsonify({'error': '需求不存在'}), 404
-
-        if 'name' in data:
-            entry['name'] = data['name']
-        if 'description' in data:
-            entry['description'] = data['description']
-        if 'type' in data:
-            entry['type'] = data['type']
-        if 'priority' in data:
-            entry['priority'] = data['priority']
-        if 'status' in data:
-            entry['status'] = data['status']
-        if 'assignee_id' in data:
-            entry['assignee_id'] = data['assignee_id']
-
-        entry['updated_at'] = datetime.datetime.now().isoformat()
-        _save_dev_entries('req', project_id, entries)
-
-        return jsonify({
-            'message': '需求更新成功',
-            'requirement': entry
-        })
-
-    elif request.method == 'DELETE':
-        # 删除需求
-        req_id = (request.json or {}).get('id') or request.args.get('id')
-
-        entries = _load_dev_entries('req', project_id)
-        entry = next((e for e in entries if e.get('id') == req_id), None)
-        if entry is None:
-            return jsonify({'error': '需求不存在'}), 404
-
-        entries = [e for e in entries if e.get('id') != req_id]
-        _save_dev_entries('req', project_id, entries)
-
-        return jsonify({'message': '需求删除成功'})
-
-@app.route('/api/v1/project/<project_id>/requirement/list', methods=['GET'])
-def get_requirements_list(project_id):
-    """获取需求列表"""
-    user_id = _require_user_id()
-    if user_id is None:
-        return jsonify({'error': '未登录'}), 401
-
-    model = load_model_from_cache(project_id)
-    if not _model_owned_by(model, user_id):
-        return jsonify({'error': '项目不存在'}), 404
-
-    # 获取筛选参数
-    status = request.args.get('status')
-    priority = request.args.get('priority')
-    assignee_id = request.args.get('assignee_id')
-
-    requirements = _load_dev_entries('req', project_id)
-
-    # 应用筛选
-    if status:
-        requirements = [e for e in requirements if e.get('status') == status]
-    if priority:
-        requirements = [e for e in requirements if e.get('priority') == priority]
-    if assignee_id:
-        requirements = [e for e in requirements if e.get('assignee_id') == assignee_id]
-
-    return jsonify({
-        'requirements': requirements,
-        'total': len(requirements)
-    })
-
-@app.route('/api/v1/project/<project_id>/testcase/ai/generate', methods=['POST'])
-def ai_generate_test_cases_api(project_id):
-    """AI生成测试用例"""
-    user_id = _require_user_id()
-    if user_id is None:
-        return jsonify({'error': '未登录'}), 401
-
-    model = load_model_from_cache(project_id)
-    if not _model_owned_by(model, user_id):
-        return jsonify({'error': '项目不存在'}), 404
-
-    data = request.json
-    req_id = data.get('req_id')
-    requirement_text = data.get('requirement_text', '')
-
-    test_cases = ai_generate_test_cases(project_id, req_id, requirement_text)
-
-    # 保存测试用例（持久化）
-    entries = _load_dev_entries('tc', project_id)
-    for case in test_cases:
-        case.assignee_id = user_id
-        entries.append(case.to_dict())
-    _save_dev_entries('tc', project_id, entries)
-
-    return jsonify({
-        'message': 'AI测试用例生成成功',
-        'test_cases': [c.to_dict() for c in test_cases],
-        'count': len(test_cases)
-    })
-
-@app.route('/api/v1/project/<project_id>/testcase', methods=['GET', 'POST', 'PUT', 'DELETE'])
-def manage_test_cases(project_id):
-    """测试用例管理"""
-    user_id = _require_user_id()
-    if user_id is None:
-        return jsonify({'error': '未登录'}), 401
-
-    model = load_model_from_cache(project_id)
-    if not _model_owned_by(model, user_id):
-        return jsonify({'error': '项目不存在'}), 404
-
-    if request.method == 'GET':
-        # 获取测试用例列表
-        entries = _load_dev_entries('tc', project_id)
-        return jsonify({'test_cases': entries})
-
-    elif request.method == 'POST':
-        # 创建测试用例
-        data = request.json
-        case = TestCase(project_id, data.get('name', ''), data.get('description', ''), data.get('level', 'normal'))
-        case.req_id = data.get('req_id')
-        case.use_case_id = data.get('use_case_id')
-        case.assignee_id = data.get('assignee_id', '')
-
-        entries = _load_dev_entries('tc', project_id)
-        entry = case.to_dict()
-        entries.append(entry)
-        _save_dev_entries('tc', project_id, entries)
-
-        return jsonify({
-            'message': '测试用例创建成功',
-            'test_case': entry
-        })
-
-    elif request.method == 'PUT':
-        # 更新测试用例
-        data = request.json
-        case_id = data.get('id')
-
-        entries = _load_dev_entries('tc', project_id)
-        entry = next((e for e in entries if e.get('id') == case_id), None)
-        if entry is None:
-            return jsonify({'error': '测试用例不存在'}), 404
-
-        if 'name' in data:
-            entry['name'] = data['name']
-        if 'description' in data:
-            entry['description'] = data['description']
-        if 'status' in data:
-            entry['status'] = data['status']
-        if 'level' in data:
-            entry['level'] = data['level']
-        if 'req_id' in data:
-            entry['req_id'] = data['req_id']
-        if 'assignee_id' in data:
-            entry['assignee_id'] = data['assignee_id']
-
-        entry['updated_at'] = datetime.datetime.now().isoformat()
-        _save_dev_entries('tc', project_id, entries)
-
-        return jsonify({
-            'message': '测试用例更新成功',
-            'test_case': entry
-        })
-
-    elif request.method == 'DELETE':
-        # 删除测试用例
-        case_id = (request.json or {}).get('id') or request.args.get('id')
-
-        entries = _load_dev_entries('tc', project_id)
-        entry = next((e for e in entries if e.get('id') == case_id), None)
-        if entry is None:
-            return jsonify({'error': '测试用例不存在'}), 404
-
-        entries = [e for e in entries if e.get('id') != case_id]
-        _save_dev_entries('tc', project_id, entries)
-
-        return jsonify({'message': '测试用例删除成功'})
-
-@app.route('/api/v1/project/<project_id>/testcase/list', methods=['GET'])
-def get_test_cases_list(project_id):
-    """获取测试用例列表"""
-    user_id = _require_user_id()
-    if user_id is None:
-        return jsonify({'error': '未登录'}), 401
-
-    model = load_model_from_cache(project_id)
-    if not _model_owned_by(model, user_id):
-        return jsonify({'error': '项目不存在'}), 404
-
-    # 获取筛选参数
-    req_id = request.args.get('req_id')
-    level = request.args.get('level')
-    status = request.args.get('status')
-
-    test_cases = _load_dev_entries('tc', project_id)
-
-    # 应用筛选
-    if req_id:
-        test_cases = [c for c in test_cases if c.get('req_id') == req_id]
-    if level:
-        test_cases = [c for c in test_cases if c.get('level') == level]
-    if status:
-        test_cases = [c for c in test_cases if c.get('status') == status]
-
-    return jsonify({
-        'test_cases': test_cases,
-        'total': len(test_cases)
-    })
-
-@app.route('/api/v1/project/<project_id>/defect', methods=['GET', 'POST', 'PUT', 'DELETE'])
-def manage_defects(project_id):
-    """缺陷管理"""
-    user_id = _require_user_id()
-    if user_id is None:
-        return jsonify({'error': '未登录'}), 401
-
-    model = load_model_from_cache(project_id)
-    if not _model_owned_by(model, user_id):
-        return jsonify({'error': '项目不存在'}), 404
-
-    if request.method == 'GET':
-        # 获取缺陷列表
-        entries = _load_dev_entries('def', project_id)
-        return jsonify({'defects': entries})
-
-    elif request.method == 'POST':
-        # 创建缺陷
-        data = request.json
-        defect = Defect(project_id, data.get('name', ''), data.get('description', ''), data.get('level', 'medium'))
-        defect.case_id = data.get('case_id')
-        defect.req_id = data.get('req_id')
-        defect.element_id = data.get('element_id')
-        defect.assignee_id = data.get('assignee_id', '')
-        defect.reproduce_step = data.get('reproduce_step', '')
-        defect.actual_result = data.get('actual_result', '')
-        defect.expected_result = data.get('expected_result', '')
-
-        entries = _load_dev_entries('def', project_id)
-        entry = defect.to_dict()
-        entries.append(entry)
-        _save_dev_entries('def', project_id, entries)
-
-        return jsonify({
-            'message': '缺陷创建成功',
-            'defect': entry
-        })
-
-    elif request.method == 'PUT':
-        # 更新缺陷
-        data = request.json
-        defect_id = data.get('id')
-
-        entries = _load_dev_entries('def', project_id)
-        entry = next((e for e in entries if e.get('id') == defect_id), None)
-        if entry is None:
-            return jsonify({'error': '缺陷不存在'}), 404
-
-        if 'name' in data:
-            entry['name'] = data['name']
-        if 'description' in data:
-            entry['description'] = data['description']
-        if 'status' in data:
-            entry['status'] = data['status']
-        if 'level' in data:
-            entry['level'] = data['level']
-        if 'assignee_id' in data:
-            entry['assignee_id'] = data['assignee_id']
-
-        entry['updated_at'] = datetime.datetime.now().isoformat()
-        _save_dev_entries('def', project_id, entries)
-
-        return jsonify({
-            'message': '缺陷更新成功',
-            'defect': entry
-        })
-
-    elif request.method == 'DELETE':
-        # 删除缺陷
-        defect_id = (request.json or {}).get('id') or request.args.get('id')
-
-        entries = _load_dev_entries('def', project_id)
-        entry = next((e for e in entries if e.get('id') == defect_id), None)
-        if entry is None:
-            return jsonify({'error': '缺陷不存在'}), 404
-
-        entries = [e for e in entries if e.get('id') != defect_id]
-        _save_dev_entries('def', project_id, entries)
-
-        return jsonify({'message': '缺陷删除成功'})
-
-@app.route('/api/v1/project/<project_id>/task/ai/plan', methods=['POST'])
-def ai_plan_tasks_api(project_id):
-    """AI任务规划"""
-    user_id = _require_user_id()
-    if user_id is None:
-        return jsonify({'error': '未登录'}), 401
-
-    model = load_model_from_cache(project_id)
-    if not _model_owned_by(model, user_id):
-        return jsonify({'error': '项目不存在'}), 404
-
-    data = request.json
-    req_ids = data.get('req_ids', [])
-
-    # 从持久化读取需求（重建 Requirement 对象供 ai_plan_tasks 使用）
-    req_entries = {r.get('id'): r for r in _load_dev_entries('req', project_id)}
-    requirements = []
-    for rid in req_ids:
-        d = req_entries.get(rid)
-        if d is None:
-            continue
-        req = Requirement(d.get('project_id', project_id), d.get('name', ''), d.get('description', ''), d.get('type', 'functional'))
-        req.id = d.get('id')
-        req.priority = d.get('priority', 'medium')
-        requirements.append(req)
-
-    # 规划任务
-    tasks = ai_plan_tasks(project_id, requirements)
-
-    # 保存任务（持久化）
-    entries = _load_dev_entries('task', project_id)
-    for task in tasks:
-        task.assignee_id = user_id
-        entries.append(task.to_dict())
-    _save_dev_entries('task', project_id, entries)
-
-    return jsonify({
-        'message': 'AI任务规划成功',
-        'tasks': [t.to_dict() for t in tasks],
-        'count': len(tasks)
-    })
-
-@app.route('/api/v1/project/<project_id>/task', methods=['GET', 'POST', 'PUT', 'DELETE'])
-def manage_tasks(project_id):
-    """任务管理"""
-    user_id = _require_user_id()
-    if user_id is None:
-        return jsonify({'error': '未登录'}), 401
-
-    model = load_model_from_cache(project_id)
-    if not _model_owned_by(model, user_id):
-        return jsonify({'error': '项目不存在'}), 404
-
-    if request.method == 'GET':
-        # 获取任务列表
-        entries = _load_dev_entries('task', project_id)
-        return jsonify({'tasks': entries})
-
-    elif request.method == 'POST':
-        # 创建任务
-        data = request.json
-        task = Task(project_id, data.get('name', ''), data.get('description', ''), data.get('type', 'development'))
-        task.req_id = data.get('req_id')
-        task.element_id = data.get('element_id')
-        task.assignee_id = data.get('assignee_id', '')
-        task.priority = data.get('priority', 'medium')
-        task.status = data.get('status', 'pending')
-        task.work_hours = int(data.get('work_hours') or 0)
-        task.plan_start_time = data.get('plan_start_time')
-        task.plan_end_time = data.get('plan_end_time')
-
-        entries = _load_dev_entries('task', project_id)
-        entry = task.to_dict()
-        entries.append(entry)
-        _save_dev_entries('task', project_id, entries)
-
-        return jsonify({
-            'message': '任务创建成功',
-            'task': entry
-        })
-
-    elif request.method == 'PUT':
-        # 更新任务
-        data = request.json
-        task_id = data.get('id')
-
-        entries = _load_dev_entries('task', project_id)
-        entry = next((e for e in entries if e.get('id') == task_id), None)
-        if entry is None:
-            return jsonify({'error': '任务不存在'}), 404
-
-        if 'name' in data:
-            entry['name'] = data['name']
-        if 'description' in data:
-            entry['description'] = data['description']
-        if 'status' in data:
-            entry['status'] = data['status']
-        if 'progress' in data:
-            entry['progress'] = data['progress']
-        if 'assignee_id' in data:
-            entry['assignee_id'] = data['assignee_id']
-        if 'type' in data:
-            entry['type'] = data['type']
-        if 'priority' in data:
-            entry['priority'] = data['priority']
-        if 'work_hours' in data:
-            entry['work_hours'] = int(data['work_hours'] or 0)
-
-        entry['updated_at'] = datetime.datetime.now().isoformat()
-        _save_dev_entries('task', project_id, entries)
-
-        return jsonify({
-            'message': '任务更新成功',
-            'task': entry
-        })
-
-    elif request.method == 'DELETE':
-        # 删除任务
-        task_id = (request.json or {}).get('id') or request.args.get('id')
-
-        entries = _load_dev_entries('task', project_id)
-        entry = next((e for e in entries if e.get('id') == task_id), None)
-        if entry is None:
-            return jsonify({'error': '任务不存在'}), 404
-
-        entries = [e for e in entries if e.get('id') != task_id]
-        _save_dev_entries('task', project_id, entries)
-
-        return jsonify({'message': '任务删除成功'})
-
-@app.route('/api/v1/project/<project_id>/task/list', methods=['GET'])
-def get_tasks_list(project_id):
-    """获取任务列表"""
-    user_id = _require_user_id()
-    if user_id is None:
-        return jsonify({'error': '未登录'}), 401
-
-    model = load_model_from_cache(project_id)
-    if not _model_owned_by(model, user_id):
-        return jsonify({'error': '项目不存在'}), 404
-
-    # 获取筛选参数
-    status = request.args.get('status')
-    assignee_id = request.args.get('assignee_id')
-    priority = request.args.get('priority')
-
-    tasks = _load_dev_entries('task', project_id)
-
-    # 应用筛选
-    if status:
-        tasks = [t for t in tasks if t.get('status') == status]
-    if assignee_id:
-        tasks = [t for t in tasks if t.get('assignee_id') == assignee_id]
-    if priority:
-        tasks = [t for t in tasks if t.get('priority') == priority]
-
-    return jsonify({
-        'tasks': tasks,
-        'total': len(tasks)
-    })
+# 研发管理路由（requirement/testcase/defect/task）已移至 dev_routes.py
 
 @app.route('/api/v1/project/<project_id>/gantt', methods=['GET', 'POST'])
 def manage_gantt(project_id):
@@ -12112,8 +10012,6 @@ class VCSSyncRecord:
         }
 
 # 缓存
-versions_cache = {}
-branches_cache = {}
 merges_cache = {}
 vcs_configs_cache = {}
 vcs_sync_records_cache = {}
@@ -13007,7 +10905,6 @@ class KnowledgeBase:
 
 # 缓存
 comments_cache = {}
-reviews_cache = {}
 teams_cache = {}
 notifications_cache = {}
 knowledge_base_cache = {}

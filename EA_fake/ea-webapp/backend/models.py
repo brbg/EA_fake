@@ -277,3 +277,243 @@ class SimpleModel:
         model.version = data.get('version', '1.0.0')
         model.history = data.get('history', [])
         return model
+
+
+class Requirement:
+    """需求类"""
+    def __init__(self, project_id, name, description='', req_type='functional'):
+        self.id = str(uuid.uuid4())[:8]
+        self.project_id = project_id
+        self.parent_id = None
+        self.name = name
+        self.description = description
+        self.type = req_type
+        self.priority = 'medium'
+        self.difficulty = 'medium'
+        self.status = 'draft'
+        self.version = '1.0.0'
+        self.user_id = ''
+        self.assignee_id = ''
+        self.plan_start_time = None
+        self.plan_end_time = None
+        self.actual_start_time = None
+        self.actual_end_time = None
+        self.created_at = datetime.datetime.now().isoformat()
+        self.updated_at = datetime.datetime.now().isoformat()
+        self.children = []
+        self.trace_relations = []
+
+    def add_child(self, child_req):
+        """添加子需求"""
+        self.children.append(child_req)
+        child_req.parent_id = self.id
+
+    def add_trace_relation(self, target_type, target_id, relation_type='implements'):
+        """添加追溯关系"""
+        relation = {
+            'id': str(uuid.uuid4())[:8],
+            'source_type': 'requirement',
+            'source_id': self.id,
+            'target_type': target_type,
+            'target_id': target_id,
+            'relation_type': relation_type,
+            'created_at': datetime.datetime.now().isoformat()
+        }
+        self.trace_relations.append(relation)
+        return relation
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'project_id': self.project_id,
+            'parent_id': self.parent_id,
+            'name': self.name,
+            'description': self.description,
+            'type': self.type,
+            'priority': self.priority,
+            'difficulty': self.difficulty,
+            'status': self.status,
+            'version': self.version,
+            'user_id': self.user_id,
+            'assignee_id': self.assignee_id,
+            'plan_start_time': self.plan_start_time,
+            'plan_end_time': self.plan_end_time,
+            'actual_start_time': self.actual_start_time,
+            'actual_end_time': self.actual_end_time,
+            'created_at': self.created_at,
+            'updated_at': self.updated_at,
+            'children': [c.to_dict() for c in self.children],
+            'trace_relations': self.trace_relations
+        }
+
+
+class TestCase:
+    """测试用例类"""
+    def __init__(self, project_id, name, description='', level='normal'):
+        self.id = str(uuid.uuid4())[:8]
+        self.project_id = project_id
+        self.req_id = None
+        self.use_case_id = None
+        self.name = name
+        self.description = description
+        self.scene = ''
+        self.level = level
+        self.status = 'draft'
+        self.version = '1.0.0'
+        self.assignee_id = ''
+        self.created_at = datetime.datetime.now().isoformat()
+        self.updated_at = datetime.datetime.now().isoformat()
+        self.steps = []
+        self.trace_relations = []
+
+    def add_step(self, step_num, content, expected_result):
+        """添加测试步骤"""
+        step = {
+            'id': str(uuid.uuid4())[:8],
+            'step_num': step_num,
+            'content': content,
+            'expected_result': expected_result,
+            'created_at': datetime.datetime.now().isoformat()
+        }
+        self.steps.append(step)
+        return step
+
+    def add_trace_relation(self, target_type, target_id, relation_type='tests'):
+        """添加追溯关系"""
+        relation = {
+            'id': str(uuid.uuid4())[:8],
+            'source_type': 'testcase',
+            'source_id': self.id,
+            'target_type': target_type,
+            'target_id': target_id,
+            'relation_type': relation_type,
+            'created_at': datetime.datetime.now().isoformat()
+        }
+        self.trace_relations.append(relation)
+        return relation
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'project_id': self.project_id,
+            'req_id': self.req_id,
+            'use_case_id': self.use_case_id,
+            'name': self.name,
+            'description': self.description,
+            'scene': self.scene,
+            'level': self.level,
+            'status': self.status,
+            'version': self.version,
+            'assignee_id': self.assignee_id,
+            'created_at': self.created_at,
+            'updated_at': self.updated_at,
+            'steps': self.steps,
+            'trace_relations': self.trace_relations
+        }
+
+
+class Defect:
+    """缺陷类"""
+    def __init__(self, project_id, name, description='', level='medium'):
+        self.id = str(uuid.uuid4())[:8]
+        self.project_id = project_id
+        self.case_id = None
+        self.req_id = None
+        self.element_id = None
+        self.name = name
+        self.description = description
+        self.reproduce_step = ''
+        self.actual_result = ''
+        self.expected_result = ''
+        self.level = level
+        self.status = 'new'
+        self.assignee_id = ''
+        self.created_at = datetime.datetime.now().isoformat()
+        self.updated_at = datetime.datetime.now().isoformat()
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'project_id': self.project_id,
+            'case_id': self.case_id,
+            'req_id': self.req_id,
+            'element_id': self.element_id,
+            'name': self.name,
+            'description': self.description,
+            'reproduce_step': self.reproduce_step,
+            'actual_result': self.actual_result,
+            'expected_result': self.expected_result,
+            'level': self.level,
+            'status': self.status,
+            'assignee_id': self.assignee_id,
+            'created_at': self.created_at,
+            'updated_at': self.updated_at
+        }
+
+
+class Task:
+    """任务类"""
+    def __init__(self, project_id, name, description='', task_type='development'):
+        self.id = str(uuid.uuid4())[:8]
+        self.project_id = project_id
+        self.parent_id = None
+        self.req_id = None
+        self.element_id = None
+        self.name = name
+        self.description = description
+        self.type = task_type
+        self.priority = 'medium'
+        self.status = 'pending'
+        self.progress = 0
+        self.work_hours = 0
+        self.assignee_id = ''
+        self.plan_start_time = None
+        self.plan_end_time = None
+        self.actual_start_time = None
+        self.actual_end_time = None
+        self.created_at = datetime.datetime.now().isoformat()
+        self.updated_at = datetime.datetime.now().isoformat()
+        self.children = []
+        self.dependencies = []
+
+    def add_child(self, child_task):
+        """添加子任务"""
+        self.children.append(child_task)
+        child_task.parent_id = self.id
+
+    def add_dependency(self, pre_task_id, dependency_type='finish_to_start'):
+        """添加依赖关系"""
+        dependency = {
+            'id': str(uuid.uuid4())[:8],
+            'task_id': self.id,
+            'pre_task_id': pre_task_id,
+            'dependency_type': dependency_type,
+            'created_at': datetime.datetime.now().isoformat()
+        }
+        self.dependencies.append(dependency)
+        return dependency
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'project_id': self.project_id,
+            'parent_id': self.parent_id,
+            'req_id': self.req_id,
+            'element_id': self.element_id,
+            'name': self.name,
+            'description': self.description,
+            'type': self.type,
+            'priority': self.priority,
+            'status': self.status,
+            'progress': self.progress,
+            'work_hours': self.work_hours,
+            'assignee_id': self.assignee_id,
+            'plan_start_time': self.plan_start_time,
+            'plan_end_time': self.plan_end_time,
+            'actual_start_time': self.actual_start_time,
+            'actual_end_time': self.actual_end_time,
+            'created_at': self.created_at,
+            'updated_at': self.updated_at,
+            'children': [c.to_dict() for c in self.children],
+            'dependencies': self.dependencies
+        }
