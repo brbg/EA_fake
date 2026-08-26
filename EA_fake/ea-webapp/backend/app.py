@@ -10193,25 +10193,44 @@ def generate_project_report(project_id, report_type):
     
     return report
 
+
+def _load_dev_entries(kind, project_id):
+    """读取项目某类研发条目（kind: req/tc/def/task）。"""
+    data = db.get(f'{kind}:{project_id}', {}) or {}
+    entries = data.get('entries')
+    return entries if isinstance(entries, list) else []
+
+
+def _save_dev_entries(kind, project_id, entries):
+    """保存项目某类研发条目。"""
+    db.set(f'{kind}:{project_id}', {'entries': entries})
+
+
 # === 需求/测试/任务管理API ===
 
 @app.route('/api/v1/project/<project_id>/requirement/ai/generate', methods=['POST'])
 def ai_generate_requirements_api(project_id):
     """AI生成需求"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
+    user_id = _require_user_id()
+    if user_id is None:
         return jsonify({'error': '未登录'}), 401
-    
+
+    model = load_model_from_cache(project_id)
+    if not _model_owned_by(model, user_id):
+        return jsonify({'error': '项目不存在'}), 404
+
     data = request.json
     requirement_text = data.get('requirement_text', '')
-    
+
     requirements = ai_generate_requirements(project_id, requirement_text)
-    
-    # 保存需求
+
+    # 保存需求（持久化）
+    entries = _load_dev_entries('req', project_id)
     for req in requirements:
-        req.user_id = sessions_cache[session_id]['user_id']
-        requirements_cache[req.id] = req
-    
+        req.user_id = user_id
+        entries.append(req.to_dict())
+    _save_dev_entries('req', project_id, entries)
+
     return jsonify({
         'message': 'AI需求生成成功',
         'requirements': [r.to_dict() for r in requirements],
@@ -10221,93 +10240,109 @@ def ai_generate_requirements_api(project_id):
 @app.route('/api/v1/project/<project_id>/requirement', methods=['GET', 'POST', 'PUT', 'DELETE'])
 def manage_requirements(project_id):
     """需求管理"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
+    user_id = _require_user_id()
+    if user_id is None:
         return jsonify({'error': '未登录'}), 401
-    
+
+    model = load_model_from_cache(project_id)
+    if not _model_owned_by(model, user_id):
+        return jsonify({'error': '项目不存在'}), 404
+
     if request.method == 'GET':
         # 获取需求列表
-        requirements = [r.to_dict() for r in requirements_cache.values() if r.project_id == project_id]
-        return jsonify({'requirements': requirements})
-    
+        entries = _load_dev_entries('req', project_id)
+        return jsonify({'requirements': entries})
+
     elif request.method == 'POST':
         # 创建需求
         data = request.json
         req = Requirement(project_id, data.get('name', ''), data.get('description', ''), data.get('type', 'functional'))
-        req.user_id = sessions_cache[session_id]['user_id']
+        req.user_id = user_id
         req.assignee_id = data.get('assignee_id', '')
         req.priority = data.get('priority', 'medium')
         req.status = data.get('status', 'draft')
-        
-        requirements_cache[req.id] = req
-        
+
+        entries = _load_dev_entries('req', project_id)
+        entry = req.to_dict()
+        entries.append(entry)
+        _save_dev_entries('req', project_id, entries)
+
         return jsonify({
             'message': '需求创建成功',
-            'requirement': req.to_dict()
+            'requirement': entry
         })
-    
+
     elif request.method == 'PUT':
         # 更新需求
         data = request.json
         req_id = data.get('id')
-        
-        if req_id not in requirements_cache:
+
+        entries = _load_dev_entries('req', project_id)
+        entry = next((e for e in entries if e.get('id') == req_id), None)
+        if entry is None:
             return jsonify({'error': '需求不存在'}), 404
-        
-        req = requirements_cache[req_id]
+
         if 'name' in data:
-            req.name = data['name']
+            entry['name'] = data['name']
         if 'description' in data:
-            req.description = data['description']
+            entry['description'] = data['description']
         if 'priority' in data:
-            req.priority = data['priority']
+            entry['priority'] = data['priority']
         if 'status' in data:
-            req.status = data['status']
+            entry['status'] = data['status']
         if 'assignee_id' in data:
-            req.assignee_id = data['assignee_id']
-        
-        req.updated_at = datetime.datetime.now().isoformat()
-        
+            entry['assignee_id'] = data['assignee_id']
+
+        entry['updated_at'] = datetime.datetime.now().isoformat()
+        _save_dev_entries('req', project_id, entries)
+
         return jsonify({
             'message': '需求更新成功',
-            'requirement': req.to_dict()
+            'requirement': entry
         })
-    
+
     elif request.method == 'DELETE':
         # 删除需求
         req_id = request.args.get('id')
-        
-        if req_id not in requirements_cache:
+
+        entries = _load_dev_entries('req', project_id)
+        entry = next((e for e in entries if e.get('id') == req_id), None)
+        if entry is None:
             return jsonify({'error': '需求不存在'}), 404
-        
-        del requirements_cache[req_id]
-        
+
+        entries = [e for e in entries if e.get('id') != req_id]
+        _save_dev_entries('req', project_id, entries)
+
         return jsonify({'message': '需求删除成功'})
 
 @app.route('/api/v1/project/<project_id>/requirement/list', methods=['GET'])
 def get_requirements_list(project_id):
     """获取需求列表"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
+    user_id = _require_user_id()
+    if user_id is None:
         return jsonify({'error': '未登录'}), 401
-    
+
+    model = load_model_from_cache(project_id)
+    if not _model_owned_by(model, user_id):
+        return jsonify({'error': '项目不存在'}), 404
+
     # 获取筛选参数
     status = request.args.get('status')
     priority = request.args.get('priority')
     assignee_id = request.args.get('assignee_id')
-    
-    requirements = [r for r in requirements_cache.values() if r.project_id == project_id]
-    
+
+    requirements = _load_dev_entries('req', project_id)
+
     # 应用筛选
     if status:
-        requirements = [r for r in requirements if r.status == status]
+        requirements = [e for e in requirements if e.get('status') == status]
     if priority:
-        requirements = [r for r in requirements if r.priority == priority]
+        requirements = [e for e in requirements if e.get('priority') == priority]
     if assignee_id:
-        requirements = [r for r in requirements if r.assignee_id == assignee_id]
-    
+        requirements = [e for e in requirements if e.get('assignee_id') == assignee_id]
+
     return jsonify({
-        'requirements': [r.to_dict() for r in requirements],
+        'requirements': requirements,
         'total': len(requirements)
     })
 
