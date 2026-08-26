@@ -10155,7 +10155,7 @@ def generate_project_report(project_id, report_type):
             'total_tasks': len(task_list),
             'by_status': {},
             'by_type': {},
-            'total_work_hours': sum((t.get('work_hours') or 0) for t in task_list),
+            'total_work_hours': sum(float(t.get('work_hours') or 0) for t in task_list),
             'completion_rate': '60%'
         }
 
@@ -10282,6 +10282,8 @@ def manage_requirements(project_id):
             entry['name'] = data['name']
         if 'description' in data:
             entry['description'] = data['description']
+        if 'type' in data:
+            entry['type'] = data['type']
         if 'priority' in data:
             entry['priority'] = data['priority']
         if 'status' in data:
@@ -10424,6 +10426,10 @@ def manage_test_cases(project_id):
             entry['status'] = data['status']
         if 'level' in data:
             entry['level'] = data['level']
+        if 'req_id' in data:
+            entry['req_id'] = data['req_id']
+        if 'assignee_id' in data:
+            entry['assignee_id'] = data['assignee_id']
 
         entry['updated_at'] = datetime.datetime.now().isoformat()
         _save_dev_entries('tc', project_id, entries)
@@ -10626,7 +10632,7 @@ def manage_tasks(project_id):
         task.assignee_id = data.get('assignee_id', '')
         task.priority = data.get('priority', 'medium')
         task.status = data.get('status', 'pending')
-        task.work_hours = data.get('work_hours', 0)
+        task.work_hours = int(data.get('work_hours') or 0)
         task.plan_start_time = data.get('plan_start_time')
         task.plan_end_time = data.get('plan_end_time')
 
@@ -10660,6 +10666,12 @@ def manage_tasks(project_id):
             entry['progress'] = data['progress']
         if 'assignee_id' in data:
             entry['assignee_id'] = data['assignee_id']
+        if 'type' in data:
+            entry['type'] = data['type']
+        if 'priority' in data:
+            entry['priority'] = data['priority']
+        if 'work_hours' in data:
+            entry['work_hours'] = int(data['work_hours'] or 0)
 
         entry['updated_at'] = datetime.datetime.now().isoformat()
         _save_dev_entries('task', project_id, entries)
@@ -11355,7 +11367,7 @@ def generate_task_report(project_id, report):
 
     report['data'] = {
         'total_tasks': len(tasks),
-        'total_work_hours': sum((t.get('work_hours') or 0) for t in tasks),
+        'total_work_hours': sum(float(t.get('work_hours') or 0) for t in tasks),
         'by_status': {},
         'by_type': {},
         'completion_rate': round(len([t for t in tasks if t.get('status') == 'completed']) / max(len(tasks), 1) * 100, 1)
