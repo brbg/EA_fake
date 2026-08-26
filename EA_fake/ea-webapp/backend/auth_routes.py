@@ -5,7 +5,7 @@
 import uuid
 import datetime
 from flask import Blueprint, request, jsonify
-from core import load_users, save_users, hash_password, verify_password, sessions_cache
+from core import load_users, save_users, hash_password, verify_password, sessions_cache, generate_collab_id
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -29,7 +29,7 @@ def register():
     if email in [u['email'] for u in users.values()]:
         return jsonify({'error': '邮箱已被注册'}), 400
 
-    user_id = str(uuid.uuid4())[:8]
+    user_id = generate_collab_id(users)
     users[username] = {
         'id': user_id,
         'username': username,

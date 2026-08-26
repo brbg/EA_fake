@@ -30,7 +30,7 @@ from core import (
     _load_dev_entries, _save_dev_entries,
     er_views_cache, data_dictionary_cache, versions_cache, branches_cache, reviews_cache,
     _require_admin, _find_user_by_id, _delete_project_data,
-    _ai_parse_json_response,
+    _ai_parse_json_response, _can_access_model,
 )
 
 # 注册 Blueprint（按「拆巨石」计划逐步从 app.py 抽出）
@@ -42,6 +42,8 @@ from admin_routes import admin_bp
 app.register_blueprint(admin_bp)
 from er_routes import er_bp, _ai_generate_er_data, extract_entities_from_requirements
 app.register_blueprint(er_bp)
+from collab_routes import collab_routes_bp
+app.register_blueprint(collab_routes_bp)
 # UML AI 生成服务（已从 app.py 抽出）
 from uml_ai import (
     _ai_generate_uml, _layout_ai_elements, generate_uml_from_prompt,
@@ -342,15 +344,20 @@ def perform_health_check(model, project):
 
 @app.route('/api/models', methods=['GET'])
 def get_models():
-    """获取当前用户的模型列表（按 owner 隔离）"""
+    """获取当前用户可见的模型列表（owner 或项目协作者），附 role 字段"""
     user_id = _require_user_id()
     if user_id is None:
         return jsonify({'error': '未登录'}), 401
 
+    projects = load_projects()
     models_info = []
     for model_id, model in models_cache.items():
-        if getattr(model, 'owner_id', '') != user_id:
+        owner = getattr(model, 'owner_id', '') == user_id
+        project = projects.get(model_id)
+        perm = project is not None and user_id in project.permissions
+        if not (owner or perm):
             continue
+        role = 'owner' if owner else (project.permissions.get(user_id) or 'editor')
         models_info.append({
             'id': model_id,
             'name': model.name,
@@ -358,7 +365,8 @@ def get_models():
             'elements_count': len(model.elements),
             'relationships_count': len(model.relationships),
             'views_count': len(model.views),
-            'version': model.version
+            'version': model.version,
+            'role': role
         })
 
     # 也从 db 加载尚未缓存的模型
@@ -366,7 +374,13 @@ def get_models():
         model_id = key[len('model:'):]
         if model_id not in models_cache:
             data = db.get(key)
-            if data is not None and data.get('owner_id') == user_id:
+            if data is not None:
+                owner = data.get('owner_id') == user_id
+                project = projects.get(model_id)
+                perm = project is not None and user_id in project.permissions
+                if not (owner or perm):
+                    continue
+                role = 'owner' if owner else (project.permissions.get(user_id) or 'editor')
                 models_info.append({
                     'id': model_id,
                     'name': data.get('name', model_id),
@@ -374,7 +388,8 @@ def get_models():
                     'elements_count': len(data.get('elements', [])),
                     'relationships_count': len(data.get('relationships', [])),
                     'views_count': len(data.get('views', [])),
-                    'version': data.get('version', '1.0.0')
+                    'version': data.get('version', '1.0.0'),
+                    'role': role
                 })
 
     return jsonify({'models': models_info})
@@ -410,27 +425,27 @@ def create_model():
 
 @app.route('/api/models/<model_id>', methods=['GET'])
 def get_model(model_id):
-    """获取单个模型详情（仅限所属用户）"""
+    """获取单个模型详情（owner 或项目协作者）"""
     user_id = _require_user_id()
     if user_id is None:
         return jsonify({'error': '未登录'}), 401
 
     model = load_model_from_cache(model_id)
-    if not _model_owned_by(model, user_id):
+    if not _can_access_model(model, user_id, model_id):
         return jsonify({'error': '模型不存在'}), 404
 
     return jsonify(model.to_dict())
 
 @app.route('/api/models/<model_id>', methods=['PUT'])
 def update_model(model_id):
-    """更新模型信息（仅限所属用户）"""
+    """更新模型信息（owner 或项目协作者）"""
     user_id = _require_user_id()
     if user_id is None:
         return jsonify({'error': '未登录'}), 401
 
     data = request.json
     model = load_model_from_cache(model_id)
-    if not _model_owned_by(model, user_id):
+    if not _can_access_model(model, user_id, model_id):
         return jsonify({'error': '模型不存在'}), 404
 
     if 'elements' in data:

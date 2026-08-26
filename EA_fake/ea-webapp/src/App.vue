@@ -12,6 +12,7 @@ import { modelApi } from './api/models'
 import { aiApi, codeApi } from './api/ai'
 import { devApi } from './api/dev'
 import { adminApi } from './api/admin'
+import { collabApi } from './api/collab'
 
 // === 登录门禁状态 ===
 const authUser = ref<{ username: string; email: string; role?: string; id?: string } | null>(null)
@@ -164,6 +165,7 @@ interface Model {
   elements_count: number
   relationships_count: number
   views_count: number
+  role?: string
 }
 
 const models = ref<Model[]>([])
@@ -3378,7 +3380,8 @@ watch(activeTab, (newTab) => {
 // === 实时协作（Socket.IO） ===
 let socket: any = null
 let joinedProjectId = ''
-// 在线协作
+// 在线协作（默认关闭，需在「协作」入口确认进入）
+const collabEnabled = ref(false)
 const onlineUsers = ref<string[]>([])
 const collabToast = ref('')
 let collabToastTimer: number | null = null
@@ -3386,6 +3389,26 @@ const showCollabToast = (text: string) => {
   collabToast.value = text
   if (collabToastTimer) window.clearTimeout(collabToastTimer)
   collabToastTimer = window.setTimeout(() => { collabToast.value = '' }, 3000)
+}
+// 协作入口：确认后进入 / 退出
+const toggleCollab = () => {
+  if (collabEnabled.value) {
+    if (!confirm('退出协作模式？')) return
+    collabEnabled.value = false
+    leaveProjectRoom(currentModelId.value)
+    onlineUsers.value = []
+    collabToast.value = ''
+    return
+  }
+  if (!currentModelId.value) {
+    showCollabToast('请先打开一个项目再进入协作')
+    return
+  }
+  if (!confirm('是否进入协作模式？\n进入后可与同一项目的其他协作者实时同步模型更新。')) return
+  collabEnabled.value = true
+  if (!socket) initSocket()
+  joinProjectRoom()
+  showCollabToast('已进入协作模式')
 }
 
 const initSocket = () => {
@@ -3416,6 +3439,20 @@ const initSocket = () => {
       loadModelFromServer(currentModelId.value)
     }
   })
+  // 被 owner 取消协作 / 被移出房间：退出协作状态并刷新
+  socket.on('collab_revoked', (d: any) => {
+    showCollabToast('你已被移出该项目的协作')
+    leaveProjectRoom(d?.project_id)
+    collabEnabled.value = false
+    onlineUsers.value = []
+    if (currentModelId.value === d?.project_id) {
+      currentModelId.value = ''
+      currentModelName.value = ''
+      clearCanvas()
+      activeTab.value = 'projects'
+    }
+    loadModels()
+  })
   socket.on('disconnect', () => {
     joinedProjectId = ''
     onlineUsers.value = []
@@ -3440,6 +3477,128 @@ const leaveProjectRoom = (projectId: string) => {
 const broadcastElementUpdate = () => {
   if (!socket || !currentModelId.value) return
   socket.emit('element_update', { project_id: currentModelId.value, session_id: sessionStorage.getItem('sessionId') || '' })
+}
+
+// === 协作管理（加入 / 退出 / 取消 / 查看协作者） ===
+const showCollabModal = ref(false)
+const collabSearchUserId = ref('')
+const collabSearchResults = ref<Array<{ id: string; name: string; description?: string }>>([])
+const collabSearchMsg = ref('')
+const collabSearching = ref(false)
+const collabProjectMembers = ref<Record<string, { owner_name: string; members: Array<{ user_id: string; username: string; role?: string; joined_at?: string }> }>>({})
+const collabExpanded = ref('')
+// 我已加入的协作项目（role=editor）
+const joinedCollabModels = computed(() => models.value.filter(m => m.role === 'editor'))
+// 我拥有的项目（可管理协作者）
+const ownedCollabModels = computed(() => models.value.filter(m => !m.role || m.role === 'owner'))
+const joinedProjectIds = computed(() => new Set(models.value.map(m => m.id)))
+
+const copyMyId = async () => {
+  const id = authUser.value?.id
+  if (!id) return
+  try {
+    await navigator.clipboard.writeText(id)
+    showCollabToast(`已复制账户 ID：${id}`)
+  } catch {
+    showCollabToast(`我的账户 ID：${id}`)
+  }
+}
+
+const searchCollabProjects = async () => {
+  const uid = collabSearchUserId.value.trim()
+  collabSearchResults.value = []
+  if (!uid) {
+    collabSearchMsg.value = '请输入对方账户 ID'
+    return
+  }
+  collabSearching.value = true
+  collabSearchMsg.value = ''
+  try {
+    const { ok, status, data } = await collabApi.listUserProjects(uid)
+    if (!ok) {
+      collabSearchMsg.value = data?.error || `查找失败: HTTP ${status}`
+      return
+    }
+    collabSearchResults.value = Array.isArray(data?.projects) ? data.projects : []
+    collabSearchMsg.value = collabSearchResults.value.length
+      ? `找到 ${collabSearchResults.value.length} 个项目`
+      : '该账户暂无项目'
+  } catch (e: any) {
+    collabSearchMsg.value = e?.message || '查找失败'
+  } finally {
+    collabSearching.value = false
+  }
+}
+
+const joinCollabProject = async (id: string) => {
+  try {
+    const { ok, status, data } = await collabApi.join(id)
+    if (!ok) {
+      showCollabToast(data?.error || `加入失败: HTTP ${status}`)
+      return
+    }
+    showCollabToast('已加入协作，项目已添加到列表')
+    await loadModels()
+  } catch (e: any) {
+    showCollabToast(e?.message || '加入失败')
+  }
+}
+
+const toggleCollabMembers = async (id: string) => {
+  if (collabExpanded.value === id) {
+    collabExpanded.value = ''
+    return
+  }
+  collabExpanded.value = id
+  if (!collabProjectMembers.value[id]) {
+    try {
+      const { ok, data } = await collabApi.collaborators(id)
+      collabProjectMembers.value[id] = ok
+        ? { owner_name: data?.owner_name || '', members: data?.members || [] }
+        : { owner_name: '', members: [] }
+    } catch {
+      collabProjectMembers.value[id] = { owner_name: '', members: [] }
+    }
+  }
+}
+
+const revokeCollabProject = async (projectId: string, userId: string) => {
+  if (!confirm('确定取消该协作者？')) return
+  try {
+    const { ok, status, data } = await collabApi.revoke(projectId, userId)
+    if (!ok) {
+      showCollabToast(data?.error || `取消失败: HTTP ${status}`)
+      return
+    }
+    showCollabToast('已取消该协作者')
+    const refreshed = await collabApi.collaborators(projectId)
+    collabProjectMembers.value[projectId] = {
+      owner_name: refreshed?.data?.owner_name || '',
+      members: refreshed?.data?.members || []
+    }
+  } catch (e: any) {
+    showCollabToast(e?.message || '取消失败')
+  }
+}
+
+const leaveCollabProject = async (id: string) => {
+  if (!confirm('确定退出该项目的协作？')) return
+  try {
+    const { ok, status, data } = await collabApi.leave(id)
+    if (!ok) {
+      showCollabToast(data?.error || `退出失败: HTTP ${status}`)
+      return
+    }
+    showCollabToast('已退出协作')
+    if (currentModelId.value === id) {
+      collabEnabled.value = false
+      leaveProjectRoom(id)
+      onlineUsers.value = []
+    }
+    await loadModels()
+  } catch (e: any) {
+    showCollabToast(e?.message || '退出失败')
+  }
 }
 
 // 键盘快捷键：Ctrl+Z 撤销 / Ctrl+Y（或 Ctrl+Shift+Z）重做，按当前画布分派
@@ -3473,7 +3632,7 @@ const resizeAllCanvases = () => {
 window.addEventListener('resize', resizeAllCanvases)
 
 onMounted(() => {
-  initSocket()
+  // socket 协作改为懒连接：进入协作模式时才 initSocket（见 toggleCollab）
   window.addEventListener('keydown', handleKeyboardShortcut)
   checkAuth()
 })
@@ -3505,11 +3664,24 @@ onMounted(() => {
         </div>
       </div>
       <div class="header-right">
+        <button
+          class="btn-help collab-toggle"
+          :class="{ active: collabEnabled }"
+          @click="toggleCollab"
+          :title="collabEnabled ? '退出协作模式' : '进入协作模式（与协作者实时同步）'"
+        >
+          <i class="fas fa-users"></i>
+          <span>{{ collabEnabled ? '协作中' : '协作' }}</span>
+        </button>
         <button class="btn-help" @click="showHelpModal = true" title="新手教程">
           <i class="fas fa-circle-question"></i>
           <span>帮助</span>
         </button>
-        <div class="user-chip">
+        <div
+          class="user-chip"
+          :title="`我的账户 ID：${authUser?.id || ''}（点击复制，让对方凭此 ID 加入协作）`"
+          @click="copyMyId"
+        >
           <div class="user-avatar">{{ (authUser?.username || 'U').charAt(0).toUpperCase() }}</div>
           <span class="user-name">{{ authUser?.username }}</span>
         </div>
@@ -3770,16 +3942,24 @@ onMounted(() => {
     <div v-if="activeTab === 'projects'" class="card">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
         <h3 class="card-title" style="margin: 0;">项目列表</h3>
-        <button class="btn btn-primary" @click="showCreateModal = true">
-          <i class="fas fa-plus"></i> 新建项目
-        </button>
+        <div style="display: flex; gap: 10px;">
+          <button class="btn btn-outline" @click="showCollabModal = true" title="加入 / 管理协作">
+            <i class="fas fa-users"></i> 协作
+          </button>
+          <button class="btn btn-primary" @click="showCreateModal = true">
+            <i class="fas fa-plus"></i> 新建项目
+          </button>
+        </div>
       </div>
-      
+
       <div class="model-list">
         <div v-for="model in models" :key="model.id" class="model-item">
           <div class="model-icon" :style="projectIconStyle(model.name)">{{ projectInitial(model.name) }}</div>
           <div class="model-info">
-            <h4>{{ model.name }}</h4>
+            <h4>
+              {{ model.name }}
+              <span v-if="model.role === 'editor'" class="collab-badge">协作者</span>
+            </h4>
             <p>{{ model.description || '暂无描述' }}</p>
             <p style="font-size: 11px; margin-top: 4px;">
               <span style="margin-right: 15px;">元素: {{ model.elements_count }}</span>
@@ -3790,7 +3970,7 @@ onMounted(() => {
             <button class="btn-edit" @click="openModel(model)">
               <i class="fas fa-eye"></i> 打开
             </button>
-            <button class="btn-delete" @click="deleteModel(model.id)">
+            <button v-if="model.role !== 'editor'" class="btn-delete" @click="deleteModel(model.id)">
               <i class="fas fa-trash"></i> 删除
             </button>
           </div>
@@ -3816,7 +3996,7 @@ onMounted(() => {
         <div class="status-item"><i class="fas fa-box"></i> {{ elements.length }} 元素</div>
         <div class="status-item"><i class="fas fa-link"></i> {{ connections.length }} 关系</div>
         <div class="status-item"><i class="fas fa-mouse-pointer"></i> {{ selectedToolName }}</div>
-        <div v-if="onlineUsers.length" class="status-item collab-chip">
+        <div v-if="collabEnabled && onlineUsers.length" class="status-item collab-chip">
           <i class="fas fa-users"></i>
           <span class="collab-avatars">
             <span v-for="(u, i) in onlineUsers" :key="i" class="collab-avatar" :title="u">{{ (u || '?').charAt(0).toUpperCase() }}</span>
@@ -4072,6 +4252,7 @@ onMounted(() => {
         <thead>
           <tr>
             <th>用户名</th>
+            <th>账户ID</th>
             <th>邮箱</th>
             <th>角色</th>
             <th>创建时间</th>
@@ -4082,6 +4263,7 @@ onMounted(() => {
         <tbody>
           <tr v-for="u in adminUsers" :key="u.id">
             <td>{{ u.username }}</td>
+            <td><code style="font-size: 12px;">{{ u.id }}</code></td>
             <td>{{ u.email || '-' }}</td>
             <td><span :class="['badge', u.role === 'admin' ? 'badge-warning' : 'badge-info']">{{ u.role === 'admin' ? '管理员' : '普通用户' }}</span></td>
             <td>{{ (u.created_at || '').slice(0, 10) }}</td>
@@ -4414,6 +4596,96 @@ onMounted(() => {
       <div style="display: flex; justify-content: flex-end; gap: 10px;">
         <button class="btn btn-outline" @click="showCreateModal = false">取消</button>
         <button class="btn btn-primary" @click="createModel">创建</button>
+      </div>
+    </div>
+  </div>
+
+  <div v-if="showCollabModal" class="modal-overlay" @click.self="showCollabModal = false">
+    <div class="modal-content" style="max-width: 640px; max-height: 80vh; overflow-y: auto;">
+      <span class="modal-close" @click="showCollabModal = false">&times;</span>
+      <h3 style="margin-bottom: 16px;">协作管理</h3>
+
+      <!-- 1. 加入协作 -->
+      <div class="form-group">
+        <label>加入协作：输入对方账户 ID（右上角头像可查看 / 复制自己的 ID）</label>
+        <div style="display: flex; gap: 8px;">
+          <input v-model="collabSearchUserId" placeholder="输入对方 6 位账户 ID" @keyup.enter="searchCollabProjects" style="flex: 1;" />
+          <button class="btn btn-primary" @click="searchCollabProjects" :disabled="collabSearching">查找</button>
+        </div>
+      </div>
+      <div v-if="collabSearchMsg" style="font-size: 12px; color: #666; margin: 6px 0;">{{ collabSearchMsg }}</div>
+      <div v-if="collabSearchResults.length" style="margin-top: 8px;">
+        <div v-for="p in collabSearchResults" :key="p.id" class="collab-result-row">
+          <div>
+            <strong>{{ p.name }}</strong>
+            <div style="font-size: 12px; color: #999;">{{ p.description || '暂无描述' }} · ID {{ p.id }}</div>
+          </div>
+          <button
+            class="btn btn-primary"
+            style="padding: 4px 12px; font-size: 12px;"
+            :disabled="joinedProjectIds.has(p.id)"
+            @click="joinCollabProject(p.id)"
+          >
+            {{ joinedProjectIds.has(p.id) ? '已加入' : '加入' }}
+          </button>
+        </div>
+      </div>
+
+      <hr style="margin: 18px 0; border: none; border-top: 1px solid #eee;" />
+
+      <!-- 2. 我加入的协作（可退出） -->
+      <div>
+        <h4 style="margin: 0 0 10px;">我加入的协作</h4>
+        <div v-if="joinedCollabModels.length">
+          <div v-for="m in joinedCollabModels" :key="m.id" class="collab-result-row">
+            <div>
+              <strong>{{ m.name }}</strong>
+              <div style="font-size: 12px; color: #999;">协作者 · ID {{ m.id }}</div>
+            </div>
+            <button
+              class="btn btn-outline"
+              style="padding: 4px 12px; font-size: 12px; color: #e74c3c;"
+              @click="leaveCollabProject(m.id)"
+            >退出</button>
+          </div>
+        </div>
+        <p v-else style="color: #999; font-size: 12px;">暂无，可在上方输入对方账户 ID 加入协作。</p>
+      </div>
+
+      <!-- 3. 我拥有的项目（可取消协作者） -->
+      <div style="margin-top: 18px;">
+        <h4 style="margin: 0 0 10px;">我拥有的项目（协作者管理）</h4>
+        <div v-if="ownedCollabModels.length">
+          <div v-for="m in ownedCollabModels" :key="m.id" class="collab-result-row">
+            <div>
+              <strong>{{ m.name }}</strong>
+              <div style="font-size: 12px; color: #999;">ID {{ m.id }}</div>
+              <div v-if="collabExpanded === m.id" style="margin-top: 8px; padding-left: 12px; border-left: 2px solid #eee;">
+                <template v-if="collabProjectMembers[m.id]">
+                  <div v-for="mem in collabProjectMembers[m.id].members" :key="mem.user_id" class="collab-result-row">
+                    <div>
+                      <strong>{{ mem.username }}</strong>
+                      <div style="font-size: 12px; color: #999;">{{ mem.role === 'editor' ? '协作者' : (mem.role || '成员') }} · {{ (mem.joined_at || '').replace('T', ' ').slice(0, 16) }}</div>
+                    </div>
+                    <button
+                      class="btn btn-outline"
+                      style="padding: 2px 10px; font-size: 12px; color: #e74c3c;"
+                      @click="revokeCollabProject(m.id, mem.user_id)"
+                    >取消</button>
+                  </div>
+                  <p v-if="!collabProjectMembers[m.id].members.length" style="color: #999; font-size: 12px;">暂无协作者</p>
+                </template>
+                <p v-else style="color: #999; font-size: 12px;">加载中…</p>
+              </div>
+            </div>
+            <button
+              class="btn btn-outline"
+              style="padding: 4px 12px; font-size: 12px;"
+              @click="toggleCollabMembers(m.id)"
+            >{{ collabExpanded === m.id ? '收起' : '协作者' }}</button>
+          </div>
+        </div>
+        <p v-else style="color: #999; font-size: 12px;">暂无项目。</p>
       </div>
     </div>
   </div>
@@ -5220,6 +5492,38 @@ onMounted(() => {
 }
 .collab-toast i {
   color: var(--brand);
+}
+/* 协作管理：协作者徽标 / 结果行 / 顶栏开关 */
+.collab-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #fff;
+  background: var(--brand);
+  border-radius: 999px;
+  vertical-align: middle;
+}
+.collab-result-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid #f0f2f5;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  background: #fafbfc;
+}
+.collab-result-row strong {
+  font-size: 14px;
+  color: #333;
+}
+.collab-toggle.active {
+  background: var(--brand);
+  color: #fff;
+  border-color: var(--brand);
 }
 .fade-enter-active, .fade-leave-active {
   transition: opacity 0.25s ease;

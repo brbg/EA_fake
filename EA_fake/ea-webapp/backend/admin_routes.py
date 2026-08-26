@@ -2,12 +2,12 @@
 
 按「拆巨石」计划从 app.py 抽出，共享辅助从 core.py 导入。
 """
-import uuid
 import datetime
 from flask import Blueprint, request, jsonify
 from core import (
     _require_admin, _find_user_by_id, _delete_project_data,
     load_users, save_users, load_projects, hash_password, sessions_cache,
+    generate_collab_id,
 )
 
 admin_bp = Blueprint('admin', __name__)
@@ -52,7 +52,7 @@ def admin_create_user():
     if email in [u['email'] for u in users.values()]:
         return jsonify({'error': '邮箱已被注册'}), 400
     users[username] = {
-        'id': str(uuid.uuid4())[:8],
+        'id': generate_collab_id(users),
         'username': username,
         'email': email,
         'password': hash_password(password),

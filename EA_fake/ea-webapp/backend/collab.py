@@ -18,8 +18,26 @@ def _resolve_user(session_id):
 
 
 def _broadcast_users(project_id):
+    # 用实例 emit + 显式 namespace：socket 处理器和 HTTP 路由上下文都能调用
     users = list(collab_users_cache.get(project_id, {}).values())
-    emit('collab_users', {'project_id': project_id, 'users': users}, room=project_id)
+    socketio.emit('collab_users', {'project_id': project_id, 'users': users},
+                  room=project_id, namespace='/')
+
+
+def kick_user(project_id, user_id):
+    """把某用户从项目的协作房间移除并通知其被移出（被 owner 取消 / 主动退出时调用）。
+
+    注意：从 HTTP 路由上下文调用，不能用 flask_socketio 模块级 emit
+    （它会读 flask.request.namespace，路由上下文里不存在）；改用 socketio.emit 实例方法。
+    """
+    for sid, (pid, uid) in list(_collab_conns.items()):
+        if pid == project_id and uid == user_id:
+            leave_room(project_id, sid, namespace='/')
+            socketio.emit('collab_revoked', {'project_id': project_id}, to=sid, namespace='/')
+            _collab_conns.pop(sid, None)
+    if collab_users_cache.get(project_id, {}).pop(user_id, None) is not None:
+        socketio.emit('user_left', {'username': '协作者'}, room=project_id, namespace='/')
+        _broadcast_users(project_id)
 
 
 @socketio.on('join_project')

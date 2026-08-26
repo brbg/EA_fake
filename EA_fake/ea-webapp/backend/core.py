@@ -110,6 +110,15 @@ def save_users(users):
     db.set('users', users)
 
 
+def generate_collab_id(users):
+    """生成一个未被占用的 6 位随机账户 id 码（100000-999999），用于协作互认。"""
+    existing = {str(u.get('id', '')) for u in users.values()}
+    while True:
+        code = str(secrets.randbelow(900000) + 100000)
+        if code not in existing:
+            return code
+
+
 def ensure_admin_account():
     """首次启动幂等创建管理员账号 admin/admin123（role=admin）。"""
     users = load_users()
@@ -148,6 +157,39 @@ def load_projects():
 def save_project(project):
     """保存项目"""
     db.set(f'project:{project.id}', project.to_dict())
+
+
+def migrate_collab_ids():
+    """把存量用户 id 迁移成 6 位数字码（幂等：已是 6 位数字则跳过）。
+
+    同时更新项目 owner_id / permissions / members 及活跃会话里引用的旧 id。
+    须在 load_projects/save_project 定义后调用。
+    """
+    users = load_users()
+    old_to_new = {}
+    for username, u in list(users.items()):
+        uid = str(u.get('id', ''))
+        if len(uid) == 6 and uid.isdigit():
+            continue
+        old_to_new[uid] = generate_collab_id(users)
+        u['id'] = old_to_new[uid]
+    if not old_to_new:
+        return
+    for project in load_projects().values():
+        if project.owner_id in old_to_new:
+            project.owner_id = old_to_new[project.owner_id]
+        project.permissions = {old_to_new.get(k, k): v for k, v in project.permissions.items()}
+        for m in project.members:
+            if m.get('user_id') in old_to_new:
+                m['user_id'] = old_to_new[m['user_id']]
+        save_project(project)
+    for s in sessions_cache.values():
+        if s.get('user_id') in old_to_new:
+            s['user_id'] = old_to_new[s['user_id']]
+    save_users(users)
+
+
+migrate_collab_ids()
 
 
 # === AI服务配置 ===
@@ -349,6 +391,14 @@ def _require_user_id():
 def _model_owned_by(model, user_id):
     """模型是否属于该用户（无 owner 的旧数据不属于任何人）"""
     return model is not None and getattr(model, 'owner_id', '') == user_id
+
+
+def _can_access_model(model, user_id, model_id):
+    """是否可访问模型：owner，或该模型对应项目的成员（协作加入者）。"""
+    if _model_owned_by(model, user_id):
+        return True
+    project = load_projects().get(model_id)
+    return project is not None and user_id in project.permissions
 
 
 def _ai_parse_json_response(content):
