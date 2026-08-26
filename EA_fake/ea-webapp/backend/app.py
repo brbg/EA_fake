@@ -10349,21 +10349,27 @@ def get_requirements_list(project_id):
 @app.route('/api/v1/project/<project_id>/testcase/ai/generate', methods=['POST'])
 def ai_generate_test_cases_api(project_id):
     """AI生成测试用例"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
+    user_id = _require_user_id()
+    if user_id is None:
         return jsonify({'error': '未登录'}), 401
-    
+
+    model = load_model_from_cache(project_id)
+    if not _model_owned_by(model, user_id):
+        return jsonify({'error': '项目不存在'}), 404
+
     data = request.json
     req_id = data.get('req_id')
     requirement_text = data.get('requirement_text', '')
-    
+
     test_cases = ai_generate_test_cases(project_id, req_id, requirement_text)
-    
-    # 保存测试用例
+
+    # 保存测试用例（持久化）
+    entries = _load_dev_entries('tc', project_id)
     for case in test_cases:
-        case.assignee_id = sessions_cache[session_id]['user_id']
-        test_cases_cache[case.id] = case
-    
+        case.assignee_id = user_id
+        entries.append(case.to_dict())
+    _save_dev_entries('tc', project_id, entries)
+
     return jsonify({
         'message': 'AI测试用例生成成功',
         'test_cases': [c.to_dict() for c in test_cases],
@@ -10373,15 +10379,19 @@ def ai_generate_test_cases_api(project_id):
 @app.route('/api/v1/project/<project_id>/testcase', methods=['GET', 'POST', 'PUT', 'DELETE'])
 def manage_test_cases(project_id):
     """测试用例管理"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
+    user_id = _require_user_id()
+    if user_id is None:
         return jsonify({'error': '未登录'}), 401
-    
+
+    model = load_model_from_cache(project_id)
+    if not _model_owned_by(model, user_id):
+        return jsonify({'error': '项目不存在'}), 404
+
     if request.method == 'GET':
         # 获取测试用例列表
-        test_cases = [c.to_dict() for c in test_cases_cache.values() if c.project_id == project_id]
-        return jsonify({'test_cases': test_cases})
-    
+        entries = _load_dev_entries('tc', project_id)
+        return jsonify({'test_cases': entries})
+
     elif request.method == 'POST':
         # 创建测试用例
         data = request.json
@@ -10389,74 +10399,86 @@ def manage_test_cases(project_id):
         case.req_id = data.get('req_id')
         case.use_case_id = data.get('use_case_id')
         case.assignee_id = data.get('assignee_id', '')
-        
-        test_cases_cache[case.id] = case
-        
+
+        entries = _load_dev_entries('tc', project_id)
+        entry = case.to_dict()
+        entries.append(entry)
+        _save_dev_entries('tc', project_id, entries)
+
         return jsonify({
             'message': '测试用例创建成功',
-            'test_case': case.to_dict()
+            'test_case': entry
         })
-    
+
     elif request.method == 'PUT':
         # 更新测试用例
         data = request.json
         case_id = data.get('id')
-        
-        if case_id not in test_cases_cache:
+
+        entries = _load_dev_entries('tc', project_id)
+        entry = next((e for e in entries if e.get('id') == case_id), None)
+        if entry is None:
             return jsonify({'error': '测试用例不存在'}), 404
-        
-        case = test_cases_cache[case_id]
+
         if 'name' in data:
-            case.name = data['name']
+            entry['name'] = data['name']
         if 'description' in data:
-            case.description = data['description']
+            entry['description'] = data['description']
         if 'status' in data:
-            case.status = data['status']
+            entry['status'] = data['status']
         if 'level' in data:
-            case.level = data['level']
-        
-        case.updated_at = datetime.datetime.now().isoformat()
-        
+            entry['level'] = data['level']
+
+        entry['updated_at'] = datetime.datetime.now().isoformat()
+        _save_dev_entries('tc', project_id, entries)
+
         return jsonify({
             'message': '测试用例更新成功',
-            'test_case': case.to_dict()
+            'test_case': entry
         })
-    
+
     elif request.method == 'DELETE':
         # 删除测试用例
         case_id = request.args.get('id')
-        
-        if case_id not in test_cases_cache:
+
+        entries = _load_dev_entries('tc', project_id)
+        entry = next((e for e in entries if e.get('id') == case_id), None)
+        if entry is None:
             return jsonify({'error': '测试用例不存在'}), 404
-        
-        del test_cases_cache[case_id]
-        
+
+        entries = [e for e in entries if e.get('id') != case_id]
+        _save_dev_entries('tc', project_id, entries)
+
         return jsonify({'message': '测试用例删除成功'})
 
 @app.route('/api/v1/project/<project_id>/testcase/list', methods=['GET'])
 def get_test_cases_list(project_id):
     """获取测试用例列表"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
+    user_id = _require_user_id()
+    if user_id is None:
         return jsonify({'error': '未登录'}), 401
-    
+
+    model = load_model_from_cache(project_id)
+    if not _model_owned_by(model, user_id):
+        return jsonify({'error': '项目不存在'}), 404
+
     # 获取筛选参数
     req_id = request.args.get('req_id')
     level = request.args.get('level')
     status = request.args.get('status')
-    
-    test_cases = [c for c in test_cases_cache.values() if c.project_id == project_id]
-    
+
+    test_cases = _load_dev_entries('tc', project_id)
+
     # 应用筛选
     if req_id:
-        test_cases = [c for c in test_cases if c.req_id == req_id]
+        test_cases = [c for c in test_cases if c.get('req_id') == req_id]
     if level:
-        test_cases = [c for c in test_cases if c.level == level]
+        test_cases = [c for c in test_cases if c.get('level') == level]
     if status:
-        test_cases = [c for c in test_cases if c.status == status]
-    
+        test_cases = [c for c in test_cases if c.get('status') == status]
+
     return jsonify({
-        'test_cases': [c.to_dict() for c in test_cases],
+        'test_cases': test_cases,
         'total': len(test_cases)
     })
 
