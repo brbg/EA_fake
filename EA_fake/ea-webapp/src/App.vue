@@ -376,13 +376,20 @@ const removeDev = async (item: any) => {
   const k = activeDevTab.value
   if (!confirm(`确定删除「${item.name || item.id}」？`)) return
   try {
-    await fetch(devApi(k), {
+    const res = await fetch(devApi(k), {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json', 'X-Session-Id': sessionStorage.getItem('sessionId') || '' },
       body: JSON.stringify({ id: item.id })
     })
+    const data = await res.json()
+    if (!res.ok || data.error) {
+      devError.value = data.error || `删除失败: HTTP ${res.status}`
+      return
+    }
     loadDevList()
-  } catch (e) { /* ignore */ }
+  } catch (e: any) {
+    devError.value = e?.message || '删除失败'
+  }
 }
 
 // === 研发管理：AI 生成（需求/测试/任务；缺陷无 AI） ===
