@@ -347,6 +347,10 @@ const loadDevList = async () => {
     devError.value = e?.message || '加载失败'
   } finally { devLoading.value = false }
 }
+// 切到研发管理页时自动加载当前子 tab 的列表（默认需求），避免首屏空白
+watch(activeTab, (v) => {
+  if (v === 'dev') loadDevList()
+})
 
 const openDevModal = (item: any | null) => {
   editingDev.value = item
@@ -379,6 +383,80 @@ const removeDev = async (item: any) => {
     })
     loadDevList()
   } catch (e) { /* ignore */ }
+}
+
+// === 研发管理：AI 生成（需求/测试/任务；缺陷无 AI） ===
+const showDevAiModal = ref(false)
+const devAiText = ref('')
+const devAiGenerating = ref(false)
+// 测试/任务生成时选择的关联需求（保留原始 id 类型，便于后端匹配）
+const devAiReqId = ref<any>('')
+const devAiReqIds = ref<any[]>([])
+// AI 弹窗里的需求选项（独立从需求接口拉取，不依赖当前 tab 的列表数据）
+const devReqOptions = ref<any[]>([])
+
+const canGenerateDevAi = computed(() => {
+  const k = activeDevTab.value
+  if (k === 'requirement') return devAiText.value.trim() !== ''
+  if (k === 'testcase') return devAiReqId.value !== '' && devAiText.value.trim() !== ''
+  if (k === 'task') return devAiReqIds.value.length > 0
+  return false
+})
+
+const loadDevReqOptions = async () => {
+  if (!currentModelId.value) { devReqOptions.value = []; return }
+  try {
+    const res = await fetch(devApi('requirement'), {
+      headers: { 'X-Session-Id': sessionStorage.getItem('sessionId') || '' }
+    })
+    const data = await res.json()
+    devReqOptions.value = (!res.ok || data.error) ? [] : (data.requirements || [])
+  } catch {
+    devReqOptions.value = []
+  }
+}
+
+const openDevAi = () => {
+  devAiText.value = ''
+  devAiReqId.value = ''
+  devAiReqIds.value = []
+  showDevAiModal.value = true
+  if (activeDevTab.value !== 'requirement') {
+    loadDevReqOptions()
+  }
+}
+
+const generateDevAi = async () => {
+  const k = activeDevTab.value
+  const base = `/api/v1/project/${currentModelId.value}`
+  let api = ''
+  let body: Record<string, unknown> = {}
+  if (k === 'requirement') {
+    api = `${base}/requirement/ai/generate`
+    body = { requirement_text: devAiText.value }
+  } else if (k === 'testcase') {
+    api = `${base}/testcase/ai/generate`
+    body = { req_id: devAiReqId.value, requirement_text: devAiText.value }
+  } else if (k === 'task') {
+    api = `${base}/task/ai/plan`
+    body = { req_ids: devAiReqIds.value }
+  } else {
+    return
+  }
+  devAiGenerating.value = true
+  devError.value = ''
+  try {
+    const res = await fetch(api, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Session-Id': sessionStorage.getItem('sessionId') || '' },
+      body: JSON.stringify(body)
+    })
+    const data = await res.json()
+    if (!res.ok || data.error) { devError.value = data.error || '生成失败'; return }
+    showDevAiModal.value = false
+    loadDevList()
+  } catch (e: any) { devError.value = e?.message || '生成失败' }
+  finally { devAiGenerating.value = false }
 }
 
 const projectContext = computed<ProjectContext>(() => {
@@ -3840,6 +3918,9 @@ onMounted(() => {
           <i :class="t.icon"></i> {{ t.name }}
         </button>
         <div style="flex:1;"></div>
+        <button v-if="activeDevTab !== 'defect'" class="btn btn-outline" @click="openDevAi">
+          <i class="fas fa-wand-magic-sparkles"></i> AI 生成
+        </button>
         <button class="btn btn-primary" @click="openDevModal(null)"><i class="fas fa-plus"></i> 新增</button>
       </div>
 
@@ -4231,6 +4312,51 @@ onMounted(() => {
       <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:16px;">
         <button class="btn btn-outline" @click="showDevModal = false">取消</button>
         <button class="btn btn-primary" @click="saveDev">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 研发管理：AI 生成弹窗（需求用描述文本；测试/任务需选择关联需求） -->
+  <div v-if="showDevAiModal" class="modal-overlay" @click.self="showDevAiModal = false">
+    <div class="modal-content" style="width: 560px;">
+      <span class="modal-close" @click="showDevAiModal = false">&times;</span>
+      <h3 style="margin-bottom:12px;"><i class="fas fa-wand-magic-sparkles"></i> AI 生成{{ devTabs.find(t => t.id === activeDevTab)?.name }}</h3>
+
+      <div class="form-group" v-if="activeDevTab === 'testcase'">
+        <label>关联需求</label>
+        <select v-model="devAiReqId" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:8px; font-size:14px;">
+          <option value="">请选择需求</option>
+          <option v-for="r in devReqOptions" :key="r.id" :value="r.id">{{ r.name || r.id }}</option>
+        </select>
+        <p v-if="!devReqOptions.length" style="color:#999; font-size:12px; margin-top:6px;">暂无需求可选，请先到「需求」页创建需求。</p>
+      </div>
+
+      <div class="form-group" v-if="activeDevTab === 'task'">
+        <label>关联需求（可多选）</label>
+        <div style="border:1px solid #ddd; border-radius:8px; padding:10px; max-height:180px; overflow-y:auto;">
+          <label v-for="r in devReqOptions" :key="r.id" style="display:flex; align-items:center; gap:8px; padding:4px 0; font-size:14px; cursor:pointer;">
+            <input type="checkbox" :value="r.id" v-model="devAiReqIds" /> {{ r.name || r.id }}
+          </label>
+          <p v-if="!devReqOptions.length" style="color:#999; font-size:12px; margin:0;">暂无需求可选，请先到「需求」页创建需求。</p>
+        </div>
+      </div>
+
+      <div class="form-group" v-if="activeDevTab === 'requirement' || activeDevTab === 'testcase'">
+        <label>{{ activeDevTab === 'requirement' ? '业务描述' : '测试要点 / 需求内容' }}</label>
+        <textarea v-model="devAiText" rows="6" placeholder="输入业务描述 / 需求内容，AI 将拆分生成条目…"
+          style="width:100%; padding:12px; border:1px solid #ddd; border-radius:8px; font-size:14px; resize:vertical; font-family:inherit;"></textarea>
+      </div>
+      <p v-if="activeDevTab === 'task'" style="color:#666; font-size:12px; margin-top:4px;">选择要拆分任务的需求，AI 将按需求生成计划任务。</p>
+
+      <div v-if="devError" style="color:#d33; background:#fdf0f0; padding:10px; border-radius:8px; margin-top:4px;">
+        <i class="fas fa-exclamation-triangle"></i> {{ devError }}
+      </div>
+
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:16px;">
+        <button class="btn btn-outline" @click="showDevAiModal = false">取消</button>
+        <button class="btn btn-primary" @click="generateDevAi" :disabled="devAiGenerating || !canGenerateDevAi">
+          <i v-if="devAiGenerating" class="fas fa-spinner fa-spin"></i> {{ devAiGenerating ? '生成中...' : '生成' }}
+        </button>
       </div>
     </div>
   </div>
