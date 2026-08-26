@@ -112,6 +112,7 @@ const tabs = [
   { id: 'archimate', name: 'ArchiMate' },
   { id: 'data', name: '数据建模' },
   { id: 'code', name: '代码生成' },
+  { id: 'dev', name: '研发管理' },
   { id: 'ai', name: 'AI助手' }
 ]
 
@@ -269,6 +270,116 @@ let currentModelId = ref('')
 let currentModelName = ref('')
 // AI 上下文刷新标记：画布数据是非响应式的普通数组，切换进 AI 页时手动触发一次重建
 let contextRefreshKey = ref(0)
+
+// === 研发管理（需求/测试/缺陷/任务） ===
+type DevKind = 'requirement' | 'testcase' | 'defect' | 'task'
+const devTabs: Array<{ id: DevKind; name: string; icon: string }> = [
+  { id: 'requirement', name: '需求', icon: 'fas fa-list-check' },
+  { id: 'testcase', name: '测试用例', icon: 'fas fa-vial' },
+  { id: 'defect', name: '缺陷', icon: 'fas fa-bug' },
+  { id: 'task', name: '任务', icon: 'fas fa-tasks' },
+]
+const activeDevTab = ref<DevKind>('requirement')
+const devList = ref<any[]>([])
+const devLoading = ref(false)
+const devError = ref('')
+const showDevModal = ref(false)
+const editingDev = ref<any>(null)
+const devForm = ref<Record<string, string>>({})
+
+// 每个实体的字段配置（label → 表单键）
+const DEV_FIELDS: Record<DevKind, Array<{ key: string; label: string }>> = {
+  requirement: [
+    { key: 'name', label: '名称' },
+    { key: 'description', label: '描述' },
+    { key: 'type', label: '类型' },
+    { key: 'priority', label: '优先级' },
+    { key: 'status', label: '状态' },
+    { key: 'assignee_id', label: '指派人' },
+  ],
+  testcase: [
+    { key: 'name', label: '名称' },
+    { key: 'description', label: '描述' },
+    { key: 'level', label: '级别' },
+    { key: 'req_id', label: '关联需求' },
+    { key: 'assignee_id', label: '指派人' },
+    { key: 'status', label: '状态' },
+  ],
+  defect: [
+    { key: 'name', label: '标题' },
+    { key: 'description', label: '描述' },
+    { key: 'level', label: '严重度' },
+    { key: 'assignee_id', label: '指派人' },
+    { key: 'status', label: '状态' },
+  ],
+  task: [
+    { key: 'name', label: '名称' },
+    { key: 'description', label: '描述' },
+    { key: 'type', label: '类型' },
+    { key: 'priority', label: '优先级' },
+    { key: 'assignee_id', label: '指派人' },
+    { key: 'status', label: '状态' },
+    { key: 'work_hours', label: '工时' },
+  ],
+}
+// 列表接口返回的数组键名
+const DEV_LIST_KEY: Record<DevKind, string> = {
+  requirement: 'requirements',
+  testcase: 'test_cases',
+  defect: 'defects',
+  task: 'tasks',
+}
+const devApi = (k: DevKind) => `/api/v1/project/${currentModelId.value}/${k}`
+
+const loadDevList = async () => {
+  const k = activeDevTab.value
+  if (!currentModelId.value) { devList.value = []; return }
+  devLoading.value = true
+  devError.value = ''
+  try {
+    const res = await fetch(devApi(k), {
+      headers: { 'X-Session-Id': sessionStorage.getItem('sessionId') || '' }
+    })
+    const data = await res.json()
+    if (!res.ok || data.error) { devError.value = data.error || '加载失败'; return }
+    devList.value = data[DEV_LIST_KEY[k]] || []
+  } catch (e: any) {
+    devError.value = e?.message || '加载失败'
+  } finally { devLoading.value = false }
+}
+
+const openDevModal = (item: any | null) => {
+  editingDev.value = item
+  devForm.value = item ? { ...item } : {}
+  showDevModal.value = true
+}
+const saveDev = async () => {
+  const k = activeDevTab.value
+  const body = editingDev.value ? { ...devForm.value, id: editingDev.value.id } : devForm.value
+  try {
+    const res = await fetch(devApi(k), {
+      method: editingDev.value ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Session-Id': sessionStorage.getItem('sessionId') || '' },
+      body: JSON.stringify(body)
+    })
+    const data = await res.json()
+    if (!res.ok || data.error) { devError.value = data.error || '保存失败'; return }
+    showDevModal.value = false
+    loadDevList()
+  } catch (e: any) { devError.value = e?.message || '保存失败' }
+}
+const removeDev = async (item: any) => {
+  const k = activeDevTab.value
+  if (!confirm(`确定删除「${item.name || item.id}」？`)) return
+  try {
+    await fetch(devApi(k), {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', 'X-Session-Id': sessionStorage.getItem('sessionId') || '' },
+      body: JSON.stringify({ id: item.id })
+    })
+    loadDevList()
+  } catch (e) { /* ignore */ }
+}
 
 const projectContext = computed<ProjectContext>(() => {
   // 作为响应式依赖，使切到 AI 页时能重建最新上下文
@@ -3719,6 +3830,43 @@ onMounted(() => {
       </div>
     </div>
 
+    <div v-if="activeTab === 'dev'" class="card">
+      <h3 class="card-title"><i class="fas fa-tasks" style="color:#1f5eff;"></i> 研发管理</h3>
+      <p class="card-desc">管理项目的需求、测试用例、缺陷与任务</p>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px;">
+        <button v-for="t in devTabs" :key="t.id"
+          :class="['toolbar-btn', { active: activeDevTab === t.id }]"
+          @click="activeDevTab = t.id; loadDevList()">
+          <i :class="t.icon"></i> {{ t.name }}
+        </button>
+        <div style="flex:1;"></div>
+        <button class="btn btn-primary" @click="openDevModal(null)"><i class="fas fa-plus"></i> 新增</button>
+      </div>
+
+      <div v-if="devError" style="color:#d33; background:#fdf0f0; padding:10px; border-radius:8px; margin-bottom:12px;">
+        <i class="fas fa-exclamation-triangle"></i> {{ devError }}
+      </div>
+
+      <table class="table" v-if="devList.length">
+        <thead>
+          <tr>
+            <th v-for="f in DEV_FIELDS[activeDevTab]" :key="f.key">{{ f.label }}</th>
+            <th style="width:100px;">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="item in devList" :key="item.id">
+            <td v-for="f in DEV_FIELDS[activeDevTab]" :key="f.key">{{ item[f.key] || '-' }}</td>
+            <td>
+              <button class="btn btn-outline" style="padding:4px 8px; font-size:12px; margin-right:4px;" @click="openDevModal(item)">编辑</button>
+              <button class="btn-delete" @click="removeDev(item)"><i class="fas fa-trash"></i></button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else style="color:#999;">暂无{{ devTabs.find(t => t.id === activeDevTab)?.name }}数据，点「新增」或「AI 生成」创建。</p>
+    </div>
+
     <div v-if="activeTab === 'ai'" class="card" style="padding: 0; height: calc(100vh - 120px);">
       <AIAssistant :project-context="projectContext" :project-id="currentModelId || ''" />
     </div>
@@ -4067,6 +4215,22 @@ onMounted(() => {
       <div style="display: flex; justify-content: flex-end; gap: 10px;">
         <button class="btn btn-outline" @click="showErEditModal = false">取消</button>
         <button class="btn btn-primary" @click="saveErEdit">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 研发管理：新增/编辑表单弹窗 -->
+  <div v-if="showDevModal" class="modal-overlay" @click.self="showDevModal = false">
+    <div class="modal-content">
+      <span class="modal-close" @click="showDevModal = false">&times;</span>
+      <h3 style="margin-bottom:16px;">{{ editingDev ? '编辑' : '新增' }}{{ devTabs.find(t => t.id === activeDevTab)?.name }}</h3>
+      <div class="form-group" v-for="f in DEV_FIELDS[activeDevTab]" :key="f.key">
+        <label>{{ f.label }}</label>
+        <input v-model="devForm[f.key]" :placeholder="f.label" />
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:16px;">
+        <button class="btn btn-outline" @click="showDevModal = false">取消</button>
+        <button class="btn btn-primary" @click="saveDev">保存</button>
       </div>
     </div>
   </div>
