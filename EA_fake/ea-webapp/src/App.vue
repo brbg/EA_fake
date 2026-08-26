@@ -5549,6 +5549,12 @@ onMounted(() => {
   -webkit-backdrop-filter: none;
   border-color: var(--border);
 }
+/* 功能区不能有 backdrop-filter：会创建层叠上下文，把内部 z-index:1000 的 AI 下拉
+   困在功能区之下，被 z-index:900 的全屏遮罩盖住 → AI 菜单点了没反应 */
+.ribbon {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
 /* 弹窗内容保持近实心可读（0.3 透玻璃叠在暗遮罩上会看不清表单） */
 .modal-content {
   background: rgba(255, 255, 255, 0.94);
