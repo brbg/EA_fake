@@ -10485,15 +10485,19 @@ def get_test_cases_list(project_id):
 @app.route('/api/v1/project/<project_id>/defect', methods=['GET', 'POST', 'PUT', 'DELETE'])
 def manage_defects(project_id):
     """缺陷管理"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
+    user_id = _require_user_id()
+    if user_id is None:
         return jsonify({'error': '未登录'}), 401
-    
+
+    model = load_model_from_cache(project_id)
+    if not _model_owned_by(model, user_id):
+        return jsonify({'error': '项目不存在'}), 404
+
     if request.method == 'GET':
         # 获取缺陷列表
-        defects = [d.to_dict() for d in defects_cache.values() if d.project_id == project_id]
-        return jsonify({'defects': defects})
-    
+        entries = _load_dev_entries('def', project_id)
+        return jsonify({'defects': entries})
+
     elif request.method == 'POST':
         # 创建缺陷
         data = request.json
@@ -10505,50 +10509,58 @@ def manage_defects(project_id):
         defect.reproduce_step = data.get('reproduce_step', '')
         defect.actual_result = data.get('actual_result', '')
         defect.expected_result = data.get('expected_result', '')
-        
-        defects_cache[defect.id] = defect
-        
+
+        entries = _load_dev_entries('def', project_id)
+        entry = defect.to_dict()
+        entries.append(entry)
+        _save_dev_entries('def', project_id, entries)
+
         return jsonify({
             'message': '缺陷创建成功',
-            'defect': defect.to_dict()
+            'defect': entry
         })
-    
+
     elif request.method == 'PUT':
         # 更新缺陷
         data = request.json
         defect_id = data.get('id')
-        
-        if defect_id not in defects_cache:
+
+        entries = _load_dev_entries('def', project_id)
+        entry = next((e for e in entries if e.get('id') == defect_id), None)
+        if entry is None:
             return jsonify({'error': '缺陷不存在'}), 404
-        
-        defect = defects_cache[defect_id]
+
         if 'name' in data:
-            defect.name = data['name']
+            entry['name'] = data['name']
         if 'description' in data:
-            defect.description = data['description']
+            entry['description'] = data['description']
         if 'status' in data:
-            defect.status = data['status']
+            entry['status'] = data['status']
         if 'level' in data:
-            defect.level = data['level']
+            entry['level'] = data['level']
         if 'assignee_id' in data:
-            defect.assignee_id = data['assignee_id']
-        
-        defect.updated_at = datetime.datetime.now().isoformat()
-        
+            entry['assignee_id'] = data['assignee_id']
+
+        entry['updated_at'] = datetime.datetime.now().isoformat()
+        _save_dev_entries('def', project_id, entries)
+
         return jsonify({
             'message': '缺陷更新成功',
-            'defect': defect.to_dict()
+            'defect': entry
         })
-    
+
     elif request.method == 'DELETE':
         # 删除缺陷
         defect_id = request.args.get('id')
-        
-        if defect_id not in defects_cache:
+
+        entries = _load_dev_entries('def', project_id)
+        entry = next((e for e in entries if e.get('id') == defect_id), None)
+        if entry is None:
             return jsonify({'error': '缺陷不存在'}), 404
-        
-        del defects_cache[defect_id]
-        
+
+        entries = [e for e in entries if e.get('id') != defect_id]
+        _save_dev_entries('def', project_id, entries)
+
         return jsonify({'message': '缺陷删除成功'})
 
 @app.route('/api/v1/project/<project_id>/task/ai/plan', methods=['POST'])
