@@ -10299,7 +10299,7 @@ def manage_requirements(project_id):
 
     elif request.method == 'DELETE':
         # 删除需求
-        req_id = request.args.get('id')
+        req_id = (request.json or {}).get('id') or request.args.get('id')
 
         entries = _load_dev_entries('req', project_id)
         entry = next((e for e in entries if e.get('id') == req_id), None)
@@ -10435,7 +10435,7 @@ def manage_test_cases(project_id):
 
     elif request.method == 'DELETE':
         # 删除测试用例
-        case_id = request.args.get('id')
+        case_id = (request.json or {}).get('id') or request.args.get('id')
 
         entries = _load_dev_entries('tc', project_id)
         entry = next((e for e in entries if e.get('id') == case_id), None)
@@ -10547,7 +10547,7 @@ def manage_defects(project_id):
 
     elif request.method == 'DELETE':
         # 删除缺陷
-        defect_id = request.args.get('id')
+        defect_id = (request.json or {}).get('id') or request.args.get('id')
 
         entries = _load_dev_entries('def', project_id)
         entry = next((e for e in entries if e.get('id') == defect_id), None)
@@ -10671,7 +10671,7 @@ def manage_tasks(project_id):
 
     elif request.method == 'DELETE':
         # 删除任务
-        task_id = request.args.get('id')
+        task_id = (request.json or {}).get('id') or request.args.get('id')
 
         entries = _load_dev_entries('task', project_id)
         entry = next((e for e in entries if e.get('id') == task_id), None)
