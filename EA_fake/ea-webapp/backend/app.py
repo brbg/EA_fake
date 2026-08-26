@@ -10566,24 +10566,39 @@ def manage_defects(project_id):
 @app.route('/api/v1/project/<project_id>/task/ai/plan', methods=['POST'])
 def ai_plan_tasks_api(project_id):
     """AI任务规划"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
+    user_id = _require_user_id()
+    if user_id is None:
         return jsonify({'error': '未登录'}), 401
-    
+
+    model = load_model_from_cache(project_id)
+    if not _model_owned_by(model, user_id):
+        return jsonify({'error': '项目不存在'}), 404
+
     data = request.json
     req_ids = data.get('req_ids', [])
-    
-    # 获取需求
-    requirements = [requirements_cache[rid] for rid in req_ids if rid in requirements_cache]
-    
+
+    # 从持久化读取需求（重建 Requirement 对象供 ai_plan_tasks 使用）
+    req_entries = {r.get('id'): r for r in _load_dev_entries('req', project_id)}
+    requirements = []
+    for rid in req_ids:
+        d = req_entries.get(rid)
+        if d is None:
+            continue
+        req = Requirement(d.get('project_id', project_id), d.get('name', ''), d.get('description', ''), d.get('type', 'functional'))
+        req.id = d.get('id')
+        req.priority = d.get('priority', 'medium')
+        requirements.append(req)
+
     # 规划任务
     tasks = ai_plan_tasks(project_id, requirements)
-    
-    # 保存任务
+
+    # 保存任务（持久化）
+    entries = _load_dev_entries('task', project_id)
     for task in tasks:
-        task.assignee_id = sessions_cache[session_id]['user_id']
-        tasks_cache[task.id] = task
-    
+        task.assignee_id = user_id
+        entries.append(task.to_dict())
+    _save_dev_entries('task', project_id, entries)
+
     return jsonify({
         'message': 'AI任务规划成功',
         'tasks': [t.to_dict() for t in tasks],
@@ -10593,15 +10608,19 @@ def ai_plan_tasks_api(project_id):
 @app.route('/api/v1/project/<project_id>/task', methods=['GET', 'POST', 'PUT', 'DELETE'])
 def manage_tasks(project_id):
     """任务管理"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
+    user_id = _require_user_id()
+    if user_id is None:
         return jsonify({'error': '未登录'}), 401
-    
+
+    model = load_model_from_cache(project_id)
+    if not _model_owned_by(model, user_id):
+        return jsonify({'error': '项目不存在'}), 404
+
     if request.method == 'GET':
         # 获取任务列表
-        tasks = [t.to_dict() for t in tasks_cache.values() if t.project_id == project_id]
-        return jsonify({'tasks': tasks})
-    
+        entries = _load_dev_entries('task', project_id)
+        return jsonify({'tasks': entries})
+
     elif request.method == 'POST':
         # 创建任务
         data = request.json
@@ -10614,76 +10633,88 @@ def manage_tasks(project_id):
         task.work_hours = data.get('work_hours', 0)
         task.plan_start_time = data.get('plan_start_time')
         task.plan_end_time = data.get('plan_end_time')
-        
-        tasks_cache[task.id] = task
-        
+
+        entries = _load_dev_entries('task', project_id)
+        entry = task.to_dict()
+        entries.append(entry)
+        _save_dev_entries('task', project_id, entries)
+
         return jsonify({
             'message': '任务创建成功',
-            'task': task.to_dict()
+            'task': entry
         })
-    
+
     elif request.method == 'PUT':
         # 更新任务
         data = request.json
         task_id = data.get('id')
-        
-        if task_id not in tasks_cache:
+
+        entries = _load_dev_entries('task', project_id)
+        entry = next((e for e in entries if e.get('id') == task_id), None)
+        if entry is None:
             return jsonify({'error': '任务不存在'}), 404
-        
-        task = tasks_cache[task_id]
+
         if 'name' in data:
-            task.name = data['name']
+            entry['name'] = data['name']
         if 'description' in data:
-            task.description = data['description']
+            entry['description'] = data['description']
         if 'status' in data:
-            task.status = data['status']
+            entry['status'] = data['status']
         if 'progress' in data:
-            task.progress = data['progress']
+            entry['progress'] = data['progress']
         if 'assignee_id' in data:
-            task.assignee_id = data['assignee_id']
-        
-        task.updated_at = datetime.datetime.now().isoformat()
-        
+            entry['assignee_id'] = data['assignee_id']
+
+        entry['updated_at'] = datetime.datetime.now().isoformat()
+        _save_dev_entries('task', project_id, entries)
+
         return jsonify({
             'message': '任务更新成功',
-            'task': task.to_dict()
+            'task': entry
         })
-    
+
     elif request.method == 'DELETE':
         # 删除任务
         task_id = request.args.get('id')
-        
-        if task_id not in tasks_cache:
+
+        entries = _load_dev_entries('task', project_id)
+        entry = next((e for e in entries if e.get('id') == task_id), None)
+        if entry is None:
             return jsonify({'error': '任务不存在'}), 404
-        
-        del tasks_cache[task_id]
-        
+
+        entries = [e for e in entries if e.get('id') != task_id]
+        _save_dev_entries('task', project_id, entries)
+
         return jsonify({'message': '任务删除成功'})
 
 @app.route('/api/v1/project/<project_id>/task/list', methods=['GET'])
 def get_tasks_list(project_id):
     """获取任务列表"""
-    session_id = request.headers.get('X-Session-Id')
-    if session_id not in sessions_cache:
+    user_id = _require_user_id()
+    if user_id is None:
         return jsonify({'error': '未登录'}), 401
-    
+
+    model = load_model_from_cache(project_id)
+    if not _model_owned_by(model, user_id):
+        return jsonify({'error': '项目不存在'}), 404
+
     # 获取筛选参数
     status = request.args.get('status')
     assignee_id = request.args.get('assignee_id')
     priority = request.args.get('priority')
-    
-    tasks = [t for t in tasks_cache.values() if t.project_id == project_id]
-    
+
+    tasks = _load_dev_entries('task', project_id)
+
     # 应用筛选
     if status:
-        tasks = [t for t in tasks if t.status == status]
+        tasks = [t for t in tasks if t.get('status') == status]
     if assignee_id:
-        tasks = [t for t in tasks if t.assignee_id == assignee_id]
+        tasks = [t for t in tasks if t.get('assignee_id') == assignee_id]
     if priority:
-        tasks = [t for t in tasks if t.priority == priority]
-    
+        tasks = [t for t in tasks if t.get('priority') == priority]
+
     return jsonify({
-        'tasks': [t.to_dict() for t in tasks],
+        'tasks': tasks,
         'total': len(tasks)
     })
 
