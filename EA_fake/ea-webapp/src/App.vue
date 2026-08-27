@@ -1955,6 +1955,7 @@ const clearCanvas = () => {
   connections = []
   selectedElement = null
   redraw()
+  updateStats()
 }
 
 // UML 撤销/重做函数（双栈：umlHistory 撤销栈 / umlRedo 重做栈）
@@ -1977,6 +1978,7 @@ const undoUml = () => {
     elements = JSON.parse(JSON.stringify(state.elements))
     connections = JSON.parse(JSON.stringify(state.connections))
     redraw()
+    updateStats()
   }
 }
 
@@ -1990,6 +1992,7 @@ const redoUml = () => {
     elements = JSON.parse(JSON.stringify(state.elements))
     connections = JSON.parse(JSON.stringify(state.connections))
     redraw()
+    updateStats()
   }
 }
 
@@ -2422,6 +2425,7 @@ const clearArchimateCanvas = () => {
   archimateConnections = []
   archimateSelectedElement = null
   redrawArchimateCanvas()
+  updateStats()
 }
 
 // ArchiMate 撤销/重做函数（双栈：archimateHistory 撤销栈 / archimateRedo 重做栈）
@@ -2444,6 +2448,7 @@ const undoArchimate = () => {
     archimateElements = JSON.parse(JSON.stringify(state.elements))
     archimateConnections = JSON.parse(JSON.stringify(state.connections))
     redrawArchimateCanvas()
+    updateStats()
   }
 }
 
@@ -2457,6 +2462,7 @@ const redoArchimate = () => {
     archimateElements = JSON.parse(JSON.stringify(state.elements))
     archimateConnections = JSON.parse(JSON.stringify(state.connections))
     redrawArchimateCanvas()
+    updateStats()
   }
 }
 
@@ -2940,6 +2946,7 @@ const clearErCanvas = () => {
   erRelations = []
   erSelectedEntity = null
   redrawErCanvas()
+  updateStats()
 }
 
 // ER图 撤销/重做函数（双栈：erHistory 撤销栈 / erRedo 重做栈）
@@ -2962,6 +2969,7 @@ const undoEr = () => {
     erEntities = JSON.parse(JSON.stringify(state.entities))
     erRelations = JSON.parse(JSON.stringify(state.relations))
     redrawErCanvas()
+    updateStats()
   }
 }
 
@@ -2975,6 +2983,7 @@ const redoEr = () => {
     erEntities = JSON.parse(JSON.stringify(state.entities))
     erRelations = JSON.parse(JSON.stringify(state.relations))
     redrawErCanvas()
+    updateStats()
   }
 }
 
