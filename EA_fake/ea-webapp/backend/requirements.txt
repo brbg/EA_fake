@@ -6,6 +6,8 @@ Flask-SocketIO==5.6.1
 python-socketio==5.16.3
 requests==2.34.2
 bcrypt==5.0.0
+# Flask-SocketIO threading 模式下启用真正的 WebSocket 传输（否则实时协作退化为轮询）
+simple-websocket>=1.0,<2
 
 # 可选：如需更高并发的生产部署（本演示单进程 socketio.run 已够用），取消注释并改由 gunicorn 启动：
 # gunicorn==23.0.0

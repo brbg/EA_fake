@@ -31,7 +31,9 @@ if [ ! -f dist/index.html ] || [ "$1" = "--rebuild" ]; then
 fi
 
 # ---------- 后端 Python 环境 ----------
+# 优先 python3.11（阿里云 Linux 3 / RHEL 系自带 3.6，必须用 3.11）；Ubuntu 用 python3 即可
 PY=python3
+command -v python3.11 >/dev/null 2>&1 && PY=python3.11
 if [ ! -d backend/venv ]; then
   echo "==> 创建 Python 虚拟环境并安装依赖"
   "$PY" -m venv backend/venv
