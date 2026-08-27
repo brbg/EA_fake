@@ -14093,5 +14093,7 @@ if __name__ == '__main__':
             print(f"  {rule}")
     # 必须用 socketio.run 启动，否则 Flask-SocketIO 的 WebSocket 端点不会被服务，实时协作失效
     # allow_unsafe_werkzeug=True：演示/小团队场景用 Werkzeug 足够；生产高并发再换 gunicorn+eventlet
-    socketio.run(app, host='0.0.0.0', port=8080, debug=False, use_reloader=False,
+    # 端口可用环境变量 PORT 覆盖（默认 8080；比赛/正式演示常用 80 以避开非标准端口限制）
+    port = int(os.getenv('PORT', '8080'))
+    socketio.run(app, host='0.0.0.0', port=port, debug=False, use_reloader=False,
                  allow_unsafe_werkzeug=True)
