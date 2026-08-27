@@ -322,25 +322,34 @@ class AIService:
         return response.json()
 
     @staticmethod
-    def chat_stream(messages, config=None):
-        """流式调用大模型"""
+    def chat_stream(messages, config=None, use_reasoning=False):
+        """流式调用大模型。use_reasoning=True 时走推理模型（如 deepseek-reasoner）：
+        去掉 temperature（推理模型不支持）、加大 max_tokens 容纳思考过程 + 答案。"""
         if config is None:
             config = ai_service_config
         if not config.enabled:
             yield f'data: {json.dumps({"error": "AI服务未启用，请配置API密钥"})}\n\n'
             return
         try:
+            model = config.model
+            include_temperature = True
+            max_tokens = config.max_tokens
+            if use_reasoning and getattr(config, 'reasoning_model', ''):
+                model = config.reasoning_model
+                include_temperature = False
+                max_tokens = 8192  # 推理模型需要更大空间（思考过程 + 最终答案）
             headers = {
                 'Content-Type': 'application/json',
                 'Authorization': f'Bearer {config.api_key}'
             }
             payload = {
-                'model': config.model,
+                'model': model,
                 'messages': messages,
-                'max_tokens': config.max_tokens,
-                'temperature': config.temperature,
+                'max_tokens': max_tokens,
                 'stream': True
             }
+            if include_temperature:
+                payload['temperature'] = config.temperature
             response = requests.post(
                 f'{config.base_url.rstrip("/")}/chat/completions',
                 headers=headers,

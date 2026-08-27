@@ -296,22 +296,31 @@ const positionTourHighlight = () => {
       return
     }
     if (step.tab) activeTab.value = step.tab
-    nextTick(() => {
+    let placed = false
+    const measure = () => {
       const el = document.querySelector(step.target)
-      if (el) {
-        const r = el.getBoundingClientRect()
-        tourHighlightStyle.value = {
-          left: `${r.left - 6}px`,
-          top: `${r.top - 6}px`,
-          width: `${r.width + 12}px`,
-          height: `${r.height + 12}px`
-        }
+      if (!el) {
+        // 目标元素还没渲染（tab 内容异步加载）：最多等 2s
+        if (!placed) window.setTimeout(measure, 50)
+        return
+      }
+      const r = el.getBoundingClientRect()
+      tourHighlightStyle.value = {
+        left: `${r.left - 6}px`,
+        top: `${r.top - 6}px`,
+        width: `${r.width + 12}px`,
+        height: `${r.height + 12}px`
+      }
+      if (!placed) {
+        placed = true
         // nearest：元素已在视口内就不滚动，避免打开瞬间页面跳动
         el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-      } else {
-        tourHighlightStyle.value = {}
+        // 等字体/布局/动画稳定后校准一次，避免首帧定位抖动（闪一下二次定位）
+        window.setTimeout(measure, 350)
       }
-    })
+    }
+    // 首帧先等 200ms 让 tab 切换后的布局/字体稳定，再定位
+    window.setTimeout(measure, 200)
   })
 }
 

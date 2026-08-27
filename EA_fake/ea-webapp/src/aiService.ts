@@ -94,7 +94,9 @@ export const chatWithAIStream = async (
   messages: Array<{ role: string; content: string }>,
   onMessage: (content: string) => void,
   onError: (error: string) => void,
-  sessionId?: string
+  sessionId?: string,
+  useReasoning = false,
+  onReasoning?: (text: string) => void
 ) => {
   try {
     const response = await fetch(`${API_BASE_URL}/ai/llm/stream`, {
@@ -105,7 +107,8 @@ export const chatWithAIStream = async (
       },
       body: JSON.stringify({
         messages,
-        session_id: sessionId
+        session_id: sessionId,
+        use_reasoning: useReasoning
       })
     })
     
@@ -141,8 +144,13 @@ export const chatWithAIStream = async (
               return
             }
             
-            if (data.choices && data.choices[0].delta.content) {
-              onMessage(data.choices[0].delta.content)
+            if (data.choices && data.choices[0].delta) {
+              const delta = data.choices[0].delta
+              if (delta.content) {
+                onMessage(delta.content)
+              } else if (delta.reasoning_content && onReasoning) {
+                onReasoning(delta.reasoning_content)
+              }
             } else if (data.content) {
               onMessage(data.content)
             }

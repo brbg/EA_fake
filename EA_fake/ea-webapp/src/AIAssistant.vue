@@ -129,7 +129,13 @@
             <div v-if="msg.type === 'bot'" class="bot-avatar">
               <i class="fas fa-robot"></i>
             </div>
-            <div class="message-content">{{ msg.content }}</div>
+            <div>
+              <details v-if="msg.thinking" class="think-block">
+                <summary><i class="fas fa-brain"></i> 深度思考过程</summary>
+                <div class="think-content">{{ msg.thinking }}</div>
+              </details>
+              <div class="message-content">{{ msg.content }}</div>
+            </div>
           </div>
         </div>
 
@@ -141,12 +147,21 @@
       </div>
 
       <div class="chat-input">
-        <textarea 
-          v-model="inputMessage" 
-          placeholder="请输入您的问题..." 
+        <textarea
+          v-model="inputMessage"
+          placeholder="请输入您的问题..."
           @keydown.enter.exact.prevent="sendMessage"
           rows="2"
         ></textarea>
+        <button
+          class="think-toggle"
+          :class="{ active: deepThink }"
+          @click="deepThink = !deepThink"
+          :title="deepThink ? '深度思考已开启（推理模型，回答更严谨）' : '开启深度思考（使用推理模型）'"
+        >
+          <i class="fas fa-brain"></i>
+          <span>深度</span>
+        </button>
         <button @click="sendMessage" :disabled="!inputMessage.trim() || isTyping || !aiEnabled">
           <i class="fas fa-paper-plane"></i>
         </button>
@@ -166,13 +181,15 @@ const props = defineProps<{
   projectId?: string
 }>()
 
-const messages = ref<Array<{id: number; type: string; content: string}>>([])
+const messages = ref<Array<{id: number; type: string; content: string; thinking?: string}>>([])
 // 消息 id 用单调递增计数器（Date.now() 毫秒级会与用户消息/占位气泡撞 id，导致流式写入错位）
 let msgIdCounter = 0
 const nextMsgId = () => ++msgIdCounter
 const inputMessage = ref('')
 const isTyping = ref(false)
 const streamStarted = ref(false)  // 是否已收到首个流式分片（用于隐藏“思考中”提示）
+// 深度思考：开启后走推理模型（deepseek-reasoner），回答更严谨，并展示思考过程
+const deepThink = ref(false)
 const showConfig = ref(false)
 const saving = ref(false)
 const configMessage = ref<{type: string; text: string} | null>(null)
@@ -402,10 +419,11 @@ const sendNormalMessage = async (message: string) => {
 
   // 先放一个空的 bot 气泡，流式内容实时往里面填
   const botMsgId = nextMsgId()
-  messages.value.push({ id: botMsgId, type: 'bot', content: '' })
+  messages.value.push({ id: botMsgId, type: 'bot', content: '', thinking: '' })
   streamStarted.value = false
 
   let fullContent = ''
+  let fullThinking = ''
   let streamError: string | null = null
 
   await chatWithAIStream(
@@ -422,7 +440,17 @@ const sendNormalMessage = async (message: string) => {
     (error) => {
       streamError = error
     },
-    chatSessionId.value
+    chatSessionId.value,
+    deepThink.value,
+    (reasoning) => {
+      // 深度思考：流式填充「思考过程」区
+      streamStarted.value = true
+      fullThinking += reasoning
+      const idx = messages.value.findIndex((m) => m.id === botMsgId)
+      if (idx >= 0) {
+        messages.value[idx].thinking = fullThinking
+      }
+    }
   )
 
   const idx = messages.value.findIndex((m) => m.id === botMsgId)
@@ -672,6 +700,32 @@ const scrollToBottom = () => {
   word-break: break-word;
 }
 
+/* 深度思考过程（可折叠） */
+.think-block {
+  margin-bottom: 8px;
+  border: 1px dashed #d0c7f0;
+  border-radius: 8px;
+  background: #f7f5ff;
+  font-size: 12px;
+}
+.think-block summary {
+  padding: 6px 10px;
+  cursor: pointer;
+  color: #6a5acd;
+  user-select: none;
+}
+.think-block summary i {
+  margin-right: 4px;
+}
+.think-content {
+  padding: 0 10px 8px;
+  color: #7a6fb0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
 .chat-input {
   display: flex;
   gap: 8px;
@@ -713,5 +767,29 @@ const scrollToBottom = () => {
 .chat-input button:disabled {
   background: #ccc;
   cursor: not-allowed;
+}
+
+/* 深度思考开关 */
+.chat-input .think-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 12px;
+  background: #fff;
+  color: #6a5acd;
+  border: 1px solid #d0c7f0;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+.chat-input .think-toggle:hover:not(:disabled) {
+  background: #f7f5ff;
+}
+.chat-input .think-toggle.active {
+  background: #6a5acd;
+  color: #fff;
+  border-color: #6a5acd;
 }
 </style>

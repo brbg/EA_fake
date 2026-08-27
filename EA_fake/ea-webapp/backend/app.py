@@ -13841,10 +13841,12 @@ def llm_stream():
     data = request.json
     messages = data.get('messages', [])
     chat_session_id = data.get('session_id')
-    
+    # 深度思考：走推理模型（deepseek-reasoner）
+    use_reasoning = bool(data.get('use_reasoning') or data.get('deep_think'))
+
     def generate():
         try:
-            for chunk in AIService.chat_stream(messages):
+            for chunk in AIService.chat_stream(messages, use_reasoning=use_reasoning):
                 yield chunk
         except Exception as e:
             yield f'data: {json.dumps({"error": str(e)})}\n\n'
