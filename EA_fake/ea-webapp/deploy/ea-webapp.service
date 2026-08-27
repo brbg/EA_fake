@@ -1,0 +1,22 @@
+# AI 原生 Enterprise Architect — systemd 服务单元
+# 用法（把应用放在 /opt/ea-webapp 后）：
+#   sudo cp deploy/ea-webapp.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ea-webapp
+[Unit]
+Description=AI Enterprise Architect (demo)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ea-webapp
+# 密钥/API Key 放 /opt/ea-webapp/.env（见 DEPLOY.md），不要写进单元文件
+EnvironmentFile=/opt/ea-webapp/.env
+ExecStart=/opt/ea-webapp/backend/venv/bin/python /opt/ea-webapp/backend/app.py
+Restart=always
+RestartSec=3
+# 单进程内存态：约 300-500MB，2G 服务器绰绰有余
+MemoryMax=1536M
+
+[Install]
+WantedBy=multi-user.target

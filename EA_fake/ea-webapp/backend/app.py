@@ -72,6 +72,11 @@ def index():
 def serve_assets(filename):
     return send_from_directory('../dist/assets', filename)
 
+@app.route('/fontawesome/<path:filename>')
+def serve_fontawesome(filename):
+    # 本地内联的 Font Awesome（避免依赖 cdnjs CDN，国内/离线演示也不挂）
+    return send_from_directory('../dist/fontawesome', filename)
+
 @app.route('/editor/<model_id>')
 def editor(model_id):
     return send_from_directory('../frontend/templates', 'editor.html')

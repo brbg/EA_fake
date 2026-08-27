@@ -1,0 +1,12 @@
+# AI 原生 Enterprise Architect — 后端依赖（演示部署）
+# 版本与本地开发环境一致，保证可复现。
+Flask==3.0.3
+Flask-Cors==4.0.0
+Flask-SocketIO==5.6.1
+python-socketio==5.16.3
+requests==2.34.2
+bcrypt==5.0.0
+
+# 可选：如需更高并发的生产部署（本演示单进程 socketio.run 已够用），取消注释并改由 gunicorn 启动：
+# gunicorn==23.0.0
+# eventlet==0.36.1
