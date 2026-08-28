@@ -3927,6 +3927,8 @@ const collabEnabled = ref(false)
 const onlineUsers = ref<string[]>([])
 // 右上角协作状态下拉
 const showCollabDropdown = ref(false)
+const showMyId = ref(false)
+const showJoinInput = ref(false)
 const headerCollabMembers = ref<{ owner_id: string; members: Array<{ user_id: string; username: string; role?: string }> } | null>(null)
 const onlineUserSet = computed(() => new Set(onlineUsers.value))
 const toggleCollabDropdown = async () => {
@@ -4382,16 +4384,39 @@ onMounted(() => {
           </button>
           <!-- 协作状态下拉 -->
           <div v-if="showCollabDropdown" class="header-collab-dropdown">
-            <div class="dropdown-title">
-              协作状态：
-              <b :style="{ color: collabEnabled ? '#16a34a' : '#999' }">{{ collabEnabled ? '协作中' : '未进入' }}</b>
+            <!-- 协作中枢：不需要打开项目 -->
+            <div class="dropdown-hub-title">协作</div>
+            <div class="dropdown-hub-item" @click="showMyId = !showMyId">
+              <i class="fas fa-qrcode"></i> 我需要协作
             </div>
-            <div v-if="!currentModelId" class="dropdown-hint">请先打开一个项目</div>
-            <template v-else>
-              <div class="dropdown-hint">
-                已加入协作的用户（{{ (headerCollabMembers?.members || []).length }}）
-                <span v-if="onlineUsers.length" style="color:#16a34a;"> · {{ onlineUsers.length }} 在线</span>
+            <div v-if="showMyId" class="hub-box">
+              <div>我的账户 ID：<b style="color:#1f5eff;">{{ authUser?.id }}</b>
+                <button class="kick-btn" style="margin-left:6px;" @click="copyMyId">复制</button>
               </div>
+              <div class="dropdown-hint">把这个 ID 发给对方，对方在「加入协作」输入即可加入你的项目。</div>
+            </div>
+            <div class="dropdown-hub-item" @click="showJoinInput = !showJoinInput">
+              <i class="fas fa-user-plus"></i> 加入协作
+            </div>
+            <div v-if="showJoinInput" class="hub-box">
+              <div style="display:flex; gap:6px;">
+                <input v-model="collabSearchUserId" placeholder="输入对方 6 位账户 ID" @keyup.enter="searchCollabProjects" style="flex:1; padding:8px; border:1px solid #ddd; border-radius:8px; font-size:13px;" />
+                <button class="btn btn-primary" style="padding:6px 12px; font-size:12px;" @click="searchCollabProjects">查找</button>
+              </div>
+              <div v-if="collabSearchMsg" class="dropdown-hint">{{ collabSearchMsg }}</div>
+              <div v-if="collabSearchResults.length" class="dropdown-list">
+                <div v-for="p in collabSearchResults" :key="p.id" class="dropdown-user">
+                  <span class="user-name">{{ p.name }} <small style="color:#999;">{{ p.id }}</small></span>
+                  <button class="kick-btn" :disabled="joinedProjectIds.has(p.id)" @click="joinCollabProject(p.id)">{{ joinedProjectIds.has(p.id) ? '已加入' : '加入' }}</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 项目协作（打开项目时） -->
+            <hr style="margin:10px 0; border:none; border-top:1px solid #eee;" />
+            <template v-if="currentModelId">
+              <div class="dropdown-title">协作状态：<b :style="{ color: collabEnabled ? '#16a34a' : '#999' }">{{ collabEnabled ? '协作中' : '未进入' }}</b></div>
+              <div class="dropdown-hint">已加入协作的用户（{{ (headerCollabMembers?.members || []).length }}）<span v-if="onlineUsers.length" style="color:#16a34a;"> · {{ onlineUsers.length }} 在线</span></div>
               <div v-if="(headerCollabMembers?.members || []).length" class="dropdown-list">
                 <div v-for="m in headerCollabMembers.members" :key="m.user_id" class="dropdown-user">
                   <span class="user-dot" :style="{ background: onlineUserSet.has(m.username) ? '#16a34a' : '#ccc' }"></span>
@@ -4401,20 +4426,12 @@ onMounted(() => {
                 </div>
               </div>
               <p v-else class="dropdown-hint">暂无协作者，可让对方输入你的账户 ID 加入。</p>
-              <div v-if="currentModelRole === 'editor'" class="dropdown-action danger" @click="exitCollabHeader">
-                <i class="fas fa-sign-out-alt"></i> 退出协作
-              </div>
-              <div v-else-if="currentModelRole === 'owner' && collabEnabled" class="dropdown-action danger" @click="endCollabAll">
-                <i class="fas fa-hand"></i> 结束协作（移出全部协作者）
-              </div>
-              <div class="dropdown-action" @click="showCollabDropdown = false; openCollabModal()">
-                <i class="fas fa-people-arrows"></i> 协作管理（加入 / 审批 / 查看）
-              </div>
-              <div class="dropdown-action" @click="toggleCollab">
-                <i class="fas" :class="collabEnabled ? 'fa-pause' : 'fa-play'"></i>
-                {{ collabEnabled ? '退出协作模式' : '进入协作模式' }}
-              </div>
+              <div v-if="currentModelRole === 'editor'" class="dropdown-action danger" @click="exitCollabHeader"><i class="fas fa-sign-out-alt"></i> 退出协作</div>
+              <div v-else-if="currentModelRole === 'owner' && collabEnabled" class="dropdown-action danger" @click="endCollabAll"><i class="fas fa-hand"></i> 结束协作（移出全部协作者）</div>
+              <div class="dropdown-action" @click="showCollabDropdown = false; openCollabModal()"><i class="fas fa-people-arrows"></i> 协作管理（加入 / 审批 / 查看）</div>
+              <div class="dropdown-action" @click="toggleCollab"><i class="fas" :class="collabEnabled ? 'fa-pause' : 'fa-play'"></i> {{ collabEnabled ? '退出协作模式' : '进入协作模式' }}</div>
             </template>
+            <div v-else class="dropdown-hint">打开项目后可查看协作者 / 审批变更 / 进入协作模式。</div>
           </div>
         </div>
         <button class="btn-help" @click="showHelpModal = true" title="新手教程">
@@ -6638,6 +6655,26 @@ onMounted(() => {
 }
 .dropdown-title { font-size: 13px; margin-bottom: 8px; }
 .dropdown-hint { font-size: 12px; color: #999; margin: 6px 0; }
+.dropdown-hub-title { font-size: 12px; color: #999; margin-bottom: 6px; }
+.dropdown-hub-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: #1f5eff;
+  font-size: 13px;
+}
+.dropdown-hub-item:hover { background: #f4f7ff; }
+.hub-box {
+  padding: 8px 10px;
+  border: 1px solid #e6ecff;
+  border-radius: 8px;
+  background: #f6f8ff;
+  margin-bottom: 4px;
+  font-size: 13px;
+}
 .dropdown-list { margin: 4px 0; }
 .dropdown-user {
   display: flex;
