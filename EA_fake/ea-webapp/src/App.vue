@@ -13,6 +13,7 @@ import { aiApi, codeApi } from './api/ai'
 import { devApi } from './api/dev'
 import { adminApi } from './api/admin'
 import { collabApi } from './api/collab'
+import { designPatterns, buildPatternElements, patternCategories } from './designPatterns'
 
 // === 登录门禁状态 ===
 const authUser = ref<{ username: string; email: string; role?: string; id?: string } | null>(null)
@@ -2048,6 +2049,25 @@ const setConnCardinality = (card: string) => {
   }
 }
 
+// === 设计模式模板插入（23 种 GoF）===
+const showPatternModal = ref(false)
+let patternInsertCount = 0
+const insertPattern = (key: string) => {
+  const pattern = designPatterns.find((p: any) => p.key === key)
+  if (!pattern) return
+  saveUmlHistory()
+  // 每次插入小幅偏移，避免多次插入重叠
+  const offX = 40 + (patternInsertCount % 3) * 60
+  const offY = 40 + Math.floor(patternInsertCount / 3) * 60
+  patternInsertCount++
+  const { elements: pe, connections: pc } = buildPatternElements(pattern, offX, offY)
+  elements.push(...pe)
+  connections.push(...pc)
+  showPatternModal.value = false
+  redraw()
+  updateStats()
+}
+
 const initCanvasEvents = () => {
   initCanvas()
   document.removeEventListener('mousemove', handleMouseMove)
@@ -4039,6 +4059,12 @@ onMounted(() => {
       <button class="toolbar-btn" @click="clearCanvas"><i class="fas fa-trash"></i> 清空</button>
     </div>
     <div class="ribbon-group">
+      <div class="ribbon-group-label">设计</div>
+      <button class="toolbar-btn" @click="showPatternModal = true" title="插入 23 种设计模式模板">
+        <i class="fas fa-layer-group"></i> 设计模式
+      </button>
+    </div>
+    <div class="ribbon-group">
       <div class="ribbon-group-label">AI</div>
       <div style="position:relative; display:inline-block;">
         <button class="toolbar-btn" @click="toggleAiMenu('uml')" :class="{ active: openAiMenu === 'uml' }" title="AI 功能" data-tour="ai">
@@ -4999,6 +5025,30 @@ onMounted(() => {
     </div>
   </div>
 
+  <!-- 设计模式模板弹窗 -->
+  <div v-if="showPatternModal" class="modal-overlay" @click.self="showPatternModal = false">
+    <div class="modal-content" style="max-width: 720px; max-height: 80vh; overflow-y: auto;">
+      <span class="modal-close" @click="showPatternModal = false">&times;</span>
+      <h3 style="margin-bottom: 16px;"><i class="fas fa-layer-group" style="color:#1f5eff; margin-right:6px;"></i>设计模式模板（23 种 GoF）</h3>
+      <p style="font-size:12px; color:#999; margin:0 0 14px;">点击插入对应类结构到画布，可继续编辑、标注基数、生成代码 / MySQL。</p>
+      <div v-for="cat in patternCategories" :key="cat" style="margin-bottom: 16px;">
+        <h4 style="margin: 0 0 8px; color: #1f5eff;">{{ cat }}</h4>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <button
+            v-for="p in designPatterns.filter(x => x.category === cat)"
+            :key="p.key"
+            class="pattern-item"
+            @click="insertPattern(p.key)"
+            :title="p.desc"
+          >
+            <strong>{{ p.name }}</strong>
+            <span style="color:#999; font-size:11px; display:block;">{{ p.en }}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div v-if="showEditModal" class="modal-overlay" @click.self="showEditModal = false">
     <div class="modal-content">
       <span class="modal-close" @click="showEditModal = false">&times;</span>
@@ -5200,6 +5250,18 @@ onMounted(() => {
         <textarea v-model="genDiagramText" rows="6"
           placeholder="用自然语言描述你的系统，例如：设计一个图书管理系统，有图书、读者、借阅记录，读者可以借阅和归还图书…"
           style="width:100%; padding:12px; border:1px solid #ddd; border-radius:8px; font-size:14px; resize:vertical; font-family:inherit;"></textarea>
+      </div>
+
+      <div class="form-group" v-if="genDiagramKind === 'uml'">
+        <label>或点一个设计模式（自动填入描述，AI 直接画该模式）：</label>
+        <div class="pattern-chips">
+          <button
+            v-for="p in designPatterns"
+            :key="'chip' + p.key"
+            class="pattern-chip"
+            @click="genDiagramText = `请生成${p.name}（${p.en}）：${p.desc}，画出该设计模式的参与者类图结构`"
+          >{{ p.name }}</button>
+        </div>
       </div>
 
       <div v-if="genDiagramError" style="color:#d33; background:#fdf0f0; padding:10px; border-radius:8px; margin-top:4px;">
@@ -5772,6 +5834,45 @@ onMounted(() => {
   background: #1f5eff;
   border-color: #1f5eff;
   color: #fff;
+}
+
+/* 设计模式模板项 */
+.pattern-item {
+  padding: 10px 12px;
+  border: 1px solid #e0e4ea;
+  border-radius: 10px;
+  background: #fafbfc;
+  text-align: left;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.pattern-item:hover {
+  border-color: #1f5eff;
+  background: #f0f5ff;
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.pattern-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.pattern-chip {
+  padding: 4px 10px;
+  border: 1px solid #dde3ea;
+  border-radius: 999px;
+  background: #fff;
+  color: #444;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.pattern-chip:hover {
+  border-color: #1f5eff;
+  color: #1f5eff;
+  background: #f0f5ff;
 }
 
 .canvas-container:hover {
