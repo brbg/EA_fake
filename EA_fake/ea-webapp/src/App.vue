@@ -2095,7 +2095,7 @@ const recommendPatternFromCanvas = async () => {
   patternAnalyzing.value = true
   showPatternModal.value = false
   try {
-    const { ok, status, data } = await codeApi.recommendPattern({ elements, connections })
+    const { ok, status, data } = await codeApi.recommendPattern({ elements, connections, project_id: currentModelId.value })
     if (!ok) {
       showCollabToast(data?.error || `分析失败: HTTP ${status}`)
       return
@@ -2232,6 +2232,38 @@ const loadHealth = async () => {
 const openHealthModal = () => {
   showHealthModal.value = true
   loadHealth()
+}
+
+// === 项目知识库（AI 每次调用自动记录关键结论，后续注入实现个性化生成）===
+const showKnowledgeModal = ref(false)
+const knowledgeList = ref<Array<{ id: string; source: string; summary: string; created_at: string }>>([])
+const knowledgeInput = ref('')
+const knowledgeLoading = ref(false)
+const loadKnowledge = async () => {
+  if (!currentModelId.value) return
+  knowledgeLoading.value = true
+  try {
+    const { ok, data } = await collabApi.knowledge(currentModelId.value)
+    knowledgeList.value = ok && Array.isArray(data?.knowledge) ? data.knowledge : []
+  } catch {
+    knowledgeList.value = []
+  } finally {
+    knowledgeLoading.value = false
+  }
+}
+const addKnowledgeReq = async () => {
+  const text = knowledgeInput.value.trim()
+  if (!text || !currentModelId.value) return
+  const { ok, status, data } = await collabApi.addKnowledge(currentModelId.value, { summary: text, source: '手动' })
+  if (!ok) { showToast(data?.error || `记录失败: HTTP ${status}`, 'error'); return }
+  knowledgeInput.value = ''
+  showToast('已记录到项目知识库', 'success')
+  await loadKnowledge()
+}
+const deleteKnowledgeReq = async (entryId: string) => {
+  if (!currentModelId.value || !confirm('确定删除这条知识？')) return
+  await collabApi.deleteKnowledge(currentModelId.value, entryId)
+  await loadKnowledge()
 }
 
 const initCanvasEvents = () => {
@@ -4322,6 +4354,9 @@ onMounted(() => {
       <button class="toolbar-btn" @click="openGenerateDiagram('uml')" title="粘贴需求文档，AI 自动生成模型">
         <i class="fas fa-file-lines"></i> 需求→模型
       </button>
+      <button class="toolbar-btn" @click="showKnowledgeModal = true; loadKnowledge()" title="项目知识库：AI 自动记录每次操作结论，后续调用注入实现个性化生成">
+        <i class="fas fa-database"></i> 知识库
+      </button>
     </div>
     <div class="ribbon-group">
       <div class="ribbon-group-label">AI</div>
@@ -5448,6 +5483,31 @@ onMounted(() => {
         </div>
         <p v-if="!healthResult.issues?.length && !healthResult.suggestions?.length" style="color:#16a34a; font-size:13px;">项目状态健康，无问题 🎉</p>
       </template>
+    </div>
+  </div>
+
+  <!-- 项目知识库 -->
+  <div v-if="showKnowledgeModal" class="modal-overlay" @click.self="showKnowledgeModal = false">
+    <div class="modal-content" style="max-width: 560px; max-height: 80vh; overflow-y: auto;">
+      <span class="modal-close" @click="showKnowledgeModal = false">&times;</span>
+      <h3 style="margin-bottom: 16px;"><i class="fas fa-database" style="color:#1f5eff; margin-right:6px;"></i>项目知识库</h3>
+      <p style="font-size:12px; color:#999; margin:0 0 12px;">AI 每次操作（校验/评审/健康度/生成/编辑/模式推荐）会自动记录关键结论；后续 AI 调用会读取这里的背景，做了解全貌的个性化生成。</p>
+      <div style="display:flex; gap:8px; margin-bottom: 12px;">
+        <input v-model="knowledgeInput" placeholder="手动记一条（如：客户要求 xxx）" style="flex:1; padding:10px; border:1px solid #ddd; border-radius:8px; font-size:14px;" @keyup.enter="addKnowledgeReq" />
+        <button class="btn btn-primary" @click="addKnowledgeReq">记录</button>
+      </div>
+      <div v-if="knowledgeLoading" style="color:#999; font-size:12px;">加载中…</div>
+      <div v-else-if="knowledgeList.length">
+        <div v-for="k in knowledgeList" :key="k.id" class="collab-result-row">
+          <div>
+            <strong style="font-size:12px; color:#1f5eff;">{{ k.source }}</strong>
+            <span style="font-size:12px; color:#999;">{{ (k.created_at || '').replace('T',' ').slice(0,16) }}</span>
+            <div style="font-size:13px; color:#444; margin-top:2px;">{{ k.summary }}</div>
+          </div>
+          <button class="btn btn-outline" style="padding:2px 8px; font-size:12px; color:#e74c3c;" @click="deleteKnowledgeReq(k.id)"><i class="fas fa-trash"></i></button>
+        </div>
+      </div>
+      <p v-else style="color:#999; font-size:12px;">暂无知识，进行 AI 校验 / 健康度 / 生成等操作后会自动记录。</p>
     </div>
   </div>
 

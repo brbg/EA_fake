@@ -31,6 +31,7 @@ from core import (
     er_views_cache, data_dictionary_cache, versions_cache, branches_cache, reviews_cache,
     _require_admin, _find_user_by_id, _delete_project_data,
     _ai_parse_json_response, _can_access_model,
+    get_knowledge, log_knowledge, build_knowledge_context,
 )
 
 # 注册 Blueprint（按「拆巨石」计划逐步从 app.py 抽出）
@@ -286,8 +287,9 @@ def remove_project_member(project_id, member_id):
     
     return jsonify({'message': '成员移除成功'})
 
-def ai_health_check(model):
-    """AI 深度分析模型健康度，返回 {score, issues, suggestions, summary}；失败返回 None。"""
+def ai_health_check(model, project_id=''):
+    """AI 深度分析模型健康度，返回 {score, issues, suggestions, summary}；失败返回 None。
+    会注入项目知识库上下文，并把结论记入知识库。"""
     lines = []
     for e in (model.elements or [])[:30]:
         attrs = ' '.join((e.get('attributes') or [])[:5])
@@ -304,7 +306,7 @@ def ai_health_check(model):
         lines.append(f"表 {t.get('name')} 列:{cols}")
     desc = '\n'.join(lines) or '(空模型)'
 
-    prompt = f"""你是资深企业架构师。请审查下面这个建模项目的 UML 类图 / ArchiMate 架构 / ER 数据模型：
+    prompt = f"""{build_knowledge_context(project_id)}你是资深企业架构师。请审查下面这个建模项目的 UML 类图 / ArchiMate 架构 / ER 数据模型：
 {desc}
 
 给出健康度诊断。只输出 JSON：
@@ -327,12 +329,17 @@ def ai_health_check(model):
         score = max(0, min(100, int(parsed.get('score'))))
     except (TypeError, ValueError):
         score = 70
-    return {
+    result = {
         'score': score,
         'issues': [str(x) for x in (parsed.get('issues') or [])[:5]],
         'suggestions': [str(x) for x in (parsed.get('suggestions') or [])[:5]],
         'summary': str(parsed.get('summary') or ''),
     }
+    # 记录到知识库
+    if project_id:
+        top = result['issues'][0] if result['issues'] else result['summary']
+        log_knowledge(project_id, '健康度', f"评分{score}：{top}")
+    return result
 
 
 @app.route('/api/projects/<project_id>/health', methods=['GET'])
@@ -353,7 +360,7 @@ def project_health_check(project_id):
     health_result = None
     if ai_service_config.enabled:
         try:
-            health_result = ai_health_check(model)
+            health_result = ai_health_check(model, project_id)
         except Exception:
             health_result = None
     if health_result is None:
@@ -6341,15 +6348,18 @@ def ai_generate_diagram_v1(project_id):
         return jsonify({'error': 'kind 必须是 uml 或 er'}), 400
 
     if kind == 'uml':
+        # 注入项目知识库上下文，实现"了解项目全貌后的个性化生成"
+        prompt = build_knowledge_context(project_id) + text
         # generate_uml_from_prompt 内部已布局（含 uuid），只需转前端 id 结构
-        elements_raw, relationships_raw = generate_uml_from_prompt(text, view_type)
+        elements_raw, relationships_raw = generate_uml_from_prompt(prompt, view_type)
         if not elements_raw:
             return jsonify({'error': 'AI 服务不可用或未能解析描述，请确认已配置 API 密钥后重试'}), 422
         elements, relationships = _uuid_elements_to_canvas(elements_raw, relationships_raw)
+        log_knowledge(project_id, '生成图', f"根据「{text[:40]}」生成 UML {len(elements)} 个元素")
         return jsonify({'target': 'uml', 'elements': elements, 'relationships': relationships})
 
     # ER：LLM 原始数据 → 画布布局（关系类型已归一化 camelCase）
-    ai_data = _ai_generate_er_data(text)
+    ai_data = _ai_generate_er_data(build_knowledge_context(project_id) + text)
     entities_raw = ai_data.get('entities') if isinstance(ai_data, dict) else None
     relations_raw = ai_data.get('relationships') if isinstance(ai_data, dict) else []
     if not isinstance(entities_raw, list) or not entities_raw:
@@ -6360,6 +6370,7 @@ def ai_generate_diagram_v1(project_id):
     if not isinstance(entities_raw, list) or not entities_raw:
         return jsonify({'error': '未能从描述中提取出实体，请补充更明确的业务信息'}), 422
     entities, relations = _layout_ai_er(entities_raw, relations_raw)
+    log_knowledge(project_id, '生成图', f"根据「{text[:40]}」生成 ER {len(entities)} 张表")
     return jsonify({'target': 'er', 'entities': entities, 'relationships': relations})
 
 
@@ -6404,13 +6415,13 @@ def _describe_er_for_edit(erEntities, erRelations):
     return '\n'.join(lines) or '（空模型）'
 
 
-def _ai_edit_model(kind, description, instruction):
-    """调用 LLM 生成增量编辑操作列表。AI 未启用/失败返回 None。"""
+def _ai_edit_model(kind, description, instruction, project_id=''):
+    """调用 LLM 生成增量编辑操作列表。AI 未启用/失败返回 None。注入项目知识库上下文并记录。"""
     if not ai_service_config.enabled:
         return None
     messages = [
         {'role': 'system', 'content': edit_model_system_prompt(kind)},
-        {'role': 'user', 'content': f'当前模型：\n{description}\n\n用户指令：{instruction}'}
+        {'role': 'user', 'content': f'{build_knowledge_context(project_id)}当前模型：\n{description}\n\n用户指令：{instruction}'}
     ]
     result = AIService.chat_completion(messages, max_tokens=2000, temperature=0.3, use_reasoning=True)
     if not isinstance(result, dict) or 'error' in result:
@@ -6422,6 +6433,8 @@ def _ai_edit_model(kind, description, instruction):
     data = _ai_parse_json_response(content)
     if not isinstance(data, dict) or not isinstance(data.get('operations'), list):
         return None
+    if project_id:
+        log_knowledge(project_id, '编辑模型', f"按指令「{instruction[:40]}」执行 {len(data['operations'])} 个编辑操作")
     return data['operations']
 
 
@@ -6705,7 +6718,7 @@ def ai_edit_model_v1(model_id):
         if not elements:
             return jsonify({'error': '当前 UML 画布为空，请先画一些元素'}), 400
         description = _describe_uml_for_edit(elements, connections)
-        ops = _ai_edit_model('uml', description, instruction)
+        ops = _ai_edit_model('uml', description, instruction, project_id=model_id)
         if ops is None:
             return jsonify({'error': 'AI 服务不可用或未能解析指令，请确认已配置 API 密钥后重试'}), 422
         new_elements, new_connections = _apply_uml_edits(elements, connections, ops)
@@ -6717,7 +6730,7 @@ def ai_edit_model_v1(model_id):
         if not archElements:
             return jsonify({'error': '当前 ArchiMate 画布为空，请先画一些元素'}), 400
         description = _describe_archimate_for_edit(archElements, archConnections)
-        ops = _ai_edit_model('archimate', description, instruction)
+        ops = _ai_edit_model('archimate', description, instruction, project_id=model_id)
         if ops is None:
             return jsonify({'error': 'AI 服务不可用或未能解析指令，请确认已配置 API 密钥后重试'}), 422
         new_elements, new_connections = _apply_archimate_edits(archElements, archConnections, ops)
@@ -6729,7 +6742,7 @@ def ai_edit_model_v1(model_id):
     if not erEntities:
         return jsonify({'error': '当前 ER 画布为空，请先建一些表'}), 400
     description = _describe_er_for_edit(erEntities, erRelations)
-    ops = _ai_edit_model('er', description, instruction)
+    ops = _ai_edit_model('er', description, instruction, project_id=model_id)
     if ops is None:
         return jsonify({'error': 'AI 服务不可用或未能解析指令，请确认已配置 API 密钥后重试'}), 422
     new_entities, new_relations = _apply_er_edits(erEntities, erRelations, ops)
@@ -14189,6 +14202,7 @@ def ai_recommend_pattern():
     data = request.json or {}
     elements = data.get('elements') or []
     connections = data.get('connections') or []
+    project_id = data.get('project_id') or ''
 
     desc_lines = []
     for e in elements:
@@ -14199,7 +14213,7 @@ def ai_recommend_pattern():
         desc_lines.append(f"关系: {c.get('startElement')} -{c.get('type')}-> {c.get('endElement')}")
     diagram_desc = '\n'.join(desc_lines) or '(空图)'
 
-    prompt = f"""分析下面这个 UML 类图，判断它最接近哪一种设计模式（从列表中选择）。
+    prompt = f"""{build_knowledge_context(project_id)}分析下面这个 UML 类图，判断它最接近哪一种设计模式（从列表中选择）。
 {diagram_desc}
 
 可用模式：
@@ -14221,6 +14235,11 @@ def ai_recommend_pattern():
     parsed = _ai_parse_json_response(content) if content else {}
     pattern_key = (parsed or {}).get('pattern') or None
     reason = (parsed or {}).get('reason') or ''
+    if project_id:
+        if pattern_key:
+            log_knowledge(project_id, '模式推荐', f"推荐「{pattern_key}」：{reason}")
+        else:
+            log_knowledge(project_id, '模式推荐', '未找到与当前图匹配的设计模式')
     return jsonify({'pattern': pattern_key, 'reason': reason, 'matched': bool(pattern_key)})
 
 if __name__ == '__main__':

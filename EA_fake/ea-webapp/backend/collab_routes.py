@@ -11,6 +11,7 @@ from flask import Blueprint, request, jsonify
 from core import (
     _require_user_id, _find_user_by_id, load_users, load_projects, save_project,
     load_model_from_cache, save_model,
+    get_knowledge, log_knowledge, build_knowledge_context,
 )
 from collab import kick_user, emit_proposal
 
@@ -247,3 +248,54 @@ def reject_proposal(project_id, proposal_id):
     _save_proposals(project_id, proposals)
     emit_proposal(project_id, 'proposal_rejected', {'title': p['title']})
     return jsonify({'message': '已拒绝该变更申请'})
+
+
+# === 项目知识库（AI 每次调用自动记录关键结论，供后续调用注入上下文）===
+
+@collab_routes_bp.route('/api/v1/project/<project_id>/knowledge', methods=['GET'])
+def list_knowledge(project_id):
+    """列出项目知识库条目。"""
+    user_id = _require_user_id()
+    if user_id is None:
+        return jsonify({'error': '未登录'}), 401
+    project = load_projects().get(project_id)
+    if project is None:
+        return jsonify({'error': '项目不存在'}), 404
+    if not _is_member(project, user_id):
+        return jsonify({'error': '无权限'}), 403
+    return jsonify({'knowledge': get_knowledge(project_id)})
+
+
+@collab_routes_bp.route('/api/v1/project/<project_id>/knowledge', methods=['POST'])
+def add_knowledge(project_id):
+    """手动添加一条知识（如 AI 助手「记住：xxx」也可落到这里）。"""
+    user_id = _require_user_id()
+    if user_id is None:
+        return jsonify({'error': '未登录'}), 401
+    project = load_projects().get(project_id)
+    if project is None:
+        return jsonify({'error': '项目不存在'}), 404
+    if not _is_member(project, user_id):
+        return jsonify({'error': '无权限'}), 403
+    data = request.json or {}
+    summary = data.get('summary') or data.get('content') or ''
+    if not summary.strip():
+        return jsonify({'error': '内容不能为空'}), 400
+    log_knowledge(project_id, data.get('source') or '手动', summary)
+    return jsonify({'message': '已记录到项目知识库'})
+
+
+@collab_routes_bp.route('/api/v1/project/<project_id>/knowledge/<entry_id>', methods=['DELETE'])
+def delete_knowledge(project_id, entry_id):
+    """删除一条知识。"""
+    user_id = _require_user_id()
+    if user_id is None:
+        return jsonify({'error': '未登录'}), 401
+    project = load_projects().get(project_id)
+    if project is None:
+        return jsonify({'error': '项目不存在'}), 404
+    if not _is_member(project, user_id):
+        return jsonify({'error': '无权限'}), 403
+    entries = [e for e in get_knowledge(project_id, 200) if e.get('id') != entry_id]
+    db.set(f'knowledge:{project_id}', entries)
+    return jsonify({'message': '已删除'})

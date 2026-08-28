@@ -410,6 +410,36 @@ def _can_access_model(model, user_id, model_id):
     return project is not None and user_id in project.permissions
 
 
+def get_knowledge(project_id, limit=30):
+    """读取项目知识库（历次 AI 操作的关键结论）。"""
+    return (db.get(f'knowledge:{project_id}', []) or [])[:limit]
+
+
+def log_knowledge(project_id, source, summary):
+    """向项目知识库追加一条关键结论（自动记录每次 AI 调用）。"""
+    if not summary:
+        return
+    entries = db.get(f'knowledge:{project_id}', []) or []
+    entries.insert(0, {
+        'id': 'k' + secrets.token_hex(4),
+        'project_id': project_id,
+        'source': str(source)[:20],
+        'summary': str(summary)[:500],
+        'created_at': datetime.datetime.now().isoformat(),
+    })
+    db.set(f'knowledge:{project_id}', entries[:100])
+
+
+def build_knowledge_context(project_id, limit=8):
+    """把项目知识库拼成提示词前缀，注入到后续 AI 调用，实现个性化/上下文感知。"""
+    entries = get_knowledge(project_id, limit)
+    if not entries:
+        return ''
+    lines = [f"- [{e['created_at'][:16]}] {e['source']}: {e['summary']}" for e in entries]
+    return ('【项目知识库 · 历次 AI 操作的关键结论，供你参考，生成/诊断时结合这些背景】\n'
+            + '\n'.join(lines) + '\n\n')
+
+
 def _ai_parse_json_response(content):
     """从LLM返回内容中提取JSON对象（容忍markdown代码围栏/前后杂文本）。"""
     content = content.strip()

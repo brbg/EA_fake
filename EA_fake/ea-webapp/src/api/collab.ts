@@ -21,6 +21,12 @@ export const collabApi = {
     post(`/api/v1/project/${projectId}/proposals/${proposalId}/approve`),
   rejectProposal: (projectId: string, proposalId: string) =>
     post(`/api/v1/project/${projectId}/proposals/${proposalId}/reject`),
+  // 项目知识库（AI 每次调用自动记录关键结论）
+  knowledge: (projectId: string) => get(`/api/v1/project/${projectId}/knowledge`),
+  addKnowledge: (projectId: string, body: { summary: string; source?: string }) =>
+    post(`/api/v1/project/${projectId}/knowledge`, body),
+  deleteKnowledge: (projectId: string, entryId: string) =>
+    del(`/api/v1/project/${projectId}/knowledge/${entryId}`),
 }
 
 export default collabApi
