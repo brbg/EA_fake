@@ -4051,6 +4051,8 @@ const initSocket = () => {
     if (d?.project_id === currentModelId.value) {
       showCollabToast(`你的变更「${d?.title || ''}」已获批准`)
       loadProposals()
+      // 批准后协作者立即重载模型，看到应用后的结果
+      loadModelFromServer(currentModelId.value)
     }
   })
   socket.on('proposal_rejected', (d: any) => {
@@ -4081,7 +4083,8 @@ const leaveProjectRoom = (projectId: string) => {
 }
 
 const broadcastElementUpdate = () => {
-  if (!socket || !currentModelId.value || !collabEnabled.value) return
+  // 打开项目即在房间：保存后始终广播，让协作者实时看到（不依赖是否进入协作模式）
+  if (!socket || !currentModelId.value) return
   socket.emit('element_update', { project_id: currentModelId.value, session_id: sessionStorage.getItem('sessionId') || '' })
 }
 
