@@ -24,6 +24,11 @@ def _broadcast_users(project_id):
                   room=project_id, namespace='/')
 
 
+def emit_proposal(project_id, event, payload):
+    """向项目房间广播协作变更事件（proposal_submitted / approved / rejected）。"""
+    socketio.emit(event, {'project_id': project_id, **payload}, room=project_id, namespace='/')
+
+
 def kick_user(project_id, user_id):
     """把某用户从项目的协作房间移除并通知其被移出（被 owner 取消 / 主动退出时调用）。
 

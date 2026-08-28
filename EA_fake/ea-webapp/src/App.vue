@@ -3414,6 +3414,11 @@ const saveModel = async () => {
     alert('请先创建或选择一个项目')
     return
   }
+  // 协作者：不能直接保存，走「提交变更申请」（owner 审批后落库）
+  if (currentModelRole.value === 'editor') {
+    showProposalModal.value = true
+    return
+  }
   try {
     const { ok, status, data } = await modelApi.save(currentModelId.value, {
       elements,
@@ -3475,14 +3480,17 @@ const aiReviewArchimate = async () => {
   showReviewModal.value = true
   try {
     // 评审读的是后端保存的模型，先把 ArchiMate 画布当前状态同步过去
-    await fetch(`/api/models/${currentModelId.value}`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Session-Id': sessionStorage.getItem('sessionId') || ''
-      },
-      body: JSON.stringify({ archimateElements, archimateConnections })
-    })
+    // 协作者不能直接保存，跳过同步（AI 读 owner 已保存的最新状态）
+    if (currentModelRole.value !== 'editor') {
+      await fetch(`/api/models/${currentModelId.value}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': sessionStorage.getItem('sessionId') || ''
+        },
+        body: JSON.stringify({ archimateElements, archimateConnections })
+      })
+    }
     const { ok, status, data } = await aiApi.reviewArchimate(currentModelId.value)
     if (!ok || data?.error) {
       reviewError.value = data?.error || `评审失败: HTTP ${status}`
@@ -3765,6 +3773,25 @@ const initSocket = () => {
     }
     loadModels()
   })
+  // 协作变更申请通知（owner 收新申请 / 协作者收审批结果）
+  socket.on('proposal_submitted', (d: any) => {
+    if (d?.project_id === currentModelId.value) {
+      showCollabToast(`${d?.submitter || '协作者'} 提交了变更申请「${d?.title || ''}」`)
+      if (currentModelRole.value === 'owner') loadProposals()
+    }
+  })
+  socket.on('proposal_approved', (d: any) => {
+    if (d?.project_id === currentModelId.value) {
+      showCollabToast(`你的变更「${d?.title || ''}」已获批准`)
+      loadProposals()
+    }
+  })
+  socket.on('proposal_rejected', (d: any) => {
+    if (d?.project_id === currentModelId.value) {
+      showCollabToast(`你的变更「${d?.title || ''}」已被拒绝`)
+      loadProposals()
+    }
+  })
   socket.on('disconnect', () => {
     joinedProjectId = ''
     onlineUsers.value = []
@@ -3804,6 +3831,73 @@ const joinedCollabModels = computed(() => models.value.filter(m => m.role === 'e
 // 我拥有的项目（可管理协作者）
 const ownedCollabModels = computed(() => models.value.filter(m => !m.role || m.role === 'owner'))
 const joinedProjectIds = computed(() => new Set(models.value.map(m => m.id)))
+
+// === 协作变更申请（类 GitHub PR：协作者提交 → owner 审批）===
+const currentModelRole = computed(() => {
+  const m = models.value.find((x: any) => x.id === currentModelId.value)
+  return m ? (m.role || 'owner') : null
+})
+const showProposalModal = ref(false)
+const proposalTitle = ref('')
+const proposalList = ref<Array<{ id: string; submitter_name: string; title: string; status: string; created_at: string; applied_at?: string | null }>>([])
+const proposalLoading = ref(false)
+
+const loadProposals = async () => {
+  if (!currentModelId.value) return
+  proposalLoading.value = true
+  try {
+    const { ok, data } = await collabApi.proposals(currentModelId.value)
+    proposalList.value = ok && Array.isArray(data?.proposals) ? data.proposals : []
+  } catch {
+    proposalList.value = []
+  } finally {
+    proposalLoading.value = false
+  }
+}
+
+const submitProposalReq = async () => {
+  if (!currentModelId.value) return
+  const title = proposalTitle.value.trim() || '模型变更'
+  const { ok, status, data } = await collabApi.submitProposal(currentModelId.value, {
+    title,
+    data: { elements, connections, archimateElements, archimateConnections, erEntities, erRelations }
+  })
+  showProposalModal.value = false
+  proposalTitle.value = ''
+  if (!ok) {
+    showCollabToast(data?.error || `提交失败: HTTP ${status}`)
+    return
+  }
+  showCollabToast('变更申请已提交，等待项目拥有者审批')
+}
+
+const approveProposalReq = async (proposalId: string) => {
+  if (!currentModelId.value || !confirm('批准后将把该变更写入项目，确定？')) return
+  const { ok, status, data } = await collabApi.approveProposal(currentModelId.value, proposalId)
+  if (!ok) {
+    showCollabToast(data?.error || `批准失败: HTTP ${status}`)
+    return
+  }
+  showCollabToast('已批准并应用该变更')
+  await loadProposals()
+  await loadModelFromServer(currentModelId.value)
+}
+
+const rejectProposalReq = async (proposalId: string) => {
+  if (!currentModelId.value || !confirm('确定拒绝该变更申请？')) return
+  const { ok, status, data } = await collabApi.rejectProposal(currentModelId.value, proposalId)
+  if (!ok) {
+    showCollabToast(data?.error || `拒绝失败: HTTP ${status}`)
+    return
+  }
+  showCollabToast('已拒绝该变更申请')
+  await loadProposals()
+}
+
+const openCollabModal = () => {
+  showCollabModal.value = true
+  loadProposals()
+}
 
 const copyMyId = async () => {
   const id = authUser.value?.id
@@ -4261,7 +4355,7 @@ onMounted(() => {
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
         <h3 class="card-title" style="margin: 0;">项目列表</h3>
         <div style="display: flex; gap: 10px;">
-          <button class="btn btn-outline" @click="showCollabModal = true" title="加入 / 管理协作">
+          <button class="btn btn-outline" @click="openCollabModal" title="加入 / 管理协作">
             <i class="fas fa-users"></i> 协作
           </button>
           <button class="btn btn-primary" @click="showCreateModal = true">
@@ -5021,6 +5115,54 @@ onMounted(() => {
           </div>
         </div>
         <p v-else style="color: #999; font-size: 12px;">暂无项目。</p>
+      </div>
+
+      <!-- 4. 当前项目协作变更（owner 审批） -->
+      <div style="margin-top: 18px; border-top: 1px solid #eee; padding-top: 14px;">
+        <h4 style="margin: 0 0 10px;">当前项目协作变更
+          <span v-if="currentModelName" style="font-weight: 400; color: #999;">（{{ currentModelName }}）</span>
+        </h4>
+        <p v-if="!currentModelId" style="color: #999; font-size: 12px;">先打开一个项目，可查看 / 审批协作者的变更申请。</p>
+        <template v-else>
+          <p v-if="currentModelRole === 'owner'" style="color: #999; font-size: 12px;">协作者不能直接保存，他们的变更需你审批后才写入项目。</p>
+          <p v-if="currentModelRole === 'editor'" style="color: #999; font-size: 12px;">你是协作者，点「保存」会提交变更申请，拥有者批准后才生效。</p>
+          <div v-if="proposalLoading" style="color: #999; font-size: 12px;">加载中…</div>
+          <div v-else-if="proposalList.length">
+            <div v-for="p in proposalList" :key="p.id" class="collab-result-row">
+              <div>
+                <strong>{{ p.title }}</strong>
+                <div style="font-size: 12px; color: #999;">
+                  {{ p.submitter_name }} · {{ (p.created_at || '').replace('T', ' ').slice(0, 16) }}
+                  · <span :style="{ color: p.status === 'pending' ? '#d97706' : (p.status === 'approved' ? '#16a34a' : '#dc2626') }">
+                      {{ p.status === 'pending' ? '待审批' : (p.status === 'approved' ? '已批准' : '已拒绝') }}
+                    </span>
+                </div>
+              </div>
+              <div v-if="currentModelRole === 'owner' && p.status === 'pending'" style="display: flex; gap: 6px;">
+                <button class="btn btn-primary" style="padding: 4px 12px; font-size: 12px;" @click="approveProposalReq(p.id)">批准</button>
+                <button class="btn btn-outline" style="padding: 4px 12px; font-size: 12px; color: #e74c3c;" @click="rejectProposalReq(p.id)">拒绝</button>
+              </div>
+            </div>
+          </div>
+          <p v-else style="color: #999; font-size: 12px;">暂无变更申请。</p>
+        </template>
+      </div>
+    </div>
+  </div>
+
+  <!-- 提交变更申请弹窗（协作者保存时弹出） -->
+  <div v-if="showProposalModal" class="modal-overlay" @click.self="showProposalModal = false">
+    <div class="modal-content" style="max-width: 420px;">
+      <span class="modal-close" @click="showProposalModal = false">&times;</span>
+      <h3 style="margin-bottom: 16px;"><i class="fas fa-code-branch" style="color: #1f5eff; margin-right: 6px;"></i>提交变更申请</h3>
+      <p style="font-size: 12px; color: #999; margin: 0 0 12px;">你是协作者，变更需项目拥有者审批后才保存到项目。</p>
+      <div class="form-group">
+        <label>变更说明</label>
+        <input v-model="proposalTitle" placeholder="如：新增用户模块" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:8px; font-size:14px;" />
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 10px;">
+        <button class="btn btn-outline" @click="showProposalModal = false">取消</button>
+        <button class="btn btn-primary" @click="submitProposalReq">提交申请</button>
       </div>
     </div>
   </div>

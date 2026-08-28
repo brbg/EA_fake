@@ -1,13 +1,18 @@
-"""协作 HTTP API：按账户 id 加入他人项目、查看/取消/退出协作者。
+"""协作 HTTP API：按账户 id 加入他人项目、查看/取消/退出协作者、协作变更申请审批。
 
 安全说明：加入即把当前用户加为目标项目的 editor 成员。任何登录用户知道对方
 6 位账户 id 即可加入，适合本地/演示场景的协作共享；生产环境应加 owner 批准或邀请制。
+协作者不能直接保存模型，需提交「变更申请」由项目拥有者审批后落库（类 GitHub PR）。
 """
-from flask import Blueprint, jsonify
+import db
+import datetime
+import uuid
+from flask import Blueprint, request, jsonify
 from core import (
     _require_user_id, _find_user_by_id, load_users, load_projects, save_project,
+    load_model_from_cache, save_model,
 )
-from collab import kick_user
+from collab import kick_user, emit_proposal
 
 collab_routes_bp = Blueprint('collab', __name__)
 
@@ -108,3 +113,137 @@ def leave_project(project_id):
         save_project(project)
         kick_user(project_id, user_id)
     return jsonify({'message': '已退出协作'})
+
+
+# === 协作变更申请（类 GitHub PR：协作者提交 → owner 审批后落库）===
+
+def _load_proposals(project_id):
+    return db.get(f'collab_proposals:{project_id}', []) or []
+
+
+def _save_proposals(project_id, proposals):
+    db.set(f'collab_proposals:{project_id}', proposals)
+
+
+def _apply_model_data(model, data):
+    """把变更快照写入模型对象（与 update_model 一致）。"""
+    if not isinstance(data, dict):
+        return
+    if 'elements' in data:
+        model.elements = data['elements']
+    if 'connections' in data:
+        model.relationships = data['connections']
+    if 'archimateElements' in data:
+        model.archimate_elements = data['archimateElements']
+    if 'archimateConnections' in data:
+        model.archimate_connections = data['archimateConnections']
+    if 'erEntities' in data:
+        model.er_entities = data['erEntities']
+    if 'erRelations' in data:
+        model.er_relations = data['erRelations']
+
+
+@collab_routes_bp.route('/api/v1/project/<project_id>/proposals', methods=['GET'])
+def list_proposals(project_id):
+    """列出项目的变更申请（owner 或成员可查；不含 data 快照，保持列表轻量）。"""
+    user_id = _require_user_id()
+    if user_id is None:
+        return jsonify({'error': '未登录'}), 401
+    project = load_projects().get(project_id)
+    if project is None:
+        return jsonify({'error': '项目不存在'}), 404
+    if not _is_member(project, user_id):
+        return jsonify({'error': '无权限查看该项目'}), 403
+    proposals = _load_proposals(project_id)
+    return jsonify({'proposals': [
+        {k: p[k] for k in ('id', 'project_id', 'submitter_id', 'submitter_name',
+                           'title', 'status', 'created_at', 'applied_at')}
+        for p in proposals
+    ]})
+
+
+@collab_routes_bp.route('/api/v1/project/<project_id>/proposals', methods=['POST'])
+def submit_proposal(project_id):
+    """协作者提交变更申请（携带模型快照；owner 不能提交，可直接保存）。"""
+    user_id = _require_user_id()
+    if user_id is None:
+        return jsonify({'error': '未登录'}), 401
+    project = load_projects().get(project_id)
+    if project is None:
+        return jsonify({'error': '项目不存在'}), 404
+    if project.owner_id == user_id:
+        return jsonify({'error': '你是项目拥有者，可直接保存，无需提交变更申请'}), 400
+    if user_id not in project.permissions:
+        return jsonify({'error': '你不是本项目协作者'}), 403
+    data = request.json or {}
+    title = (data.get('title') or '变更申请').strip()[:100]
+    proposal = {
+        'id': str(uuid.uuid4())[:8],
+        'project_id': project_id,
+        'submitter_id': user_id,
+        'submitter_name': _username_of(user_id),
+        'title': title,
+        'data': data.get('data') or {},
+        'status': 'pending',
+        'created_at': datetime.datetime.now().isoformat(),
+        'applied_at': None,
+    }
+    proposals = _load_proposals(project_id)
+    proposals.insert(0, proposal)
+    _save_proposals(project_id, proposals)
+    emit_proposal(project_id, 'proposal_submitted',
+                  {'submitter': proposal['submitter_name'], 'title': title})
+    return jsonify({'message': '变更申请已提交，等待项目拥有者审批',
+                    'proposal': {'id': proposal['id'], 'status': proposal['status']}})
+
+
+@collab_routes_bp.route('/api/v1/project/<project_id>/proposals/<proposal_id>/approve', methods=['POST'])
+def approve_proposal(project_id, proposal_id):
+    """项目拥有者批准变更：把快照写入模型，标记已批准。"""
+    user_id = _require_user_id()
+    if user_id is None:
+        return jsonify({'error': '未登录'}), 401
+    project = load_projects().get(project_id)
+    if project is None:
+        return jsonify({'error': '项目不存在'}), 404
+    if project.owner_id != user_id:
+        return jsonify({'error': '只有项目拥有者可以审批变更'}), 403
+    proposals = _load_proposals(project_id)
+    p = next((x for x in proposals if x['id'] == proposal_id), None)
+    if p is None:
+        return jsonify({'error': '变更申请不存在'}), 404
+    if p['status'] != 'pending':
+        return jsonify({'error': '该申请已处理'}), 400
+    model = load_model_from_cache(project_id)
+    if model is None:
+        return jsonify({'error': '模型不存在'}), 404
+    _apply_model_data(model, p.get('data') or {})
+    save_model(project_id, model)
+    p['status'] = 'approved'
+    p['applied_at'] = datetime.datetime.now().isoformat()
+    _save_proposals(project_id, proposals)
+    emit_proposal(project_id, 'proposal_approved', {'title': p['title']})
+    return jsonify({'message': '已批准并应用该变更'})
+
+
+@collab_routes_bp.route('/api/v1/project/<project_id>/proposals/<proposal_id>/reject', methods=['POST'])
+def reject_proposal(project_id, proposal_id):
+    """项目拥有者拒绝变更。"""
+    user_id = _require_user_id()
+    if user_id is None:
+        return jsonify({'error': '未登录'}), 401
+    project = load_projects().get(project_id)
+    if project is None:
+        return jsonify({'error': '项目不存在'}), 404
+    if project.owner_id != user_id:
+        return jsonify({'error': '只有项目拥有者可以审批变更'}), 403
+    proposals = _load_proposals(project_id)
+    p = next((x for x in proposals if x['id'] == proposal_id), None)
+    if p is None:
+        return jsonify({'error': '变更申请不存在'}), 404
+    if p['status'] != 'pending':
+        return jsonify({'error': '该申请已处理'}), 400
+    p['status'] = 'rejected'
+    _save_proposals(project_id, proposals)
+    emit_proposal(project_id, 'proposal_rejected', {'title': p['title']})
+    return jsonify({'message': '已拒绝该变更申请'})

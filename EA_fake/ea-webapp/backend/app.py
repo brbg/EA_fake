@@ -453,6 +453,11 @@ def update_model(model_id):
     if not _can_access_model(model, user_id, model_id):
         return jsonify({'error': '模型不存在'}), 404
 
+    # 协作者不能直接保存：需通过「变更申请」由 owner 审批后落库（类 GitHub PR）
+    project = load_projects().get(model_id)
+    if project is not None and project.owner_id != user_id and user_id in project.permissions:
+        return jsonify({'error': '协作者不能直接保存，请通过「提交变更申请」保存（需项目拥有者审批）'}), 403
+
     if 'elements' in data:
         model.elements = data['elements']
 

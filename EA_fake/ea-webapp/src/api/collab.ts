@@ -13,6 +13,14 @@ export const collabApi = {
     del(`/api/v1/project/${projectId}/collaborators/${userId}`),
   // 协作者主动退出
   leave: (projectId: string) => post(`/api/v1/project/${projectId}/leave`),
+  // 协作变更申请（类 GitHub PR：协作者提交 → owner 审批）
+  proposals: (projectId: string) => get(`/api/v1/project/${projectId}/proposals`),
+  submitProposal: (projectId: string, body: { title: string; data: Record<string, unknown> }) =>
+    post(`/api/v1/project/${projectId}/proposals`, body),
+  approveProposal: (projectId: string, proposalId: string) =>
+    post(`/api/v1/project/${projectId}/proposals/${proposalId}/approve`),
+  rejectProposal: (projectId: string, proposalId: string) =>
+    post(`/api/v1/project/${projectId}/proposals/${proposalId}/reject`),
 }
 
 export default collabApi
