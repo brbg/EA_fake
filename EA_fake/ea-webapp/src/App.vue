@@ -875,10 +875,13 @@ const openModel = async (model: Model) => {
   activeTab.value = 'uml'
   currentModelId.value = model.id
   currentModelName.value = model.name
-  // 协作者打开他人项目：自动进入协作模式（owner 打开自己的项目不自动进）
+  // 打开项目时按角色决定协作模式：协作者项目自动进入；切到自己项目自动退出
   if (model.role === 'editor') {
     collabEnabled.value = true
     if (!socket) initSocket()
+  } else {
+    collabEnabled.value = false
+    onlineUsers.value = []
   }
   joinProjectRoom()
   await loadModelFromServer(model.id)
