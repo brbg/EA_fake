@@ -3606,6 +3606,11 @@ const saveModel = async () => {
     })
     if (!ok) {
       console.error('Save failed:', status, data)
+      // 防御：即使角色判断没走 editor 分支，只要后端拒绝协作者直存就转「提交变更申请」
+      if (data?.error && String(data.error).includes('协作者')) {
+        showProposalModal.value = true
+        return
+      }
       showToast(data?.error || `保存失败: HTTP ${status}`, 'error')
       return
     }
@@ -3997,7 +4002,7 @@ const leaveProjectRoom = (projectId: string) => {
 }
 
 const broadcastElementUpdate = () => {
-  if (!socket || !currentModelId.value) return
+  if (!socket || !currentModelId.value || !collabEnabled.value) return
   socket.emit('element_update', { project_id: currentModelId.value, session_id: sessionStorage.getItem('sessionId') || '' })
 }
 
@@ -4221,7 +4226,8 @@ const resizeAllCanvases = () => {
 window.addEventListener('resize', resizeAllCanvases)
 
 onMounted(() => {
-  // socket 协作改为懒连接：进入协作模式时才 initSocket（见 toggleCollab）
+  // socket 始终连接，保证协作变更通知（提交/审批）可达；在线用户徽标仍只在协作模式显示
+  initSocket()
   window.addEventListener('keydown', handleKeyboardShortcut)
   checkAuth()
 })
