@@ -643,6 +643,7 @@ const projectContext = computed<ProjectContext>(() => {
     name: el.name,
     type: el.type,
     attributes: el.attributes || [],
+    methods: el.methods || [],
     x: el.x,
     y: el.y,
     width: el.width,
@@ -1661,13 +1662,40 @@ const drawElement = (elem: any) => {
   ctx.textAlign = 'center'
   ctx.fillText(elem.name, elem.x + elem.width / 2, elem.y + 17)
   
+  // 三段式类图：名称栏(25) + 属性区 + 方法区（中间横线分隔）
+  const attrs = elem.attributes || []
+  const methods = elem.methods || []
+  const lineH = 14
+  const attrH = Math.max(1, attrs.length) * lineH
+  const methH = methods.length * lineH
+  const totalH = 25 + 10 + attrH + (methods.length ? 7 + methH : 0) + 8
+  elem.height = totalH
+
   ctx.fillStyle = '#333'
   ctx.font = '11px Arial'
   ctx.textAlign = 'left'
   let y = elem.y + 35
   ;(elem.attributes || []).forEach((attr: string) => {
     ctx!.fillText(attr, elem.x + 8, y)
-    y += 14
+    y += lineH
+  })
+
+  // 属性/方法分隔线
+  if (methods.length) {
+    const divY = elem.y + 25 + 10 + attrH
+    ctx.strokeStyle = '#ddd'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.moveTo(elem.x, divY)
+    ctx.lineTo(elem.x + elem.width, divY)
+    ctx.stroke()
+  }
+
+  // 方法区
+  y = elem.y + 25 + 10 + attrH + (methods.length ? 7 : 0)
+  methods.forEach((m: string) => {
+    ctx!.fillText(m, elem.x + 8, y)
+    y += lineH
   })
 }
 
@@ -1851,7 +1879,8 @@ const handleCanvasClick = (e: MouseEvent) => {
       height: 100,
       color: '#ffffff',
       headerColor: '#1f5eff',
-      attributes: ['- name: String', '- age: int']
+      attributes: ['- name: String', '- age: int'],
+      methods: ['+ method(): void']
     })
     redraw()
     updateStats()
@@ -1867,7 +1896,8 @@ const handleCanvasClick = (e: MouseEvent) => {
       height: 80,
       color: '#e8f5e9',
       headerColor: '#4caf50',
-      attributes: ['+ method(): void']
+      attributes: [],
+      methods: ['+ method(): void']
     })
     redraw()
     updateStats()
@@ -3586,6 +3616,19 @@ const removeAttribute = (index: number) => {
   }
 }
 
+const addMethod = () => {
+  if (editingElement.value) {
+    if (!editingElement.value.methods) editingElement.value.methods = []
+    editingElement.value.methods.push('+ newMethod(): void')
+  }
+}
+
+const removeMethod = (index: number) => {
+  if (editingElement.value && editingElement.value.methods && editingElement.value.methods.length > 0) {
+    editingElement.value.methods.splice(index, 1)
+  }
+}
+
 watch(activeTab, (newTab) => {
   updateStats()
   if (newTab === 'uml') {
@@ -4960,6 +5003,18 @@ onMounted(() => {
         </div>
         <button class="btn btn-outline" style="margin-top: 10px;" @click="addAttribute">
           <i class="fas fa-plus"></i> 添加属性
+        </button>
+      </div>
+      <div class="form-group">
+        <label>方法列表</label>
+        <div v-for="(_, index) in (editingElement.methods || [])" :key="'m' + index" class="attr-row">
+          <input v-model="editingElement.methods[index]" />
+          <button class="btn-delete" style="margin-left: 8px;" @click="removeMethod(index)">
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+        <button class="btn btn-outline" style="margin-top: 10px;" @click="addMethod">
+          <i class="fas fa-plus"></i> 添加方法
         </button>
       </div>
       <div style="display: flex; justify-content: flex-end; gap: 10px;">
