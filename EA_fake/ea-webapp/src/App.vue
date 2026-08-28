@@ -4131,6 +4131,12 @@ const collabExpanded = ref('')
 const joinedCollabModels = computed(() => models.value.filter(m => m.role === 'editor'))
 // 项目管理列表只显示自己拥有的项目（协作项目走右上角「我协作的项目」）
 const ownedModels = computed(() => models.value.filter(m => !m.role || m.role === 'owner'))
+// 是否已配对：加入了他人的项目，或自己打开的项目有协作者 → 隐藏「我需要协作/加入协作」
+const hasActiveCollab = computed(() => {
+  if (joinedCollabModels.value.length > 0) return true
+  if (headerCollabMembers.value && headerCollabMembers.value.members.length > 0) return true
+  return false
+})
 // 我拥有的项目（可管理协作者）
 const ownedCollabModels = computed(() => models.value.filter(m => !m.role || m.role === 'owner'))
 const joinedProjectIds = computed(() => new Set(models.value.map(m => m.id)))
@@ -4401,33 +4407,35 @@ onMounted(() => {
           </button>
           <!-- 协作状态下拉 -->
           <div v-if="showCollabDropdown" class="header-collab-dropdown">
-            <!-- 协作中枢：不需要打开项目 -->
-            <div class="dropdown-hub-title">协作</div>
-            <div class="dropdown-hub-item" @click="showMyId = !showMyId">
-              <i class="fas fa-qrcode"></i> 我需要协作
-            </div>
-            <div v-if="showMyId" class="hub-box">
-              <div>我的账户 ID：<b style="color:#1f5eff;">{{ authUser?.id }}</b>
-                <button class="kick-btn" style="margin-left:6px;" @click="copyMyId">复制</button>
+            <!-- 协作中枢：不需要打开项目（已配对后隐藏「我需要协作/加入协作」） -->
+            <template v-if="!hasActiveCollab">
+              <div class="dropdown-hub-title">协作</div>
+              <div class="dropdown-hub-item" @click="showMyId = !showMyId">
+                <i class="fas fa-qrcode"></i> 我需要协作
               </div>
-              <div class="dropdown-hint">把这个 ID 发给对方，对方在「加入协作」输入即可加入你的项目。</div>
-            </div>
-            <div class="dropdown-hub-item" @click="showJoinInput = !showJoinInput">
-              <i class="fas fa-user-plus"></i> 加入协作
-            </div>
-            <div v-if="showJoinInput" class="hub-box">
-              <div style="display:flex; gap:6px;">
-                <input v-model="collabSearchUserId" placeholder="输入对方 6 位账户 ID" @keyup.enter="searchCollabProjects" style="flex:1; padding:8px; border:1px solid #ddd; border-radius:8px; font-size:13px;" />
-                <button class="btn btn-primary" style="padding:6px 12px; font-size:12px;" @click="searchCollabProjects">查找</button>
+              <div v-if="showMyId" class="hub-box">
+                <div>我的账户 ID：<b style="color:#1f5eff;">{{ authUser?.id }}</b>
+                  <button class="kick-btn" style="margin-left:6px;" @click="copyMyId">复制</button>
+                </div>
+                <div class="dropdown-hint">把这个 ID 发给对方，对方在「加入协作」输入即可加入你的项目。</div>
               </div>
-              <div v-if="collabSearchMsg" class="dropdown-hint">{{ collabSearchMsg }}</div>
-              <div v-if="collabSearchResults.length" class="dropdown-list">
-                <div v-for="p in collabSearchResults" :key="p.id" class="dropdown-user">
-                  <span class="user-name">{{ p.name }} <small style="color:#999;">{{ p.id }}</small></span>
-                  <button class="kick-btn" :disabled="joinedProjectIds.has(p.id)" @click="joinCollabProject(p.id)">{{ joinedProjectIds.has(p.id) ? '已加入' : '加入' }}</button>
+              <div class="dropdown-hub-item" @click="showJoinInput = !showJoinInput">
+                <i class="fas fa-user-plus"></i> 加入协作
+              </div>
+              <div v-if="showJoinInput" class="hub-box">
+                <div style="display:flex; gap:6px;">
+                  <input v-model="collabSearchUserId" placeholder="输入对方 6 位账户 ID" @keyup.enter="searchCollabProjects" style="flex:1; padding:8px; border:1px solid #ddd; border-radius:8px; font-size:13px;" />
+                  <button class="btn btn-primary" style="padding:6px 12px; font-size:12px;" @click="searchCollabProjects">查找</button>
+                </div>
+                <div v-if="collabSearchMsg" class="dropdown-hint">{{ collabSearchMsg }}</div>
+                <div v-if="collabSearchResults.length" class="dropdown-list">
+                  <div v-for="p in collabSearchResults" :key="p.id" class="dropdown-user">
+                    <span class="user-name">{{ p.name }} <small style="color:#999;">{{ p.id }}</small></span>
+                    <button class="kick-btn" :disabled="joinedProjectIds.has(p.id)" @click="joinCollabProject(p.id)">{{ joinedProjectIds.has(p.id) ? '已加入' : '加入' }}</button>
+                  </div>
                 </div>
               </div>
-            </div>
+            </template>
             <div class="dropdown-hub-item" @click="showMyCollab = !showMyCollab">
               <i class="fas fa-folder-open"></i> 我协作的项目（{{ joinedCollabModels.length }}）
             </div>
