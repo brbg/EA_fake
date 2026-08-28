@@ -76,24 +76,29 @@ const onAuthenticated = (user: { username: string; email: string; role?: string;
 }
 
 const logout = async () => {
-  // 协作模式下退出账号：先提醒（owner 会结束协作并踢出所有协作者）
-  if (collabEnabled.value) {
-    const isOwner = currentModelRole.value === 'owner'
+  // 有协作（协作模式 / 加入了他人的项目 / 自己项目有协作者）→ 先提醒
+  const hasActiveCollab = collabEnabled.value || joinedCollabModels.value.length > 0 || hasOwnedCollab.value
+  if (hasActiveCollab) {
+    const isOwner = currentModelRole.value === 'owner' || hasOwnedCollab.value
     const msg = isOwner
-      ? '当前正在协作，退出账号会导致协作结束并踢出所有协作者，确定退出吗？'
-      : '当前正在协作模式，确定退出账号吗？'
+      ? '当前存在协作，退出账号会结束协作并踢出所有协作者，确定退出吗？'
+      : '当前正在协作，确定退出账号吗？'
     if (!confirm(msg)) return
-    // owner：踢出所有协作者（不二次确认）
-    if (isOwner && currentModelId.value) {
-      try {
-        const { data } = await collabApi.collaborators(currentModelId.value)
-        const members = data?.members || []
-        for (const m of members) {
-          if (m.user_id !== authUser.value?.id) {
-            await collabApi.revoke(currentModelId.value, m.user_id)
-          }
+    // owner：踢出所有自有项目里的协作者（不二次确认）
+    if (isOwner) {
+      for (const om of ownedModels.value) {
+        if ((om.collaborator_count || 0) > 0) {
+          try {
+            const { data } = await collabApi.collaborators(om.id)
+            const members = data?.members || []
+            for (const m of members) {
+              if (m.user_id !== authUser.value?.id) {
+                await collabApi.revoke(om.id, m.user_id)
+              }
+            }
+          } catch { /* 忽略踢出异常，仍执行退出 */ }
         }
-      } catch { /* 忽略踢出异常，仍执行退出 */ }
+      }
     }
     // 退出房间并关闭协作状态
     if (socket && currentModelId.value) {
@@ -193,6 +198,7 @@ interface Model {
   relationships_count: number
   views_count: number
   role?: string
+  collaborator_count?: number
 }
 
 const models = ref<Model[]>([])
@@ -4142,6 +4148,8 @@ const collabExpanded = ref('')
 const joinedCollabModels = computed(() => models.value.filter(m => m.role === 'editor'))
 // 项目管理列表只显示自己拥有的项目（协作项目走右上角「我协作的项目」）
 const ownedModels = computed(() => models.value.filter(m => !m.role || m.role === 'owner'))
+// 自己拥有的项目里是否有协作者（用于退出账号时判断是否结束协作）
+const hasOwnedCollab = computed(() => ownedModels.value.some(m => (m.collaborator_count || 0) > 0))
 // 能否邀请协作：需打开自己的项目（owner）；协作者在他人项目里不能邀请
 const canInviteCollab = computed(() => !!currentModelId.value && currentModelRole.value !== 'editor')
 const inviteLabel = computed(() => {

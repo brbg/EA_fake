@@ -438,7 +438,8 @@ def get_models():
             'relationships_count': len(model.relationships),
             'views_count': len(model.views),
             'version': model.version,
-            'role': role
+            'role': role,
+            'collaborator_count': len(project.members) if project else 0
         })
 
     # 也从 db 加载尚未缓存的模型
@@ -461,7 +462,8 @@ def get_models():
                     'relationships_count': len(data.get('relationships', [])),
                     'views_count': len(data.get('views', [])),
                     'version': data.get('version', '1.0.0'),
-                    'role': role
+                    'role': role,
+                    'collaborator_count': len(project.members) if project else 0
                 })
 
     return jsonify({'models': models_info})
