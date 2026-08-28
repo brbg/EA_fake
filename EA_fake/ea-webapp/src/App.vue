@@ -313,14 +313,18 @@ const showTour = ref(false)
 const tourStep = ref(0)
 const tourHighlightStyle = ref<Record<string, string>>({})
 const tourSteps = [
-  { target: '.header', tab: 'dashboard', title: '欢迎使用 👋', desc: '这是你的建模工作台。右上角是账号信息、帮助入口与退出；顶部是各个功能模块的导航。' },
-  { target: '[data-tab="projects"]', tab: 'projects', title: '项目管理', desc: '在这里创建或打开项目。每个项目是一套独立的模型，项目之间互不可见。' },
-  { target: '[data-tab="uml"]', tab: 'uml', title: 'UML 建模', desc: '用类图设计系统结构：在工具栏选图形再点画布添加，双击编辑，右键删除。' },
-  { target: '[data-tour="ai"]', tab: 'uml', title: 'AI 功能', desc: '画布顶部的「AI」按钮包含：校验、架构评审、元素分析、对话式编辑、从描述生成图。' },
-  { target: '[data-tab="code"]', tab: 'code', title: '代码生成', desc: '模型一键转代码、粘贴代码反推模型、AI 生成设计文档/报表。' },
-  { target: '[data-tab="ai"]', tab: 'ai', title: 'AI 助手', desc: '和 AI 对话提问，说「记住：xxx」会把内容存入项目记忆库。' },
-  { target: '[data-tab="dev"]', tab: 'dev', title: '研发管理', desc: '管理项目的需求、测试用例、缺陷与任务，支持 AI 一键生成。' },
-  { target: '', tab: '', title: '完成 🎉', desc: '你已经掌握了基本用法。点击下方「开始探索」进入工作台，随时可在右上角「帮助」里重新引导。' },
+  { target: '.header', tab: 'dashboard', title: '欢迎使用 👋', desc: '这是你的建模工作台。右上角是账号、帮助、退出与「协作」入口；顶部是功能模块导航。' },
+  { target: '[data-tab="projects"]', tab: 'projects', title: '项目管理', desc: '创建 / 打开项目，每个项目是一套独立模型；右上角「协作」可加入 / 管理协作项目。' },
+  { target: '[data-tab="uml"]', tab: 'uml', title: 'UML 建模', desc: '三段式类图（名称/属性/方法）自适应大小；连线可标注基数 1:1 / 1:N / M:N；自动防重叠布局。' },
+  { target: '[data-tour="pattern"]', tab: 'uml', title: '设计模式', desc: '23 种 GoF 设计模式一键插入；「AI 智能推荐」能分析当前架构推荐最合适的模式并可覆盖重写。' },
+  { target: '[data-tour="ai"]', tab: 'uml', title: 'AI 功能', desc: '「AI」包含：校验、架构评审、元素分析、对话式编辑、从描述生成图（一句话出图）。' },
+  { target: '[data-tour="tools"]', tab: 'uml', title: '实用工具', desc: '版本历史 / 一键回滚、需求→模型（粘贴需求 AI 出图）、项目知识库（AI 自动记录每次结论）。' },
+  { target: '[data-tour="health"]', tab: 'uml', title: '健康度', desc: 'AI 深度分析整个项目：评分 + 问题清单 + 改进建议，写代码前先给架构做个体检。' },
+  { target: '[data-tab="code"]', tab: 'code', title: '代码生成', desc: '模型一键转代码（Java/Python/TS/C#）；ER 转 MySQL 建表语句；粘贴代码反推模型；AI 生成文档。' },
+  { target: '[data-tour="collab"]', tab: 'uml', title: '实时协作', desc: '右上角「协作」：owner 发起邀请，协作者输 ID 直接加入当前项目；变更需 owner 审批（类 GitHub PR）。' },
+  { target: '[data-tab="ai"]', tab: 'ai', title: 'AI 助手', desc: '和 AI 对话，支持深度思考（推理模型）；说「记住：xxx」存入项目记忆库。' },
+  { target: '[data-tab="dev"]', tab: 'dev', title: '研发管理', desc: '需求、测试用例、缺陷、任务管理，支持 AI 一键生成与排期。' },
+  { target: '', tab: '', title: '完成 🎉', desc: '你已经掌握基本用法，随时可在右上角「帮助」里重新引导。' },
 ]
 const currentTourStep = computed(() => tourSteps[tourStep.value])
 const isLastTourStep = computed(() => tourStep.value >= tourSteps.length - 1)
@@ -4456,7 +4460,7 @@ onMounted(() => {
         </div>
       </div>
       <div class="header-right">
-        <div class="header-collab" style="position: relative;">
+        <div class="header-collab" data-tour="collab" style="position: relative;">
           <button
             class="btn-help collab-toggle"
             :class="{ active: collabEnabled }"
@@ -4552,7 +4556,7 @@ onMounted(() => {
     <div class="stats-row">
       <!-- 主页面显示项目数量 -->
       <template v-if="activeTab === 'projects' || activeTab === 'ai'">
-        <div class="stat-card">
+        <div class="stat-card stat-card-sm">
           <div class="stat-value">{{ stats.models }}</div>
           <div class="stat-label">项目模型</div>
         </div>
@@ -4605,16 +4609,16 @@ onMounted(() => {
     </div>
     <div class="ribbon-group">
       <div class="ribbon-group-label">设计</div>
-      <button class="toolbar-btn" @click="showPatternModal = true" title="插入 23 种设计模式模板">
+      <button class="toolbar-btn" data-tour="pattern" @click="showPatternModal = true" title="插入 23 种设计模式模板">
         <i class="fas fa-layer-group"></i> 设计模式
       </button>
     </div>
     <div class="ribbon-group">
-      <div class="ribbon-group-label">工具</div>
+      <div class="ribbon-group-label" data-tour="tools">工具</div>
       <button class="toolbar-btn" @click="showVersionModal = true; loadVersions()" title="模型版本历史 / 保存 / 一键恢复">
         <i class="fas fa-history"></i> 版本
       </button>
-      <button class="toolbar-btn" @click="openHealthModal" title="项目健康度体检（评分 + 问题 + 建议）">
+      <button class="toolbar-btn" data-tour="health" @click="openHealthModal" title="项目健康度体检（评分 + 问题 + 建议）">
         <i class="fas fa-heart-pulse"></i> 健康度
       </button>
       <button class="toolbar-btn" @click="openGenerateDiagram('uml')" title="粘贴需求文档，AI 自动生成模型">
