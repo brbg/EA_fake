@@ -4136,6 +4136,13 @@ const collabExpanded = ref('')
 const joinedCollabModels = computed(() => models.value.filter(m => m.role === 'editor'))
 // 项目管理列表只显示自己拥有的项目（协作项目走右上角「我协作的项目」）
 const ownedModels = computed(() => models.value.filter(m => !m.role || m.role === 'owner'))
+// 能否邀请协作：需打开自己的项目（owner）；协作者在他人项目里不能邀请
+const canInviteCollab = computed(() => !!currentModelId.value && currentModelRole.value !== 'editor')
+const inviteLabel = computed(() => {
+  if (!currentModelId.value) return '请先打开一个项目'
+  if (currentModelRole.value === 'editor') return '他人协作中'
+  return currentModelName.value || '当前项目'
+})
 // 我拥有的项目（可管理协作者）
 const ownedCollabModels = computed(() => models.value.filter(m => !m.role || m.role === 'owner'))
 const joinedProjectIds = computed(() => new Set(models.value.map(m => m.id)))
@@ -4457,16 +4464,17 @@ onMounted(() => {
               <div v-if="collabSearchMsg" class="dropdown-hint">{{ collabSearchMsg }}</div>
             </div>
 
-            <!-- 我需要协作：始终显示，未选项目时禁用 -->
-            <div class="dropdown-hub-item" :class="{ disabled: !currentModelId }" @click="currentModelId && (showMyId = !showMyId)">
-              <i class="fas fa-qrcode"></i> 我需要协作（{{ currentModelId ? currentModelName : '请先打开一个项目' }}）
+            <!-- 我需要协作：只有打开自己的项目(owner)才能邀请 -->
+            <div class="dropdown-hub-item" :class="{ disabled: !canInviteCollab }" @click="canInviteCollab && (showMyId = !showMyId)">
+              <i class="fas fa-qrcode"></i> 我需要协作（{{ inviteLabel }}）
             </div>
-            <div v-if="showMyId && currentModelId" class="hub-box">
+            <div v-if="showMyId && canInviteCollab" class="hub-box">
               <div>我的账户 ID：<b style="color:#1f5eff;">{{ authUser?.id }}</b>
                 <button class="kick-btn" style="margin-left:6px;" @click="copyMyId">复制</button>
               </div>
               <div class="dropdown-hint">让对方在「加入协作」输入此 ID，即可加入当前项目「{{ currentModelName }}」。</div>
             </div>
+            <div v-if="currentModelId && currentModelRole === 'editor'" class="dropdown-hint" style="margin-top:4px;">处于他人协作邀请中，无法邀请更多人协作。</div>
 
             <!-- 我协作的项目（协作项目从右上角进入） -->
             <div class="dropdown-hub-item" @click="showMyCollab = !showMyCollab">
