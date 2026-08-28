@@ -4448,18 +4448,16 @@ onMounted(() => {
               <div v-if="collabSearchMsg" class="dropdown-hint">{{ collabSearchMsg }}</div>
             </div>
 
-            <!-- 我需要协作：owner + 打开项目时 -->
-            <template v-if="currentModelId && currentModelRole === 'owner'">
-              <div class="dropdown-hub-item" @click="showMyId = !showMyId">
-                <i class="fas fa-qrcode"></i> 我需要协作（当前：{{ currentModelName }}）
+            <!-- 我需要协作：始终显示，未选项目时禁用 -->
+            <div class="dropdown-hub-item" :class="{ disabled: !currentModelId }" @click="currentModelId && (showMyId = !showMyId)">
+              <i class="fas fa-qrcode"></i> 我需要协作（{{ currentModelId ? currentModelName : '请先打开一个项目' }}）
+            </div>
+            <div v-if="showMyId && currentModelId" class="hub-box">
+              <div>我的账户 ID：<b style="color:#1f5eff;">{{ authUser?.id }}</b>
+                <button class="kick-btn" style="margin-left:6px;" @click="copyMyId">复制</button>
               </div>
-              <div v-if="showMyId" class="hub-box">
-                <div>我的账户 ID：<b style="color:#1f5eff;">{{ authUser?.id }}</b>
-                  <button class="kick-btn" style="margin-left:6px;" @click="copyMyId">复制</button>
-                </div>
-                <div class="dropdown-hint">让对方在「加入协作」输入此 ID，即可加入当前项目「{{ currentModelName }}」。</div>
-              </div>
-            </template>
+              <div class="dropdown-hint">让对方在「加入协作」输入此 ID，即可加入当前项目「{{ currentModelName }}」。</div>
+            </div>
 
             <!-- 我协作的项目（协作项目从右上角进入） -->
             <div class="dropdown-hub-item" @click="showMyCollab = !showMyCollab">
@@ -4474,9 +4472,6 @@ onMounted(() => {
               </div>
               <p v-else class="dropdown-hint">暂无，可先通过「加入协作」加入。</p>
             </div>
-
-            <!-- 无项目打开提示 -->
-            <div v-if="!currentModelId" class="dropdown-hint" style="margin-top:6px;">打开一个项目后可发起 / 管理协作。</div>
 
             <!-- 项目协作（打开项目时） -->
             <hr style="margin:10px 0; border:none; border-top:1px solid #eee;" />
@@ -6734,6 +6729,8 @@ onMounted(() => {
   font-size: 13px;
 }
 .dropdown-hub-item:hover { background: #f4f7ff; }
+.dropdown-hub-item.disabled { color: #bbb; cursor: not-allowed; }
+.dropdown-hub-item.disabled:hover { background: transparent; }
 .hub-box {
   padding: 8px 10px;
   border: 1px solid #e6ecff;
