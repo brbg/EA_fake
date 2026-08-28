@@ -2775,19 +2775,8 @@ const handleArchimateContextMenu = (e: MouseEvent) => {
 }
 
 const saveArchimateModel = async () => {
-  try {
-    const modelData = {
-      name: 'ArchiMate Model',
-      description: 'ArchiMate Enterprise Architecture',
-      elements: archimateElements,
-      connections: archimateConnections
-    }
-    showToast('ArchiMate 模型已保存到本地', 'success')
-    console.log('ArchiMate Model:', modelData)
-  } catch (e) {
-    console.error('Failed to save Archimate model:', e)
-    showToast('保存失败', 'error')
-  }
+  // 真保存：委托给统一的 saveModel（保存全部六组数据，协作者自动走变更申请）
+  await saveModel()
 }
 
 const exportArchimateImage = () => {
@@ -3296,19 +3285,8 @@ const handleErContextMenu = (e: MouseEvent) => {
 }
 
 const saveErModel = async () => {
-  try {
-    const modelData = {
-      name: 'ER Model',
-      description: 'Database Entity Relationship Model',
-      entities: erEntities,
-      relations: erRelations
-    }
-    showToast('ER 模型已保存到本地', 'success')
-    console.log('ER Model:', modelData)
-  } catch (e) {
-    console.error('Failed to save ER model:', e)
-    showToast('保存失败', 'error')
-  }
+  // 真保存：委托给统一的 saveModel（保存全部六组数据，协作者自动走变更申请）
+  await saveModel()
 }
 
 const exportErImage = () => {
