@@ -4684,7 +4684,6 @@ onMounted(() => {
         <button class="btn btn-primary" @click="showCreateModal = true">
           <i class="fas fa-plus"></i> 新建项目
         </button>
-        </div>
       </div>
 
       <div class="model-list">
