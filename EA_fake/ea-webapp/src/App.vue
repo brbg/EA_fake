@@ -5967,6 +5967,8 @@ onMounted(() => {
 
 /* 顶部导航栏 */
 .header {
+  position: relative;
+  z-index: 100;
   display: flex;
   align-items: center;
   justify-content: space-between;
