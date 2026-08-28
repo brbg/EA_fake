@@ -76,6 +76,32 @@ const onAuthenticated = (user: { username: string; email: string; role?: string;
 }
 
 const logout = async () => {
+  // 协作模式下退出账号：先提醒（owner 会结束协作并踢出所有协作者）
+  if (collabEnabled.value) {
+    const isOwner = currentModelRole.value === 'owner'
+    const msg = isOwner
+      ? '当前正在协作，退出账号会导致协作结束并踢出所有协作者，确定退出吗？'
+      : '当前正在协作模式，确定退出账号吗？'
+    if (!confirm(msg)) return
+    // owner：踢出所有协作者（不二次确认）
+    if (isOwner && currentModelId.value) {
+      try {
+        const { data } = await collabApi.collaborators(currentModelId.value)
+        const members = data?.members || []
+        for (const m of members) {
+          if (m.user_id !== authUser.value?.id) {
+            await collabApi.revoke(currentModelId.value, m.user_id)
+          }
+        }
+      } catch { /* 忽略踢出异常，仍执行退出 */ }
+    }
+    // 退出房间并关闭协作状态
+    if (socket && currentModelId.value) {
+      socket.emit('leave_project', { project_id: currentModelId.value, session_id: sessionStorage.getItem('sessionId') || '' })
+    }
+    collabEnabled.value = false
+    onlineUsers.value = []
+  }
   try {
     await authApi.logout()
   } catch (e) {
