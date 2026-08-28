@@ -854,6 +854,25 @@ const openModel = async (model: Model) => {
 const generateCode = async () => {
   const { language, framework, source, outputType } = codeConfig.value
 
+  // MySQL 语句：本地生成器直接出（AI 模板不支持该输出，避免绕 AI 兜底出错）
+  if (outputType === 'mysql') {
+    if (source === 'uml') {
+      if (elements.length === 0) {
+        generatedCode.value = '// 请先在UML建模页面创建类或接口'
+        return
+      }
+      generateUmlMysql()
+    } else {
+      if (erEntities.length === 0) {
+        generatedCode.value = '// 请先在数据建模页面创建实体'
+        return
+      }
+      generateErMysql()
+    }
+    generatedCode.value = erSqlResult.value
+    return
+  }
+
   // 优先 AI 语义级生成（AI 启用时），失败/未启用回退本地模板
   try {
     const aiCfg = await getAIConfig()
@@ -1766,6 +1785,27 @@ const drawConnection = (conn: any) => {
   }
   
   drawArrow(startX, startY, endX, endY, conn.type)
+
+  // 选中连线高亮（加粗蓝色覆盖线）
+  const isSel = selectedConnectionId.value === conn.id
+  if (isSel) {
+    ctx.strokeStyle = '#1f5eff'
+    ctx.lineWidth = 3
+    ctx.beginPath()
+    ctx.moveTo(startX, startY)
+    ctx.lineTo(endX, endY)
+    ctx.stroke()
+    ctx.lineWidth = 1
+  }
+
+  // 连线中点标注关系基数（1:1 / 1:N / M:N）
+  const labelMap: Record<string, string> = { oneToOne: '1:1', oneToMany: '1:N', manyToMany: 'M:N' }
+  const label = labelMap[conn.cardinality] || '1:N'
+  ctx.fillStyle = isSel ? '#1f5eff' : '#8b98ab'
+  ctx.font = '11px sans-serif'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(label, (startX + endX) / 2, (startY + endY) / 2 - 8)
 }
 
 const handleCanvasClick = (e: MouseEvent) => {
@@ -1865,7 +1905,16 @@ const handleMouseDown = (e: MouseEvent) => {
     }
   }
   
+  // 点击连线可选中，用于标注关系基数
+  const hitConn = hitTestConnection(x, y)
+  if (hitConn) {
+    selectedConnectionId.value = hitConn
+    redraw()
+    return
+  }
+
   selectedElement = null
+  selectedConnectionId.value = null
   // 点击空白取消选中后立即重绘，清除残留的高亮边框
   redraw()
 }
@@ -1900,8 +1949,11 @@ const handleMouseUp = (e: MouseEvent) => {
           id: nextEid(),
           type: selectedTool.value,
           startElement: connectStartElement.id,
-          endElement: elem.id
+          endElement: elem.id,
+          cardinality: 'oneToMany'
         })
+        // 画完自动选中该连线，可直接在上方工具栏标注基数
+        selectedConnectionId.value = connections[connections.length - 1].id
         break
       }
     }
@@ -1913,6 +1965,43 @@ const handleMouseUp = (e: MouseEvent) => {
   }
   
   isDragging = false
+}
+
+// === UML 连线基数标注（一对一 / 一对多 / 多对多）===
+const selectedConnectionId = ref<string | null>(null)
+// 点到线段距离（点击连线命中检测）
+const distToSegment = (px: number, py: number, x1: number, y1: number, x2: number, y2: number) => {
+  const dx = x2 - x1, dy = y2 - y1
+  const len2 = dx * dx + dy * dy
+  if (len2 === 0) return Math.hypot(px - x1, py - y1)
+  let t = ((px - x1) * dx + (py - y1) * dy) / len2
+  t = Math.max(0, Math.min(1, t))
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
+}
+const hitTestConnection = (x: number, y: number): string | null => {
+  for (let i = connections.length - 1; i >= 0; i--) {
+    const conn = connections[i]
+    const a = elements.find((e: any) => e.id === conn.startElement)
+    const b = elements.find((e: any) => e.id === conn.endElement)
+    if (!a || !b) continue
+    const x1 = a.x + a.width / 2, y1 = a.y + a.height / 2
+    const x2 = b.x + b.width / 2, y2 = b.y + b.height / 2
+    if (distToSegment(x, y, x1, y1, x2, y2) < 14) return conn.id
+  }
+  return null
+}
+const selConnCardinality = computed(() => {
+  const c = connections.find((cc: any) => cc.id === selectedConnectionId.value)
+  return c ? (c.cardinality || 'oneToMany') : null
+})
+const setConnCardinality = (card: string) => {
+  const c = connections.find((cc: any) => cc.id === selectedConnectionId.value)
+  if (c) {
+    saveUmlHistory()
+    c.cardinality = card
+    redraw()
+    updateStats()
+  }
 }
 
 const initCanvasEvents = () => {
@@ -3128,6 +3217,134 @@ const generateErSql = () => {
   })
 }
 
+// === MySQL 语句生成（UML 类图 / ER 模型 → MySQL DDL）===
+const mysqlTypeMap: Record<string, string> = {
+  string: 'VARCHAR(255)', varchar: 'VARCHAR(255)', char: 'CHAR(50)',
+  int: 'INT', integer: 'INT', bigint: 'BIGINT', long: 'BIGINT', smallint: 'SMALLINT',
+  decimal: 'DECIMAL(10,2)', double: 'DOUBLE', float: 'FLOAT', number: 'DECIMAL(10,2)',
+  boolean: 'TINYINT(1)', bool: 'TINYINT(1)',
+  date: 'DATE', datetime: 'DATETIME', timestamp: 'TIMESTAMP', time: 'TIME',
+  text: 'TEXT', blob: 'BLOB', json: 'JSON'
+}
+const toMysqlType = (t: string): string => {
+  const s = (t || '').trim()
+  if (!s) return 'VARCHAR(255)'
+  const lower = s.toLowerCase()
+  if (mysqlTypeMap[lower]) return mysqlTypeMap[lower]
+  // 含括号（VARCHAR(50)）或全大写（BIGINT）视为已是 SQL 类型，直接保留
+  if (s.includes('(') || s === s.toUpperCase()) return s
+  return 'VARCHAR(255)'
+}
+const parseUmlAttr = (attr: string): { name: string; type: string } | null => {
+  const s = (attr || '').trim().replace(/^[-+]\s*/, '')
+  if (!s || s.includes('(')) return null  // 空或方法（含括号）跳过
+  const m = s.match(/^([A-Za-z_][\w]*)\s*[:=]\s*(.+)$/)
+  if (m) return { name: m[1], type: m[2].trim().split(/\s+/)[0] }
+  const m2 = s.match(/^([A-Za-z_][\w]*)\s+([A-Za-z_][\w<>[\]]*)/)
+  if (m2) return { name: m2[1], type: m2[2] }
+  return null
+}
+const generateUmlMysql = () => {
+  let sql = '-- MySQL DDL（UML 类图自动生成）\n-- 每个类生成一张表；连线按基数生成外键/中间表\n\n'
+  const fkCols = new Map<string, Set<string>>()  // 表 -> 已添加的 FK 列（避免重复）
+  const addFk = (child: string, col: string, parent: string) => {
+    const cols = fkCols.get(child) || new Set<string>()
+    if (cols.has(col)) return
+    cols.add(col)
+    fkCols.set(child, cols)
+    sql += `ALTER TABLE \`${child}\` ADD COLUMN \`${col}\` BIGINT NULL;\n`
+    sql += `ALTER TABLE \`${child}\` ADD CONSTRAINT fk_${child}_${col} FOREIGN KEY (\`${col}\`) REFERENCES \`${parent}\`(\`id\`);\n\n`
+  }
+  elements.forEach((cls: any) => {
+    if (cls.type !== 'class' && cls.type !== 'interface') return
+    const table = cls.name
+    sql += `DROP TABLE IF EXISTS \`${table}\`;\n`
+    sql += `CREATE TABLE \`${table}\` (\n`
+    const lines: string[] = ['  `id` BIGINT NOT NULL AUTO_INCREMENT']
+    ;(cls.attributes || []).forEach((attr: string) => {
+      const p = parseUmlAttr(attr)
+      if (!p) return
+      lines.push(`  \`${p.name}\` ${toMysqlType(p.type)} DEFAULT NULL`)
+    })
+    lines.push('  PRIMARY KEY (`id`)')
+    sql += lines.join(',\n') + `\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='${table}';\n\n`
+  })
+  connections.forEach((conn: any) => {
+    const a = elements.find((e: any) => e.id === conn.startElement)
+    const b = elements.find((e: any) => e.id === conn.endElement)
+    if (!a || !b) return
+    const card = conn.cardinality || 'oneToMany'
+    if (card === 'manyToMany') {
+      const la = a.name.toLowerCase(), lb = b.name.toLowerCase()
+      sql += `CREATE TABLE \`${la}_${lb}\` (\n`
+      sql += `  \`${la}_id\` BIGINT NOT NULL,\n`
+      sql += `  \`${lb}_id\` BIGINT NOT NULL,\n`
+      sql += `  PRIMARY KEY (\`${la}_id\`, \`${lb}_id\`),\n`
+      sql += `  CONSTRAINT fk_${la}_${lb}_${la} FOREIGN KEY (\`${la}_id\`) REFERENCES \`${a.name}\`(\`id\`),\n`
+      sql += `  CONSTRAINT fk_${la}_${lb}_${lb} FOREIGN KEY (\`${lb}_id\`) REFERENCES \`${b.name}\`(\`id\`)\n`
+      sql += `) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\n\n`
+    } else if (card === 'oneToOne') {
+      const col = `${a.name.toLowerCase()}_id`
+      const cols = fkCols.get(b.name) || new Set<string>()
+      if (!cols.has(col)) {
+        cols.add(col); fkCols.set(b.name, cols)
+        sql += `ALTER TABLE \`${b.name}\` ADD COLUMN \`${col}\` BIGINT NULL UNIQUE;\n`
+        sql += `ALTER TABLE \`${b.name}\` ADD CONSTRAINT fk_${b.name}_${col} FOREIGN KEY (\`${col}\`) REFERENCES \`${a.name}\`(\`id\`);\n\n`
+      }
+    } else {
+      addFk(b.name, `${a.name.toLowerCase()}_id`, a.name)
+    }
+  })
+  erSqlResult.value = sql
+}
+const generateErMysql = () => {
+  let sql = '-- MySQL DDL（ER 模型自动生成）\n\n'
+  erEntities.forEach((entity: any) => {
+    const table = entity.name
+    sql += `DROP TABLE IF EXISTS \`${table}\`;\n`
+    sql += `CREATE TABLE \`${table}\` (\n`
+    const lines: string[] = []
+    const pkCols: string[] = []
+    ;(entity.fields || []).forEach((f: any) => {
+      const type = toMysqlType(f.type)
+      let line = `  \`${f.name}\` ${type}`
+      if (f.isPrimary) {
+        pkCols.push(`\`${f.name}\``)
+        line += ' NOT NULL AUTO_INCREMENT'
+      } else {
+        line += ' DEFAULT NULL'
+      }
+      lines.push(line)
+    })
+    if (pkCols.length) lines.push(`  PRIMARY KEY (${pkCols.join(', ')})`)
+    sql += lines.join(',\n') + `\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='${table}';\n\n`
+  })
+  erRelations.forEach((rel: any) => {
+    const start = erEntities.find((e: any) => e.id === rel.startEntity)
+    const end = erEntities.find((e: any) => e.id === rel.endEntity)
+    if (!start || !end) return
+    const st = start.name.toLowerCase(), et = end.name.toLowerCase()
+    if (rel.type === 'oneToMany') {
+      sql += `ALTER TABLE \`${end.name}\` ADD COLUMN \`${st}_id\` BIGINT NULL;\n`
+      sql += `ALTER TABLE \`${end.name}\` ADD CONSTRAINT fk_${et}_${st} FOREIGN KEY (\`${st}_id\`) REFERENCES \`${start.name}\`(\`id\`);\n\n`
+    } else if (rel.type === 'oneToOne') {
+      sql += `ALTER TABLE \`${end.name}\` ADD COLUMN \`${st}_id\` BIGINT NULL UNIQUE;\n`
+      sql += `ALTER TABLE \`${end.name}\` ADD CONSTRAINT fk_${et}_${st} FOREIGN KEY (\`${st}_id\`) REFERENCES \`${start.name}\`(\`id\`);\n\n`
+    } else if (rel.type === 'manyToMany') {
+      const join = `${st}_${et}`
+      sql += `DROP TABLE IF EXISTS \`${join}\`;\n`
+      sql += `CREATE TABLE \`${join}\` (\n`
+      sql += `  \`${st}_id\` BIGINT NOT NULL,\n`
+      sql += `  \`${et}_id\` BIGINT NOT NULL,\n`
+      sql += `  PRIMARY KEY (\`${st}_id\`, \`${et}_id\`),\n`
+      sql += `  CONSTRAINT fk_${join}_${st} FOREIGN KEY (\`${st}_id\`) REFERENCES \`${start.name}\`(\`id\`),\n`
+      sql += `  CONSTRAINT fk_${join}_${et} FOREIGN KEY (\`${et}_id\`) REFERENCES \`${end.name}\`(\`id\`)\n`
+      sql += `) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\n\n`
+    }
+  })
+  erSqlResult.value = sql
+}
+
 const saveModel = async () => {
   if (!currentModelId.value) {
     alert('请先创建或选择一个项目')
@@ -4000,9 +4217,25 @@ onMounted(() => {
     </div>
 
     <div v-if="activeTab === 'uml'" class="card canvas-container">
+      <!-- 关系基数标注工具栏（选中连线时出现） -->
+      <div v-if="selectedConnectionId && selConnCardinality" class="conn-cardinality-bar">
+        <span style="color: #666;">关系基数：</span>
+        <button
+          :class="{ active: selConnCardinality === 'oneToOne' }"
+          @click="setConnCardinality('oneToOne')"
+        >一对一 1:1</button>
+        <button
+          :class="{ active: selConnCardinality === 'oneToMany' }"
+          @click="setConnCardinality('oneToMany')"
+        >一对多 1:N</button>
+        <button
+          :class="{ active: selConnCardinality === 'manyToMany' }"
+          @click="setConnCardinality('manyToMany')"
+        >多对多 M:N</button>
+      </div>
       <canvas
         id="canvas"
-        width="1150" 
+        width="1150"
         height="600"
         @click="handleCanvasClick"
         @mousedown="handleMouseDown"
@@ -4090,6 +4323,7 @@ onMounted(() => {
             <option v-if="codeConfig.source === 'uml'" value="controller">Controller</option>
             <option v-if="codeConfig.source === 'uml'" value="service">Service</option>
             <option v-if="codeConfig.source === 'er'" value="sql">SQL脚本</option>
+            <option value="mysql">MySQL语句</option>
           </select>
           <select 
             v-model="codeConfig.language" 
@@ -5426,11 +5660,49 @@ onMounted(() => {
 }
 
 .canvas-container {
+  position: relative;
   background: #f8f9fa;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
   box-shadow: var(--shadow-sm);
+}
+
+/* 关系基数标注工具栏（UML 连线） */
+.conn-cardinality-bar {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid #e0e4ea;
+  border-radius: 999px;
+  box-shadow: var(--shadow-sm);
+  font-size: 13px;
+}
+.conn-cardinality-bar button {
+  padding: 4px 12px;
+  border: 1px solid #dde3ea;
+  border-radius: 999px;
+  background: #fff;
+  color: #444;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.conn-cardinality-bar button:hover {
+  border-color: #1f5eff;
+  color: #1f5eff;
+}
+.conn-cardinality-bar button.active {
+  background: #1f5eff;
+  border-color: #1f5eff;
+  color: #fff;
 }
 
 .canvas-container:hover {
