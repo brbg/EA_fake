@@ -49,12 +49,15 @@ def kick_user(project_id, user_id):
 def handle_join_project(data):
     project_id = data.get('project_id')
     session_id = data.get('session_id')
+    # collab=true 表示用户已进入协作模式：才计入在线用户并广播加入
+    # 未进协作模式仅加入房间（用于收协作变更通知），不打扰其他协作者
+    collab = bool(data.get('collab'))
     user_id, username = _resolve_user(session_id)
     join_room(project_id)
     _collab_conns[request.sid] = (project_id, user_id)
-    if user_id:
+    if user_id and collab:
         collab_users_cache.setdefault(project_id, {})[user_id] = username or user_id
-        emit('user_joined', {'username': username or '协作者'}, room=project_id)
+        emit('user_joined', {'username': username or '协作者'}, room=project_id, include_self=False)
         _broadcast_users(project_id)
 
 

@@ -4034,7 +4034,7 @@ const initSocket = () => {
   })
   socket.on('connect', () => {
     if (currentModelId.value) {
-      socket.emit('join_project', { project_id: currentModelId.value, session_id: sessionStorage.getItem('sessionId') || '' })
+      socket.emit('join_project', { project_id: currentModelId.value, session_id: sessionStorage.getItem('sessionId') || '', collab: collabEnabled.value })
       joinedProjectId = currentModelId.value
     }
   })
@@ -4103,7 +4103,7 @@ const joinProjectRoom = () => {
   if (joinedProjectId && joinedProjectId !== currentModelId.value) {
     socket.emit('leave_project', { project_id: joinedProjectId, session_id: sessionStorage.getItem('sessionId') || '' })
   }
-  socket.emit('join_project', { project_id: currentModelId.value, session_id: sessionStorage.getItem('sessionId') || '' })
+  socket.emit('join_project', { project_id: currentModelId.value, session_id: sessionStorage.getItem('sessionId') || '', collab: collabEnabled.value })
   joinedProjectId = currentModelId.value
 }
 
