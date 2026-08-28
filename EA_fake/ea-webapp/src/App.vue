@@ -421,10 +421,12 @@ const erView = ref({ x: 0, y: 0, scale: 1 })
 // 平移状态（空白处拖拽移动画布）
 let viewPanning = false
 let viewMoved = false
-let panStartX = 0
-let panStartY = 0
+// 平移用屏幕坐标差值（/scale 得逻辑位移）：若用逻辑坐标差值会因视图每帧变化而累积漂移
+let panLastClientX = 0
+let panLastClientY = 0
 
-// 拖动阈值平移：空白处按下先记为「候选平移」，拖动超过阈值才真正平移，从而区分「点击」与「拖动」
+// 拖动阈值平移：空白处按下先记为「候选平移」，拖动超过阈值才真正平移，从而区分「点击」与「拖动」。
+// 按逻辑像素计（折算成屏幕位移 = 逻辑位移 × scale）：放大时点击微动更不易被误判为拖动。
 const PAN_THRESHOLD = 6  // 逻辑像素
 let panCandidate = false
 let panCandidateStartX = 0
@@ -436,14 +438,32 @@ let pinchActive = false
 let pinchStartDist = 0
 let pinchStartScale = 1
 
-// 三击删除：双击编辑延迟打开弹窗，延迟期内再次点击同一元素则改为删除
+// 三击删除：双击编辑延迟打开弹窗，延迟期内第三次点击同一元素则改为删除。
+// 三击判定用纯 click 计数（触屏上浏览器 dblclick 常常不触发，不能依赖它），快速连点的中间击不创建元素。
 const TRIPLE_CLICK_MS = 350
+let lastTapTime = 0
+let lastTapX = 0
+let lastTapY = 0
+let tapCount = 0
+let tapAnchorElemId: number | null = null  // 三击序列中第一击命中的元素（防点击抖动丢命中）
+// 双击编辑延迟：双击后 350ms 再打开编辑框，期间若第三次点击（三击删除）则被取消
 let pendingEditTimer: number | null = null
-let pendingDblClick: { kind: 'uml' | 'archimate' | 'er'; elemId: number } | null = null
 const clearPendingEdit = () => {
   if (pendingEditTimer) window.clearTimeout(pendingEditTimer)
   pendingEditTimer = null
-  pendingDblClick = null
+}
+
+// 以屏幕点 (clientX, clientY) 为焦点，一步把视图缩放到指定倍率（钳制 0.2~8 倍）。
+// 每次基于「当前视图」精确换算焦点逻辑坐标 → 无累积误差，pinch 逐帧调用不抖动
+const zoomAtPoint = (view: { x: number; y: number; scale: number }, el: HTMLCanvasElement | null, clientX: number, clientY: number, newScale: number) => {
+  const rect = el?.getBoundingClientRect()
+  if (!rect) return
+  newScale = Math.min(8, Math.max(0.2, newScale))
+  const px = (clientX - rect.left) * (LOGICAL_W / rect.width)
+  const py = (clientY - rect.top) * (LOGICAL_H / rect.height)
+  view.x = view.x + px / view.scale - px / newScale
+  view.y = view.y + py / view.scale - py / newScale
+  view.scale = newScale
 }
 
 // 平滑缩放动画：把视图从当前倍率动画插值到目标倍率（焦点保持不动），滚轮/按钮触发
@@ -507,12 +527,6 @@ let connections: any[] = []
 let selectedElement: any = null
 let isDragging = false
 let dragOffset = { x: 0, y: 0 }
-let lastClickTime = 0
-let lastClickPos = { x: 0, y: 0 }
-let archimateLastClickTime = 0
-let archimateLastClickPos = { x: 0, y: 0 }
-let erLastClickTime = 0
-let erLastClickPos = { x: 0, y: 0 }
 let isConnecting = false
 let connectStartElement: any = null
 let showEditModal = ref(false)
@@ -1999,6 +2013,15 @@ const drawConnection = (conn: any) => {
   }
 }
 
+// 命中检测：返回点击位置最上层的 UML 元素（三击删除复用）
+const hitUmlElementAt = (x: number, y: number): any | null => {
+  for (let i = elements.length - 1; i >= 0; i--) {
+    const el = elements[i]
+    if (x >= el.x && x <= el.x + el.width && y >= el.y && y <= el.y + el.height) return el
+  }
+  return null
+}
+
 const handleCanvasClick = (e: MouseEvent) => {
   if (!canvas) return
   // 刚平移过画布（拖拽空白）→ 不当作点击创建元素
@@ -2010,33 +2033,28 @@ const handleCanvasClick = (e: MouseEvent) => {
   let x = p.x
   let y = p.y
 
-  // 三击删除：双击编辑延迟期内第三次点击同一元素 → 删除（与右键删除并行）
-  if (pendingDblClick && pendingEditTimer) {
-    if (pendingDblClick.kind === 'uml') {
-      const hit = elements.find(el => x >= el.x && x <= el.x + el.width && y >= el.y && y <= el.y + el.height)
-      if (hit && hit.id === pendingDblClick.elemId) {
-        clearPendingEdit()
-        deleteUmlElement(hit.id)
-        return
-      }
-    }
-    // 三击点偏 / 切了画布 → 取消待编辑
-    clearPendingEdit()
-  }
-
-  // 钳制坐标，避免在画布边缘点击时把元素创建到可见区域之外
-  x = x
-  y = y
-
-  // 防止双击时重复创建元素（双击会在300ms内触发两次点击）
+  // —— 三击删除：纯 click 计数（触屏不依赖 dblclick），快速连点的中间击不创建元素 ——
   const now = Date.now()
-  if (now - lastClickTime < 300 && 
-      Math.abs(x - lastClickPos.x) < 10 && 
-      Math.abs(y - lastClickPos.y) < 10) {
-    return
+  const rapid = now - lastTapTime < TRIPLE_CLICK_MS && Math.abs(x - lastTapX) < 12 && Math.abs(y - lastTapY) < 12
+  lastTapTime = now
+  lastTapX = x
+  lastTapY = y
+  if (rapid) {
+    tapCount++
+  } else {
+    tapCount = 1
+    tapAnchorElemId = hitUmlElementAt(x, y)?.id ?? null
+    clearPendingEdit()  // 点击位置变化 → 取消待编辑
   }
-  lastClickTime = now
-  lastClickPos = { x, y }
+  if (tapCount >= 3) {
+    tapCount = 0
+    clearPendingEdit()
+    // 命中当前点击位置；若触屏抖动没命中，退回第一击命中的元素
+    const hit = hitUmlElementAt(x, y) || (tapAnchorElemId != null ? elements.find(el => el.id === tapAnchorElemId) : null)
+    if (hit) deleteUmlElement(hit.id)
+    return  // 三击：删除后不创建新元素
+  }
+  if (rapid) return  // 快速连点的中间击：不创建，等待第三击
   
   // 检查是否点击了现有元素，如果是则不创建新元素
   for (const elem of elements) {
@@ -2095,8 +2113,8 @@ const handleMouseDown = (e: PointerEvent) => {
   const x = p.x
   const y = p.y
 
-  // 触屏多指跟踪：第二指按下即进入 pinch 双指缩放
-  activePointers.set(e.pointerId, { x, y })
+  // 触屏多指跟踪：记录屏幕坐标（不受视图缩放影响，pinch 算距离才稳定）；第二指按下即进入 pinch
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
   if (activePointers.size === 2) {
     const pts = [...activePointers.values()]
     pinchStartDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
@@ -2144,8 +2162,8 @@ const handleMouseDown = (e: PointerEvent) => {
 
   // 空处：记录候选平移（任意非连线工具拖动空白都平移，轻点仍创建/取消选中；连线工具不平移）
   panCandidate = true
-  panCandidateStartX = x
-  panCandidateStartY = y
+  panCandidateStartX = e.clientX  // 屏幕坐标，位移计算不受视图缩放/平移影响
+  panCandidateStartY = e.clientY
 
   selectedElement = null
   selectedConnectionId.value = null
@@ -2159,35 +2177,31 @@ const handleMouseMove = (e: PointerEvent) => {
   const x = p.x
   const y = p.y
 
-  // 更新触点位置；pinch 进行中直接处理双指缩放
-  if (activePointers.has(e.pointerId)) activePointers.set(e.pointerId, { x, y })
+  // 更新触点（屏幕坐标，不受视图缩放影响）；pinch 进行中直接处理双指缩放
+  if (activePointers.has(e.pointerId)) activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
   if (pinchActive && activePointers.size >= 2) {
     const pts = [...activePointers.values()]
     const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
-    const center = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }
+    const cx = (pts[0].x + pts[1].x) / 2
+    const cy = (pts[0].y + pts[1].y) / 2
     if (pinchStartDist > 0) {
-      const v = umlView.value
-      const newScale = Math.min(8, Math.max(0.2, pinchStartScale * (dist / pinchStartDist)))
-      const factor = newScale / v.scale
-      v.x = center.x - (center.x - v.x) * factor
-      v.y = center.y - (center.y - v.y) * factor
-      v.scale = newScale
+      zoomAtPoint(umlView.value, canvas, cx, cy, pinchStartScale * (dist / pinchStartDist))
     }
     setupCanvasTransform(canvas!)
     redraw()
     return
   }
 
-  // 候选平移：拖动超过阈值才真正开始平移画布（区分「点击」与「拖动」，触屏也适用）
+  // 候选平移：拖动超过阈值才真正开始平移画布（按当前倍率折算逻辑位移，避免视图变化累积误差、放大时点击不易误判）
   if (panCandidate) {
-    const dx = x - panCandidateStartX
-    const dy = y - panCandidateStartY
+    const dx = (e.clientX - panCandidateStartX) / umlView.value.scale
+    const dy = (e.clientY - panCandidateStartY) / umlView.value.scale
     if (Math.hypot(dx, dy) > PAN_THRESHOLD) {
       viewPanning = true
       viewMoved = true
       panCandidate = false
-      panStartX = x
-      panStartY = y
+      panLastClientX = e.clientX
+      panLastClientY = e.clientY
     } else {
       return
     }
@@ -2195,10 +2209,11 @@ const handleMouseMove = (e: PointerEvent) => {
 
   if (viewPanning) {
     const v = umlView.value
-    v.x -= (x - panStartX)
-    v.y -= (y - panStartY)
-    panStartX = x
-    panStartY = y
+    // 屏幕位移 / 当前倍率 = 逻辑位移，视图每帧精确跟随手指/鼠标，无累积漂移
+    v.x -= (e.clientX - panLastClientX) / v.scale
+    v.y -= (e.clientY - panLastClientY) / v.scale
+    panLastClientX = e.clientX
+    panLastClientY = e.clientY
     viewMoved = true
     redraw()
     return
@@ -2275,7 +2290,10 @@ const hitTestConnection = (x: number, y: number): string | null => {
   }
   return null
 }
+// connections 是普通数组（非响应式）：基数高亮用计数器强制 computed 重算
+const connCardTick = ref(0)
 const selConnCardinality = computed(() => {
+  connCardTick.value  // 建立依赖：setConnCardinality 后 +1 触发重算
   const c = connections.find((cc: any) => cc.id === selectedConnectionId.value)
   return c ? (c.cardinality || 'oneToMany') : null
 })
@@ -2284,8 +2302,10 @@ const setConnCardinality = (card: string) => {
   if (c) {
     saveUmlHistory()
     c.cardinality = card
+    connCardTick.value++
     redraw()
     updateStats()
+    selectedConnectionId.value = null  // 选完基数自动收起工具栏
   }
 }
 
@@ -2546,10 +2566,8 @@ const handleDoubleClick = (e: MouseEvent) => {
         y >= elem.y && y <= elem.y + elem.height) {
       // 双击编辑延迟打开编辑框：350ms 内若第三次点击同一元素则改为三击删除
       clearPendingEdit()
-      pendingDblClick = { kind: 'uml', elemId: elem.id }
       pendingEditTimer = window.setTimeout(() => {
         pendingEditTimer = null
-        pendingDblClick = null
         editingElement.value = JSON.parse(JSON.stringify(elem))
         showEditModal.value = true
       }, TRIPLE_CLICK_MS)
@@ -2874,6 +2892,15 @@ const drawArchimateConnection = (start: any, end: any, type: string) => {
   ctx.fill()
 }
 
+// 命中检测：返回点击位置最上层的 ArchiMate 元素（三击删除复用）
+const hitArchimateElementAt = (x: number, y: number): any | null => {
+  for (let i = archimateElements.length - 1; i >= 0; i--) {
+    const el = archimateElements[i]
+    if (x >= el.x && x <= el.x + el.width && y >= el.y && y <= el.y + el.height) return el
+  }
+  return null
+}
+
 const handleArchimateClick = (e: MouseEvent) => {
   if (!archimateCanvas.value) return
   if (viewMoved) { viewMoved = false; return }
@@ -2881,32 +2908,27 @@ const handleArchimateClick = (e: MouseEvent) => {
   let x = p.x
   let y = p.y
 
-  // 三击删除：双击编辑延迟期内第三次点击同一元素 → 删除（与右键删除并行）
-  if (pendingDblClick && pendingEditTimer) {
-    if (pendingDblClick.kind === 'archimate') {
-      const hit = archimateElements.find(el => x >= el.x && x <= el.x + el.width && y >= el.y && y <= el.y + el.height)
-      if (hit && hit.id === pendingDblClick.elemId) {
-        clearPendingEdit()
-        deleteArchimateElement(hit.id)
-        return
-      }
-    }
+  // —— 三击删除：纯 click 计数（触屏不依赖 dblclick），快速连点的中间击不创建元素 ——
+  const now = Date.now()
+  const rapid = now - lastTapTime < TRIPLE_CLICK_MS && Math.abs(x - lastTapX) < 12 && Math.abs(y - lastTapY) < 12
+  lastTapTime = now
+  lastTapX = x
+  lastTapY = y
+  if (rapid) {
+    tapCount++
+  } else {
+    tapCount = 1
+    tapAnchorElemId = hitArchimateElementAt(x, y)?.id ?? null
     clearPendingEdit()
   }
-
-  // 钳制坐标，避免在画布边缘点击时把元素创建到可见区域之外
-  x = x
-  y = y
-
-  // 防止双击时重复创建元素（与 UML 一致的防抖）
-  const now = Date.now()
-  if (now - archimateLastClickTime < 300 &&
-      Math.abs(x - archimateLastClickPos.x) < 10 &&
-      Math.abs(y - archimateLastClickPos.y) < 10) {
-    return
+  if (tapCount >= 3) {
+    tapCount = 0
+    clearPendingEdit()
+    const hit = hitArchimateElementAt(x, y) || (tapAnchorElemId != null ? archimateElements.find(el => el.id === tapAnchorElemId) : null)
+    if (hit) deleteArchimateElement(hit.id)
+    return  // 三击：删除后不创建新元素
   }
-  archimateLastClickTime = now
-  archimateLastClickPos = { x, y }
+  if (rapid) return  // 快速连点的中间击：不创建，等待第三击
 
   const currentTool = selectedArchimateTool.value
 
@@ -2966,8 +2988,8 @@ const handleArchimateMouseDown = (e: PointerEvent) => {
   const x = p.x
   const y = p.y
 
-  // 触屏多指跟踪：第二指按下即进入 pinch 双指缩放
-  activePointers.set(e.pointerId, { x, y })
+  // 触屏多指跟踪：记录屏幕坐标（不受视图缩放影响）；第二指按下即进入 pinch
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
   if (activePointers.size === 2) {
     const pts = [...activePointers.values()]
     pinchStartDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
@@ -3010,8 +3032,8 @@ const handleArchimateMouseDown = (e: PointerEvent) => {
 
   // 空处：记录候选平移（任意非连线工具拖动空白都平移，轻点仍创建/选中；连线工具不平移）
   panCandidate = true
-  panCandidateStartX = x
-  panCandidateStartY = y
+  panCandidateStartX = e.clientX  // 屏幕坐标，位移计算不受视图缩放/平移影响
+  panCandidateStartY = e.clientY
   archimateSelectedElement = null
 }
 
@@ -3021,35 +3043,31 @@ const handleArchimateMouseMove = (e: PointerEvent) => {
   const x = p.x
   const y = p.y
 
-  // 更新触点位置；pinch 进行中直接处理双指缩放
-  if (activePointers.has(e.pointerId)) activePointers.set(e.pointerId, { x, y })
+  // 更新触点（屏幕坐标，不受视图缩放影响）；pinch 进行中直接处理双指缩放
+  if (activePointers.has(e.pointerId)) activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
   if (pinchActive && activePointers.size >= 2) {
     const pts = [...activePointers.values()]
     const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
-    const center = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }
+    const cx = (pts[0].x + pts[1].x) / 2
+    const cy = (pts[0].y + pts[1].y) / 2
     if (pinchStartDist > 0) {
-      const v = archView.value
-      const newScale = Math.min(8, Math.max(0.2, pinchStartScale * (dist / pinchStartDist)))
-      const factor = newScale / v.scale
-      v.x = center.x - (center.x - v.x) * factor
-      v.y = center.y - (center.y - v.y) * factor
-      v.scale = newScale
+      zoomAtPoint(archView.value, archimateCanvas.value, cx, cy, pinchStartScale * (dist / pinchStartDist))
     }
     setupCanvasTransform(archimateCanvas.value!)
     redrawArchimateCanvas()
     return
   }
 
-  // 候选平移：拖动超过阈值才真正开始平移画布
+  // 候选平移：拖动超过阈值才真正开始平移画布（按当前倍率折算逻辑位移，避免视图变化累积误差、放大时点击不易误判）
   if (panCandidate) {
-    const dx = x - panCandidateStartX
-    const dy = y - panCandidateStartY
+    const dx = (e.clientX - panCandidateStartX) / archView.value.scale
+    const dy = (e.clientY - panCandidateStartY) / archView.value.scale
     if (Math.hypot(dx, dy) > PAN_THRESHOLD) {
       viewPanning = true
       viewMoved = true
       panCandidate = false
-      panStartX = x
-      panStartY = y
+      panLastClientX = e.clientX
+      panLastClientY = e.clientY
     } else {
       return
     }
@@ -3057,10 +3075,11 @@ const handleArchimateMouseMove = (e: PointerEvent) => {
 
   if (viewPanning) {
     const v = archView.value
-    v.x -= (x - panStartX)
-    v.y -= (y - panStartY)
-    panStartX = x
-    panStartY = y
+    // 屏幕位移 / 当前倍率 = 逻辑位移，视图每帧精确跟随手指/鼠标，无累积漂移
+    v.x -= (e.clientX - panLastClientX) / v.scale
+    v.y -= (e.clientY - panLastClientY) / v.scale
+    panLastClientX = e.clientX
+    panLastClientY = e.clientY
     viewMoved = true
     redrawArchimateCanvas()
     return
@@ -3124,10 +3143,8 @@ const handleArchimateDoubleClick = (e: MouseEvent) => {
         y >= elem.y && y <= elem.y + elem.height) {
       // 双击编辑延迟打开编辑框：350ms 内若第三次点击同一元素则改为三击删除
       clearPendingEdit()
-      pendingDblClick = { kind: 'archimate', elemId: elem.id }
       pendingEditTimer = window.setTimeout(() => {
         pendingEditTimer = null
-        pendingDblClick = null
         archimateEditingElement.value = JSON.parse(JSON.stringify(elem))
         showArchimateEditModal.value = true
       }, TRIPLE_CLICK_MS)
@@ -3481,6 +3498,15 @@ const drawErRelation = (start: any, end: any, type: string) => {
   }
 }
 
+// 命中检测：返回点击位置最上层的 ER 实体（三击删除复用）
+const hitErEntityAt = (x: number, y: number): any | null => {
+  for (let i = erEntities.length - 1; i >= 0; i--) {
+    const ent = erEntities[i]
+    if (x >= ent.x && x <= ent.x + ent.width && y >= ent.y && y <= ent.y + (ent.displayHeight || 80)) return ent
+  }
+  return null
+}
+
 const handleErClick = (e: MouseEvent) => {
   if (!erCanvas.value) return
   if (viewMoved) { viewMoved = false; return }
@@ -3488,32 +3514,27 @@ const handleErClick = (e: MouseEvent) => {
   let x = p.x
   let y = p.y
 
-  // 三击删除：双击编辑延迟期内第三次点击同一实体 → 删除（与右键删除并行）
-  if (pendingDblClick && pendingEditTimer) {
-    if (pendingDblClick.kind === 'er') {
-      const hit = erEntities.find(ent => x >= ent.x && x <= ent.x + ent.width && y >= ent.y && y <= ent.y + (ent.displayHeight || 80))
-      if (hit && hit.id === pendingDblClick.elemId) {
-        clearPendingEdit()
-        deleteErEntity(hit.id)
-        return
-      }
-    }
+  // —— 三击删除：纯 click 计数（触屏不依赖 dblclick），快速连点的中间击不创建元素 ——
+  const now = Date.now()
+  const rapid = now - lastTapTime < TRIPLE_CLICK_MS && Math.abs(x - lastTapX) < 12 && Math.abs(y - lastTapY) < 12
+  lastTapTime = now
+  lastTapX = x
+  lastTapY = y
+  if (rapid) {
+    tapCount++
+  } else {
+    tapCount = 1
+    tapAnchorElemId = hitErEntityAt(x, y)?.id ?? null
     clearPendingEdit()
   }
-
-  // 钳制坐标，避免在画布边缘点击时把实体创建到可见区域之外
-  x = x
-  y = y
-
-  // 防止双击时重复创建实体（与 UML 一致的防抖）
-  const now = Date.now()
-  if (now - erLastClickTime < 300 &&
-      Math.abs(x - erLastClickPos.x) < 10 &&
-      Math.abs(y - erLastClickPos.y) < 10) {
-    return
+  if (tapCount >= 3) {
+    tapCount = 0
+    clearPendingEdit()
+    const hit = hitErEntityAt(x, y) || (tapAnchorElemId != null ? erEntities.find(ent => ent.id === tapAnchorElemId) : null)
+    if (hit) deleteErEntity(hit.id)
+    return  // 三击：删除后不创建新实体
   }
-  erLastClickTime = now
-  erLastClickPos = { x, y }
+  if (rapid) return  // 快速连点的中间击：不创建，等待第三击
 
   const currentTool = selectedErTool.value
 
@@ -3552,8 +3573,8 @@ const handleErMouseDown = (e: PointerEvent) => {
   const x = p.x
   const y = p.y
 
-  // 触屏多指跟踪：第二指按下即进入 pinch 双指缩放
-  activePointers.set(e.pointerId, { x, y })
+  // 触屏多指跟踪：记录屏幕坐标（不受视图缩放影响）；第二指按下即进入 pinch
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
   if (activePointers.size === 2) {
     const pts = [...activePointers.values()]
     pinchStartDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
@@ -3596,8 +3617,8 @@ const handleErMouseDown = (e: PointerEvent) => {
 
   // 空处：记录候选平移（任意非连线工具拖动空白都平移，轻点仍创建/选中；关系工具不平移）
   panCandidate = true
-  panCandidateStartX = x
-  panCandidateStartY = y
+  panCandidateStartX = e.clientX  // 屏幕坐标，位移计算不受视图缩放/平移影响
+  panCandidateStartY = e.clientY
   erSelectedEntity = null
 }
 
@@ -3607,35 +3628,31 @@ const handleErMouseMove = (e: PointerEvent) => {
   const x = p.x
   const y = p.y
 
-  // 更新触点位置；pinch 进行中直接处理双指缩放
-  if (activePointers.has(e.pointerId)) activePointers.set(e.pointerId, { x, y })
+  // 更新触点（屏幕坐标，不受视图缩放影响）；pinch 进行中直接处理双指缩放
+  if (activePointers.has(e.pointerId)) activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
   if (pinchActive && activePointers.size >= 2) {
     const pts = [...activePointers.values()]
     const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
-    const center = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }
+    const cx = (pts[0].x + pts[1].x) / 2
+    const cy = (pts[0].y + pts[1].y) / 2
     if (pinchStartDist > 0) {
-      const v = erView.value
-      const newScale = Math.min(8, Math.max(0.2, pinchStartScale * (dist / pinchStartDist)))
-      const factor = newScale / v.scale
-      v.x = center.x - (center.x - v.x) * factor
-      v.y = center.y - (center.y - v.y) * factor
-      v.scale = newScale
+      zoomAtPoint(erView.value, erCanvas.value, cx, cy, pinchStartScale * (dist / pinchStartDist))
     }
     setupCanvasTransform(erCanvas.value!)
     redrawErCanvas()
     return
   }
 
-  // 候选平移：拖动超过阈值才真正开始平移画布
+  // 候选平移：拖动超过阈值才真正开始平移画布（按当前倍率折算逻辑位移，避免视图变化累积误差、放大时点击不易误判）
   if (panCandidate) {
-    const dx = x - panCandidateStartX
-    const dy = y - panCandidateStartY
+    const dx = (e.clientX - panCandidateStartX) / erView.value.scale
+    const dy = (e.clientY - panCandidateStartY) / erView.value.scale
     if (Math.hypot(dx, dy) > PAN_THRESHOLD) {
       viewPanning = true
       viewMoved = true
       panCandidate = false
-      panStartX = x
-      panStartY = y
+      panLastClientX = e.clientX
+      panLastClientY = e.clientY
     } else {
       return
     }
@@ -3643,10 +3660,11 @@ const handleErMouseMove = (e: PointerEvent) => {
 
   if (viewPanning) {
     const v = erView.value
-    v.x -= (x - panStartX)
-    v.y -= (y - panStartY)
-    panStartX = x
-    panStartY = y
+    // 屏幕位移 / 当前倍率 = 逻辑位移，视图每帧精确跟随手指/鼠标，无累积漂移
+    v.x -= (e.clientX - panLastClientX) / v.scale
+    v.y -= (e.clientY - panLastClientY) / v.scale
+    panLastClientX = e.clientX
+    panLastClientY = e.clientY
     viewMoved = true
     redrawErCanvas()
     return
@@ -3716,10 +3734,8 @@ const handleErDoubleClick = (e: MouseEvent) => {
         y >= entity.y && y <= entity.y + (entity.displayHeight || 80)) {
       // 双击编辑延迟打开编辑框：350ms 内若第三次点击同一实体则改为三击删除
       clearPendingEdit()
-      pendingDblClick = { kind: 'er', elemId: entity.id }
       pendingEditTimer = window.setTimeout(() => {
         pendingEditTimer = null
-        pendingDblClick = null
         erEditingEntity.value = JSON.parse(JSON.stringify(entity))
         showErEditModal.value = true
       }, TRIPLE_CLICK_MS)
