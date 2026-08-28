@@ -4476,19 +4476,18 @@ onMounted(() => {
             </div>
             <div v-if="currentModelId && currentModelRole === 'editor'" class="dropdown-hint" style="margin-top:4px;">处于他人协作邀请中，无法邀请更多人协作。</div>
 
-            <!-- 我协作的项目（协作项目从右上角进入） -->
-            <div class="dropdown-hub-item" @click="showMyCollab = !showMyCollab">
-              <i class="fas fa-folder-open"></i> 我协作的项目（{{ joinedCollabModels.length }}）
-            </div>
-            <div v-if="showMyCollab" class="hub-box">
-              <div v-if="joinedCollabModels.length">
+            <!-- 我协作的项目（无协作项目时整个按钮隐藏） -->
+            <template v-if="joinedCollabModels.length">
+              <div class="dropdown-hub-item" @click="showMyCollab = !showMyCollab">
+                <i class="fas fa-folder-open"></i> 我协作的项目（{{ joinedCollabModels.length }}）
+              </div>
+              <div v-if="showMyCollab" class="hub-box">
                 <div v-for="m in joinedCollabModels" :key="m.id" class="dropdown-user">
                   <span class="user-name">{{ m.name }}</span>
                   <button class="kick-btn" style="color:#1f5eff; border-color:#b9c8ff;" @click="showCollabDropdown = false; openModel(m)">{{ currentModelId === m.id ? '当前' : '打开' }}</button>
                 </div>
               </div>
-              <p v-else class="dropdown-hint">暂无，可先通过「加入协作」加入。</p>
-            </div>
+            </template>
 
             <!-- 项目协作（打开项目时） -->
             <hr style="margin:10px 0; border:none; border-top:1px solid #eee;" />
