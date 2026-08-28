@@ -1680,15 +1680,16 @@ const drawElement = (elem: any) => {
     y += lineH
   })
 
-  // 属性/方法分隔线
+  // 属性/方法分隔线（明显一些）
   if (methods.length) {
     const divY = elem.y + 25 + 10 + attrH
-    ctx.strokeStyle = '#ddd'
-    ctx.lineWidth = 1
+    ctx.strokeStyle = '#999'
+    ctx.lineWidth = 1.5
     ctx.beginPath()
     ctx.moveTo(elem.x, divY)
     ctx.lineTo(elem.x + elem.width, divY)
     ctx.stroke()
+    ctx.lineWidth = 1
   }
 
   // 方法区
@@ -1826,14 +1827,16 @@ const drawConnection = (conn: any) => {
     ctx.lineWidth = 1
   }
 
-  // 连线中点标注关系基数（1:1 / 1:N / M:N）
+  // 连线中点标注关系基数（1:1 / 1:N / M:N）——只有显式标注了才显示
   const labelMap: Record<string, string> = { oneToOne: '1:1', oneToMany: '1:N', manyToMany: 'M:N' }
-  const label = labelMap[conn.cardinality] || '1:N'
-  ctx.fillStyle = isSel ? '#1f5eff' : '#8b98ab'
-  ctx.font = '11px sans-serif'
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'middle'
-  ctx.fillText(label, (startX + endX) / 2, (startY + endY) / 2 - 8)
+  const label = conn.cardinality ? (labelMap[conn.cardinality] || '1:N') : null
+  if (label) {
+    ctx.fillStyle = isSel ? '#1f5eff' : '#8b98ab'
+    ctx.font = '11px sans-serif'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(label, (startX + endX) / 2, (startY + endY) / 2 - 8)
+  }
 }
 
 const handleCanvasClick = (e: MouseEvent) => {
