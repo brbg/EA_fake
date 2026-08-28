@@ -3805,7 +3805,22 @@ const submitAiEditModel = async () => {
 
 const loadModelFromServer = async (modelId: string) => {
   try {
-    const { data } = await modelApi.get(modelId)
+    const { ok, status, data } = await modelApi.get(modelId)
+    if (!ok) {
+      console.error('Load failed:', status, data)
+      showToast(data?.error || `加载失败: HTTP ${status}`, 'error')
+      // 被移出协作 / 无权限：清当前项目并刷新列表（该项目应消失）
+      if (currentModelId.value === modelId) {
+        currentModelId.value = ''
+        currentModelName.value = ''
+        clearCanvas()
+        activeTab.value = 'projects'
+        collabEnabled.value = false
+        onlineUsers.value = []
+      }
+      loadModels()
+      return
+    }
     elements = data?.elements || []
     connections = data?.relationships || data?.connections || []
     archimateElements = data?.archimate_elements || []
