@@ -394,8 +394,15 @@ const finishTour = () => {
 
 // AI 功能下拉菜单（每画布一个入口）
 const openAiMenu = ref<'uml' | 'archimate' | 'er' | null>(null)
+let aiMenuTimer: number | null = null
+const resetAiMenuTimer = () => {
+  if (aiMenuTimer) window.clearTimeout(aiMenuTimer)
+  if (openAiMenu.value) aiMenuTimer = window.setTimeout(() => { openAiMenu.value = null }, 5000)
+}
 const toggleAiMenu = (kind: 'uml' | 'archimate' | 'er') => {
   openAiMenu.value = openAiMenu.value === kind ? null : kind
+  if (openAiMenu.value) resetAiMenuTimer()
+  else if (aiMenuTimer) window.clearTimeout(aiMenuTimer)
 }
 const runAiAction = (kind: 'uml' | 'archimate' | 'er', action: string) => {
   openAiMenu.value = null
@@ -3956,17 +3963,28 @@ const showCollabDropdown = ref(false)
 const showMyId = ref(false)
 const showJoinInput = ref(false)
 const showMyCollab = ref(false)
+let collabDropdownTimer: number | null = null
+// 卡片 5 秒无操作自动收起（任何交互重置计时）
+const resetCollabDropdownTimer = () => {
+  if (collabDropdownTimer) window.clearTimeout(collabDropdownTimer)
+  collabDropdownTimer = window.setTimeout(() => { showCollabDropdown.value = false }, 5000)
+}
 const headerCollabMembers = ref<{ owner_id: string; members: Array<{ user_id: string; username: string; role?: string }> } | null>(null)
 const onlineUserSet = computed(() => new Set(onlineUsers.value))
 const toggleCollabDropdown = async () => {
   showCollabDropdown.value = !showCollabDropdown.value
-  if (showCollabDropdown.value && currentModelId.value) {
-    try {
-      const { ok, data } = await collabApi.collaborators(currentModelId.value)
-      headerCollabMembers.value = ok && data ? data : null
-    } catch {
-      headerCollabMembers.value = null
+  if (showCollabDropdown.value) {
+    resetCollabDropdownTimer()
+    if (currentModelId.value) {
+      try {
+        const { ok, data } = await collabApi.collaborators(currentModelId.value)
+        headerCollabMembers.value = ok && data ? data : null
+      } catch {
+        headerCollabMembers.value = null
+      }
     }
+  } else if (collabDropdownTimer) {
+    window.clearTimeout(collabDropdownTimer)
   }
 }
 const kickCollabMember = async (userId: string) => {
@@ -4021,16 +4039,15 @@ const exitCollabHeader = async () => {
 // === 通用顶部 toast 通知（替代浏览器 alert 弹窗）===
 const toastMsg = ref('')
 const toastType = ref<'success' | 'error' | 'warning' | 'info'>('info')
-let toastTimer: number | null = null
 const toastIcon = computed(() => ({
   success: 'fa-circle-check', error: 'fa-circle-exclamation', warning: 'fa-triangle-exclamation', info: 'fa-circle-info'
 }[toastType.value]))
+// 提示不自动收起：保持显示，直到用户点 × 或下一条提示替换
 const showToast = (text: string, type: 'success' | 'error' | 'warning' | 'info' = 'info') => {
   toastMsg.value = text
   toastType.value = type
-  if (toastTimer) window.clearTimeout(toastTimer)
-  toastTimer = window.setTimeout(() => { toastMsg.value = '' }, 3500)
 }
+const closeToast = () => { toastMsg.value = '' }
 const showCollabToast = (text: string) => showToast(text, 'info')
 // 协作入口：确认后进入 / 退出
 const toggleCollab = () => {
@@ -4439,7 +4456,9 @@ onMounted(() => {
   <!-- 协作提示 toast -->
   <transition name="fade">
     <div v-if="toastMsg" class="app-toast" :class="'toast-' + toastType">
-      <i class="fas" :class="toastIcon"></i> {{ toastMsg }}
+      <i class="fas" :class="toastIcon"></i>
+      <span style="flex: 1;">{{ toastMsg }}</span>
+      <button class="toast-close" @click="closeToast" title="关闭"><i class="fas fa-xmark"></i></button>
     </div>
   </transition>
 
@@ -4472,7 +4491,7 @@ onMounted(() => {
             <i v-if="onlineUsers.length" class="collab-badge-num">{{ onlineUsers.length }}</i>
           </button>
           <!-- 协作状态下拉 -->
-          <div v-if="showCollabDropdown" class="header-collab-dropdown">
+          <div v-if="showCollabDropdown" class="header-collab-dropdown" @mousemove="resetCollabDropdownTimer" @mouseleave="resetCollabDropdownTimer">
             <!-- 协作中枢：项目为中心 -->
             <div class="dropdown-hub-title">协作</div>
             <div class="dropdown-hub-item" @click="showJoinInput = !showJoinInput">
@@ -4634,7 +4653,7 @@ onMounted(() => {
         <button class="toolbar-btn" @click="toggleAiMenu('uml')" :class="{ active: openAiMenu === 'uml' }" title="AI 功能" data-tour="ai">
           <i class="fas fa-robot"></i> AI <i class="fas fa-chevron-down" style="font-size:10px;"></i>
         </button>
-        <div v-if="openAiMenu === 'uml'" class="ai-dropdown">
+        <div v-if="openAiMenu === 'uml'" class="ai-dropdown" @mousemove="resetAiMenuTimer">
           <div class="ai-dropdown-title">UML 模型</div>
           <button class="ai-dropdown-item" @click="runAiAction('uml', 'validate')" :disabled="validating">
             <i class="fas fa-magnifying-glass-chart"></i> {{ validating ? '校验中...' : 'AI校验整个模型' }}
@@ -4690,7 +4709,7 @@ onMounted(() => {
       <button class="toolbar-btn" @click="toggleAiMenu('archimate')" :class="{ active: openAiMenu === 'archimate' }">
         <i class="fas fa-robot"></i> AI <i class="fas fa-chevron-down" style="font-size:10px;"></i>
       </button>
-      <div v-if="openAiMenu === 'archimate'" class="ai-dropdown">
+      <div v-if="openAiMenu === 'archimate'" class="ai-dropdown" @mousemove="resetAiMenuTimer">
         <div class="ai-dropdown-title">ArchiMate 架构</div>
         <button class="ai-dropdown-item" @click="runAiAction('archimate', 'review')" :disabled="reviewing">
           <i class="fas fa-magnifying-glass-chart"></i> {{ reviewing ? '评审中...' : 'AI架构评审' }}
@@ -4732,7 +4751,7 @@ onMounted(() => {
       <button class="toolbar-btn" @click="toggleAiMenu('er')" :class="{ active: openAiMenu === 'er' }">
         <i class="fas fa-robot"></i> AI <i class="fas fa-chevron-down" style="font-size:10px;"></i>
       </button>
-      <div v-if="openAiMenu === 'er'" class="ai-dropdown">
+      <div v-if="openAiMenu === 'er'" class="ai-dropdown" @mousemove="resetAiMenuTimer">
         <div class="ai-dropdown-title">数据模型</div>
         <button class="ai-dropdown-item" @click="runAiAction('er', 'analyze')" :disabled="analyzing">
           <i class="fas fa-wand-magic-sparkles"></i> {{ analyzing ? '分析中...' : 'AI分析选中表' }}
@@ -6699,6 +6718,16 @@ onMounted(() => {
 .app-toast.toast-warning i { color: #d97706; }
 .app-toast.toast-info { border-left-color: #1f5eff; }
 .app-toast.toast-info i { color: #1f5eff; }
+.toast-close {
+  border: none;
+  background: transparent;
+  color: #999;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.toast-close:hover { color: #333; background: #f0f2f5; }
 /* 协作管理：协作者徽标 / 结果行 / 顶栏开关 */
 .collab-badge {
   display: inline-block;
