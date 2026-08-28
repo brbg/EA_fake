@@ -82,7 +82,7 @@ const logout = async () => {
     const isOwner = currentModelRole.value === 'owner' || hasOwnedCollab.value
     const msg = isOwner
       ? '当前存在协作，退出账号会结束协作并踢出所有协作者，确定退出吗？'
-      : '当前正在协作，确定退出账号吗？'
+      : '处于协作状态，退出账号将退出所有已加入的协作，确定退出吗？'
     if (!confirm(msg)) return
     // owner：踢出所有自有项目里的协作者（不二次确认）
     if (isOwner) {
@@ -100,9 +100,14 @@ const logout = async () => {
         }
       }
     }
-    // 退出房间并关闭协作状态
-    if (socket && currentModelId.value) {
-      socket.emit('leave_project', { project_id: currentModelId.value, session_id: sessionStorage.getItem('sessionId') || '' })
+    // 退出所有已加入协作的房间 + 当前房间，关闭协作状态
+    if (socket) {
+      const rooms = new Set<string>()
+      if (currentModelId.value) rooms.add(currentModelId.value)
+      joinedCollabModels.value.forEach((jm: any) => rooms.add(jm.id))
+      rooms.forEach((pid) => {
+        socket.emit('leave_project', { project_id: pid, session_id: sessionStorage.getItem('sessionId') || '' })
+      })
     }
     collabEnabled.value = false
     onlineUsers.value = []
