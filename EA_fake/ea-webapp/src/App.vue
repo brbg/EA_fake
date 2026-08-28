@@ -5,7 +5,7 @@ import AIAssistant from './AIAssistant.vue'
 import LoginView from './LoginView.vue'
 import type { ProjectContext } from './projectContext'
 import { getAIConfig } from './aiService'
-import { setupCanvasTransform, toLogical, LOGICAL_W, LOGICAL_H } from './canvasUtils'
+import { setupCanvasTransform, toLogical, setCanvasView, LOGICAL_W, LOGICAL_H } from './canvasUtils'
 // 统一 API 层（借鉴 AI_EA_Web 分层：request.ts + 按域 api 模块）
 import { authApi } from './api/auth'
 import { modelApi } from './api/models'
@@ -414,6 +414,91 @@ const runAiAction = (kind: 'uml' | 'archimate' | 'er', action: string) => {
 
 let canvas: HTMLCanvasElement | null = null
 let ctx: CanvasRenderingContext2D | null = null
+// 三套画布的视图（无限画布：平移/缩放）
+const umlView = ref({ x: 0, y: 0, scale: 1 })
+const archView = ref({ x: 0, y: 0, scale: 1 })
+const erView = ref({ x: 0, y: 0, scale: 1 })
+// 平移状态（空白处拖拽移动画布）
+let viewPanning = false
+let viewMoved = false
+let panStartX = 0
+let panStartY = 0
+
+// 拖动阈值平移：空白处按下先记为「候选平移」，拖动超过阈值才真正平移，从而区分「点击」与「拖动」
+const PAN_THRESHOLD = 6  // 逻辑像素
+let panCandidate = false
+let panCandidateStartX = 0
+let panCandidateStartY = 0
+
+// 触屏多指跟踪（pinch 双指缩放）：记录画布上所有活跃触点（逻辑坐标）
+const activePointers = new Map<number, { x: number; y: number }>()
+let pinchActive = false
+let pinchStartDist = 0
+let pinchStartScale = 1
+
+// 三击删除：双击编辑延迟打开弹窗，延迟期内再次点击同一元素则改为删除
+const TRIPLE_CLICK_MS = 350
+let pendingEditTimer: number | null = null
+let pendingDblClick: { kind: 'uml' | 'archimate' | 'er'; elemId: number } | null = null
+const clearPendingEdit = () => {
+  if (pendingEditTimer) window.clearTimeout(pendingEditTimer)
+  pendingEditTimer = null
+  pendingDblClick = null
+}
+
+// 平滑缩放动画：把视图从当前倍率动画插值到目标倍率（焦点保持不动），滚轮/按钮触发
+let zoomAnim: { id: number } | null = null
+const cancelZoomAnim = () => {
+  if (zoomAnim) { cancelAnimationFrame(zoomAnim.id); zoomAnim = null }
+}
+const animateZoomTo = (view: { x: number; y: number; scale: number }, el: HTMLCanvasElement | null, clientX: number, clientY: number, targetScale: number, redrawFn: () => void, duration = 220) => {
+  // 手势进行中不做动画（pinch/拖动是实时跟手的）
+  if (pinchActive || viewPanning) return
+  cancelZoomAnim()
+  targetScale = Math.min(8, Math.max(0.2, targetScale))
+  if (Math.abs(targetScale - view.scale) < 0.001) return
+  const rect = el?.getBoundingClientRect()
+  if (!rect) return
+  // 焦点逻辑坐标（缩放前）；动画全程保持焦点不动 → 视觉上围绕焦点缩放
+  const px = (clientX - rect.left) * (LOGICAL_W / rect.width)
+  const py = (clientY - rect.top) * (LOGICAL_H / rect.height)
+  const fx = view.x + px / view.scale
+  const fy = view.y + py / view.scale
+  const fromScale = view.scale
+  const start = performance.now()
+  const step = (now: number) => {
+    const t = Math.min(1, (now - start) / duration)
+    const ease = 1 - Math.pow(1 - t, 3)  // easeOutCubic：先快后慢，收尾更丝滑
+    const s = fromScale + (targetScale - fromScale) * ease
+    view.scale = s
+    view.x = fx - px / s
+    view.y = fy - py / s
+    setupCanvasTransform(el!)
+    redrawFn()
+    if (t < 1) zoomAnim = { id: requestAnimationFrame(step) }
+    else zoomAnim = null
+  }
+  zoomAnim = { id: requestAnimationFrame(step) }
+}
+
+// 滚轮缩放：以光标为中心平滑缩放（连续滚动时不断逼近新目标，保持丝滑）
+const zoomView = (view: { x: number; y: number; scale: number }, clientX: number, clientY: number, deltaY: number, el: HTMLCanvasElement | null, redrawFn: () => void) => {
+  const factor = deltaY < 0 ? 1.1 : 0.9
+  animateZoomTo(view, el, clientX, clientY, view.scale * factor, redrawFn, 150)
+}
+
+// 悬浮缩放按钮组：放大 / 缩小 / 复位（以画布可见中心为焦点，平滑过渡）
+const zoomControl = (kind: 'uml' | 'archimate' | 'er', action: 'in' | 'out' | 'reset') => {
+  const v = kind === 'uml' ? umlView : kind === 'archimate' ? archView : erView
+  const el = (kind === 'uml' ? canvas : kind === 'archimate' ? archimateCanvas.value : erCanvas.value) as HTMLCanvasElement | null
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  const cx = rect.left + rect.width / 2
+  const cy = rect.top + rect.height / 2
+  const target = action === 'in' ? v.value.scale * 1.25 : action === 'out' ? v.value.scale / 1.25 : 1
+  const redrawFn = kind === 'uml' ? redraw : kind === 'archimate' ? redrawArchimateCanvas : redrawErCanvas
+  animateZoomTo(v.value, el, cx, cy, target, redrawFn, 260)
+}
 // 画布元素/关系 id 用单调递增计数器（Date.now() 毫秒级会在连续创建时撞 id）
 let eidCounter = 0
 const nextEid = () => ++eidCounter
@@ -1651,6 +1736,7 @@ const mapTypeToCSharp = (type: string): string => {
 const initCanvas = () => {
   canvas = document.getElementById('canvas') as HTMLCanvasElement
   if (canvas) {
+    setCanvasView(canvas, umlView.value)
     setupCanvasTransform(canvas)
     ctx = canvas.getContext('2d')
     drawGrid()
@@ -1659,25 +1745,27 @@ const initCanvas = () => {
   }
 }
 
+// 在给定视图的可见区域内画网格（无限画布：随视图平移缩放铺满视口）
+const drawGridFor = (gctx: CanvasRenderingContext2D | null, v: { x: number; y: number; scale: number }) => {
+  if (!gctx) return
+  gctx.strokeStyle = '#e0e0e0'
+  gctx.lineWidth = 0.5
+  const gridSize = 20
+  const x0 = v.x, y0 = v.y
+  const x1 = v.x + LOGICAL_W / v.scale, y1 = v.y + LOGICAL_H / v.scale
+  const sx = Math.floor(x0 / gridSize) * gridSize
+  const sy = Math.floor(y0 / gridSize) * gridSize
+  for (let x = sx; x <= x1; x += gridSize) {
+    gctx.beginPath(); gctx.moveTo(x, y0); gctx.lineTo(x, y1); gctx.stroke()
+  }
+  for (let y = sy; y <= y1; y += gridSize) {
+    gctx.beginPath(); gctx.moveTo(x0, y); gctx.lineTo(x1, y); gctx.stroke()
+  }
+}
+
 const drawGrid = () => {
   if (!ctx || !canvas) return
-  ctx.strokeStyle = '#e0e0e0'
-  ctx.lineWidth = 0.5
-  const gridSize = 20
-  
-  for (let x = 0; x < LOGICAL_W; x += gridSize) {
-    ctx.beginPath()
-    ctx.moveTo(x, 0)
-    ctx.lineTo(x, LOGICAL_H)
-    ctx.stroke()
-  }
-
-  for (let y = 0; y < LOGICAL_H; y += gridSize) {
-    ctx.beginPath()
-    ctx.moveTo(0, y)
-    ctx.lineTo(LOGICAL_W, y)
-    ctx.stroke()
-  }
+  drawGridFor(ctx, umlView.value)
 }
 
 // roundRect 兼容助手：优先用原生 API，旧浏览器退化为手绘圆角矩形路径
@@ -1913,12 +2001,32 @@ const drawConnection = (conn: any) => {
 
 const handleCanvasClick = (e: MouseEvent) => {
   if (!canvas) return
+  // 刚平移过画布（拖拽空白）→ 不当作点击创建元素
+  if (viewMoved) {
+    viewMoved = false
+    return
+  }
   const p = toLogical(e, canvas)
   let x = p.x
   let y = p.y
+
+  // 三击删除：双击编辑延迟期内第三次点击同一元素 → 删除（与右键删除并行）
+  if (pendingDblClick && pendingEditTimer) {
+    if (pendingDblClick.kind === 'uml') {
+      const hit = elements.find(el => x >= el.x && x <= el.x + el.width && y >= el.y && y <= el.y + el.height)
+      if (hit && hit.id === pendingDblClick.elemId) {
+        clearPendingEdit()
+        deleteUmlElement(hit.id)
+        return
+      }
+    }
+    // 三击点偏 / 切了画布 → 取消待编辑
+    clearPendingEdit()
+  }
+
   // 钳制坐标，避免在画布边缘点击时把元素创建到可见区域之外
-  x = Math.max(0, Math.min(LOGICAL_W - 120, x))
-  y = Math.max(0, Math.min(LOGICAL_H - 100, y))
+  x = x
+  y = y
 
   // 防止双击时重复创建元素（双击会在300ms内触发两次点击）
   const now = Date.now()
@@ -1980,12 +2088,28 @@ const handleCanvasClick = (e: MouseEvent) => {
   // 选择工具（select）和连线工具（association, inheritance, composition）不会创建元素
 }
 
-const handleMouseDown = (e: MouseEvent) => {
+const handleMouseDown = (e: PointerEvent) => {
   if (!canvas) return
+  cancelZoomAnim()  // 手势开始：打断进行中的缩放动画
   const p = toLogical(e, canvas)
   const x = p.x
   const y = p.y
-  
+
+  // 触屏多指跟踪：第二指按下即进入 pinch 双指缩放
+  activePointers.set(e.pointerId, { x, y })
+  if (activePointers.size === 2) {
+    const pts = [...activePointers.values()]
+    pinchStartDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
+    pinchStartScale = umlView.value.scale
+    pinchActive = true
+    viewPanning = false
+    panCandidate = false
+    isDragging = false
+    selectedElement = null
+    selectedConnectionId.value = null
+    return
+  }
+
   if (selectedTool.value === 'association' || selectedTool.value === 'inheritance' || selectedTool.value === 'composition' || selectedTool.value === 'realization' || selectedTool.value === 'dependency' || selectedTool.value === 'aggregation') {
     for (let i = elements.length - 1; i >= 0; i--) {
       const elem = elements[i]
@@ -1998,7 +2122,7 @@ const handleMouseDown = (e: MouseEvent) => {
     }
     return
   }
-  
+
   for (let i = elements.length - 1; i >= 0; i--) {
     const elem = elements[i]
     if (x >= elem.x && x <= elem.x + elem.width &&
@@ -2009,7 +2133,7 @@ const handleMouseDown = (e: MouseEvent) => {
       return
     }
   }
-  
+
   // 点击连线可选中，用于标注关系基数
   const hitConn = hitTestConnection(x, y)
   if (hitConn) {
@@ -2018,31 +2142,87 @@ const handleMouseDown = (e: MouseEvent) => {
     return
   }
 
+  // 空处：记录候选平移（任意非连线工具拖动空白都平移，轻点仍创建/取消选中；连线工具不平移）
+  panCandidate = true
+  panCandidateStartX = x
+  panCandidateStartY = y
+
   selectedElement = null
   selectedConnectionId.value = null
   // 点击空白取消选中后立即重绘，清除残留的高亮边框
   redraw()
 }
 
-const handleMouseMove = (e: MouseEvent) => {
+const handleMouseMove = (e: PointerEvent) => {
   if (!canvas) return
   const p = toLogical(e, canvas)
   const x = p.x
   const y = p.y
-  
+
+  // 更新触点位置；pinch 进行中直接处理双指缩放
+  if (activePointers.has(e.pointerId)) activePointers.set(e.pointerId, { x, y })
+  if (pinchActive && activePointers.size >= 2) {
+    const pts = [...activePointers.values()]
+    const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
+    const center = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }
+    if (pinchStartDist > 0) {
+      const v = umlView.value
+      const newScale = Math.min(8, Math.max(0.2, pinchStartScale * (dist / pinchStartDist)))
+      const factor = newScale / v.scale
+      v.x = center.x - (center.x - v.x) * factor
+      v.y = center.y - (center.y - v.y) * factor
+      v.scale = newScale
+    }
+    setupCanvasTransform(canvas!)
+    redraw()
+    return
+  }
+
+  // 候选平移：拖动超过阈值才真正开始平移画布（区分「点击」与「拖动」，触屏也适用）
+  if (panCandidate) {
+    const dx = x - panCandidateStartX
+    const dy = y - panCandidateStartY
+    if (Math.hypot(dx, dy) > PAN_THRESHOLD) {
+      viewPanning = true
+      viewMoved = true
+      panCandidate = false
+      panStartX = x
+      panStartY = y
+    } else {
+      return
+    }
+  }
+
+  if (viewPanning) {
+    const v = umlView.value
+    v.x -= (x - panStartX)
+    v.y -= (y - panStartY)
+    panStartX = x
+    panStartY = y
+    viewMoved = true
+    redraw()
+    return
+  }
   if (isDragging && selectedElement) {
-    selectedElement.x = Math.max(0, Math.min(LOGICAL_W - selectedElement.width, x - dragOffset.x))
-    selectedElement.y = Math.max(0, Math.min(LOGICAL_H - selectedElement.height, y - dragOffset.y))
+    selectedElement.x = x - dragOffset.x
+    selectedElement.y = y - dragOffset.y
     redraw()
   }
 }
 
-const handleMouseUp = (e: MouseEvent) => {
+const handleMouseUp = (e: PointerEvent) => {
   if (!canvas) return
+  activePointers.delete(e.pointerId)
+  viewPanning = false
+  panCandidate = false
+  if (pinchActive && activePointers.size < 2) {
+    pinchActive = false
+    redraw()
+  }
   const p = toLogical(e, canvas)
   const x = p.x
   const y = p.y
-  
+
   if (isConnecting && connectStartElement) {
     for (let i = elements.length - 1; i >= 0; i--) {
       const elem = elements[i]
@@ -2325,12 +2505,33 @@ const deleteKnowledgeReq = async (entryId: string) => {
   await loadKnowledge()
 }
 
+const handleUmlWheel = (e: WheelEvent) => {
+  zoomView(umlView.value, e.clientX, e.clientY, e.deltaY, canvas, redraw)
+}
+
+const handleArchimateWheel = (e: WheelEvent) => {
+  zoomView(archView.value, e.clientX, e.clientY, e.deltaY, archimateCanvas.value, redrawArchimateCanvas)
+}
+
+const handleErWheel = (e: WheelEvent) => {
+  zoomView(erView.value, e.clientX, e.clientY, e.deltaY, erCanvas.value, redrawErCanvas)
+}
+
 const initCanvasEvents = () => {
   initCanvas()
-  document.removeEventListener('mousemove', handleMouseMove)
-  document.removeEventListener('mouseup', handleMouseUp)
-  document.addEventListener('mousemove', handleMouseMove)
-  document.addEventListener('mouseup', handleMouseUp)
+  // 先移除所有画布的 pointer 监听再注册当前画布：document 上始终只留一个 handler，避免标签切换累积导致同一事件被处理多次
+  document.removeEventListener('pointermove', handleMouseMove)
+  document.removeEventListener('pointermove', handleArchimateMouseMove)
+  document.removeEventListener('pointermove', handleErMouseMove)
+  document.removeEventListener('pointerup', handleMouseUp)
+  document.removeEventListener('pointerup', handleArchimateMouseUp)
+  document.removeEventListener('pointerup', handleErMouseUp)
+  document.removeEventListener('pointercancel', handleMouseUp)
+  document.removeEventListener('pointercancel', handleArchimateMouseUp)
+  document.removeEventListener('pointercancel', handleErMouseUp)
+  document.addEventListener('pointermove', handleMouseMove)
+  document.addEventListener('pointerup', handleMouseUp)
+  document.addEventListener('pointercancel', handleMouseUp)
 }
 
 const handleDoubleClick = (e: MouseEvent) => {
@@ -2338,16 +2539,35 @@ const handleDoubleClick = (e: MouseEvent) => {
   const p = toLogical(e, canvas)
   const x = p.x
   const y = p.y
-  
+
   for (let i = elements.length - 1; i >= 0; i--) {
     const elem = elements[i]
     if (x >= elem.x && x <= elem.x + elem.width &&
         y >= elem.y && y <= elem.y + elem.height) {
-      editingElement.value = JSON.parse(JSON.stringify(elem))
-      showEditModal.value = true
+      // 双击编辑延迟打开编辑框：350ms 内若第三次点击同一元素则改为三击删除
+      clearPendingEdit()
+      pendingDblClick = { kind: 'uml', elemId: elem.id }
+      pendingEditTimer = window.setTimeout(() => {
+        pendingEditTimer = null
+        pendingDblClick = null
+        editingElement.value = JSON.parse(JSON.stringify(elem))
+        showEditModal.value = true
+      }, TRIPLE_CLICK_MS)
       return
     }
   }
+}
+
+// 删除 UML 元素（三击删除复用，与右键删除并行）：入撤销历史 + 清理关联连线
+const deleteUmlElement = (id: number) => {
+  const idx = elements.findIndex(el => el.id === id)
+  if (idx === -1) return
+  saveUmlHistory()
+  elements.splice(idx, 1)
+  connections = connections.filter(c => c.startElement !== id && c.endElement !== id)
+  selectedElement = null
+  redraw()
+  updateStats()
 }
 
 const saveEdit = () => {
@@ -2362,7 +2582,8 @@ const saveEdit = () => {
 
 const redraw = () => {
   if (!ctx || !canvas) return
-  ctx.clearRect(0, 0, LOGICAL_W, LOGICAL_H)
+  const v = umlView.value
+  ctx.clearRect(v.x, v.y, LOGICAL_W / v.scale, LOGICAL_H / v.scale)
   drawGrid()
   connections.forEach(drawConnection)
   elements.forEach(drawElement)
@@ -2487,37 +2708,32 @@ const initArchimateCanvas = () => {
   const canvasEl = document.getElementById('archimateCanvas') as HTMLCanvasElement
   if (canvasEl) {
     archimateCanvas.value = canvasEl
+    setCanvasView(canvasEl, archView.value)
     setupCanvasTransform(canvasEl)
     archimateCtx = canvasEl.getContext('2d')
     redrawArchimateCanvas()
-    // 先移除再添加，避免切换标签页时监听器重复累积
-    document.removeEventListener('mousemove', handleArchimateMouseMove)
-    document.removeEventListener('mouseup', handleArchimateMouseUp)
-    document.addEventListener('mousemove', handleArchimateMouseMove)
-    document.addEventListener('mouseup', handleArchimateMouseUp)
+    // 先移除所有画布的 pointer 监听再注册当前画布：document 上始终只留一个 handler，避免标签切换累积导致同一事件被处理多次
+    document.removeEventListener('pointermove', handleMouseMove)
+    document.removeEventListener('pointermove', handleArchimateMouseMove)
+    document.removeEventListener('pointermove', handleErMouseMove)
+    document.removeEventListener('pointerup', handleMouseUp)
+    document.removeEventListener('pointerup', handleArchimateMouseUp)
+    document.removeEventListener('pointerup', handleErMouseUp)
+    document.removeEventListener('pointercancel', handleMouseUp)
+    document.removeEventListener('pointercancel', handleArchimateMouseUp)
+    document.removeEventListener('pointercancel', handleErMouseUp)
+    document.addEventListener('pointermove', handleArchimateMouseMove)
+    document.addEventListener('pointerup', handleArchimateMouseUp)
+    document.addEventListener('pointercancel', handleArchimateMouseUp)
   }
 }
 
 const redrawArchimateCanvas = () => {
   if (!archimateCtx || !archimateCanvas.value) return
-  archimateCtx.clearRect(0, 0, LOGICAL_W, LOGICAL_H)
-  
-  // 绘制网格背景
-  archimateCtx.strokeStyle = '#e8e8e8'
-  archimateCtx.lineWidth = 1
-  for (let x = 0; x < LOGICAL_W; x += 20) {
-    archimateCtx.beginPath()
-    archimateCtx.moveTo(x, 0)
-    archimateCtx.lineTo(x, LOGICAL_H)
-    archimateCtx.stroke()
-  }
-  for (let y = 0; y < LOGICAL_H; y += 20) {
-    archimateCtx.beginPath()
-    archimateCtx.moveTo(0, y)
-    archimateCtx.lineTo(LOGICAL_W, y)
-    archimateCtx.stroke()
-  }
-  
+  const v = archView.value
+  archimateCtx.clearRect(v.x, v.y, LOGICAL_W / v.scale, LOGICAL_H / v.scale)
+  drawGridFor(archimateCtx, v)
+
   // 绘制连接
   archimateConnections.forEach((conn: any) => {
     const startElem = archimateElements.find((e: any) => e.id === conn.startElement)
@@ -2660,12 +2876,27 @@ const drawArchimateConnection = (start: any, end: any, type: string) => {
 
 const handleArchimateClick = (e: MouseEvent) => {
   if (!archimateCanvas.value) return
+  if (viewMoved) { viewMoved = false; return }
   const p = toLogical(e, archimateCanvas.value)
   let x = p.x
   let y = p.y
+
+  // 三击删除：双击编辑延迟期内第三次点击同一元素 → 删除（与右键删除并行）
+  if (pendingDblClick && pendingEditTimer) {
+    if (pendingDblClick.kind === 'archimate') {
+      const hit = archimateElements.find(el => x >= el.x && x <= el.x + el.width && y >= el.y && y <= el.y + el.height)
+      if (hit && hit.id === pendingDblClick.elemId) {
+        clearPendingEdit()
+        deleteArchimateElement(hit.id)
+        return
+      }
+    }
+    clearPendingEdit()
+  }
+
   // 钳制坐标，避免在画布边缘点击时把元素创建到可见区域之外
-  x = Math.max(0, Math.min(LOGICAL_W - 120, x))
-  y = Math.max(0, Math.min(LOGICAL_H - 80, y))
+  x = x
+  y = y
 
   // 防止双击时重复创建元素（与 UML 一致的防抖）
   const now = Date.now()
@@ -2728,14 +2959,29 @@ const getElementName = (type: string) => {
   return names[type] || type
 }
 
-const handleArchimateMouseDown = (e: MouseEvent) => {
+const handleArchimateMouseDown = (e: PointerEvent) => {
   if (!archimateCanvas.value) return
+  cancelZoomAnim()  // 手势开始：打断进行中的缩放动画
   const p = toLogical(e, archimateCanvas.value)
   const x = p.x
   const y = p.y
-  
+
+  // 触屏多指跟踪：第二指按下即进入 pinch 双指缩放
+  activePointers.set(e.pointerId, { x, y })
+  if (activePointers.size === 2) {
+    const pts = [...activePointers.values()]
+    pinchStartDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
+    pinchStartScale = archView.value.scale
+    pinchActive = true
+    viewPanning = false
+    panCandidate = false
+    archimateIsDragging = false
+    archimateSelectedElement = null
+    return
+  }
+
   const currentTool = selectedArchimateTool.value
-  
+
   // 连线工具
   if (currentTool === 'association' || currentTool === 'realization' || currentTool === 'serving') {
     for (let i = archimateElements.length - 1; i >= 0; i--) {
@@ -2749,7 +2995,7 @@ const handleArchimateMouseDown = (e: MouseEvent) => {
     }
     return
   }
-  
+
   // 选择工具 - 拖拽元素
   for (let i = archimateElements.length - 1; i >= 0; i--) {
     const elem = archimateElements[i]
@@ -2761,29 +3007,84 @@ const handleArchimateMouseDown = (e: MouseEvent) => {
       return
     }
   }
-  
+
+  // 空处：记录候选平移（任意非连线工具拖动空白都平移，轻点仍创建/选中；连线工具不平移）
+  panCandidate = true
+  panCandidateStartX = x
+  panCandidateStartY = y
   archimateSelectedElement = null
 }
 
-const handleArchimateMouseMove = (e: MouseEvent) => {
+const handleArchimateMouseMove = (e: PointerEvent) => {
   if (!archimateCanvas.value) return
   const p = toLogical(e, archimateCanvas.value)
   const x = p.x
   const y = p.y
-  
+
+  // 更新触点位置；pinch 进行中直接处理双指缩放
+  if (activePointers.has(e.pointerId)) activePointers.set(e.pointerId, { x, y })
+  if (pinchActive && activePointers.size >= 2) {
+    const pts = [...activePointers.values()]
+    const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
+    const center = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }
+    if (pinchStartDist > 0) {
+      const v = archView.value
+      const newScale = Math.min(8, Math.max(0.2, pinchStartScale * (dist / pinchStartDist)))
+      const factor = newScale / v.scale
+      v.x = center.x - (center.x - v.x) * factor
+      v.y = center.y - (center.y - v.y) * factor
+      v.scale = newScale
+    }
+    setupCanvasTransform(archimateCanvas.value!)
+    redrawArchimateCanvas()
+    return
+  }
+
+  // 候选平移：拖动超过阈值才真正开始平移画布
+  if (panCandidate) {
+    const dx = x - panCandidateStartX
+    const dy = y - panCandidateStartY
+    if (Math.hypot(dx, dy) > PAN_THRESHOLD) {
+      viewPanning = true
+      viewMoved = true
+      panCandidate = false
+      panStartX = x
+      panStartY = y
+    } else {
+      return
+    }
+  }
+
+  if (viewPanning) {
+    const v = archView.value
+    v.x -= (x - panStartX)
+    v.y -= (y - panStartY)
+    panStartX = x
+    panStartY = y
+    viewMoved = true
+    redrawArchimateCanvas()
+    return
+  }
   if (archimateIsDragging && archimateSelectedElement) {
-    archimateSelectedElement.x = Math.max(0, Math.min(LOGICAL_W - archimateSelectedElement.width, x - archimateDragOffset.x))
-    archimateSelectedElement.y = Math.max(0, Math.min(LOGICAL_H - archimateSelectedElement.height, y - archimateDragOffset.y))
+    archimateSelectedElement.x = x - archimateDragOffset.x
+    archimateSelectedElement.y = y - archimateDragOffset.y
     redrawArchimateCanvas()
   }
 }
 
-const handleArchimateMouseUp = (e: MouseEvent) => {
+const handleArchimateMouseUp = (e: PointerEvent) => {
   if (!archimateCanvas.value) return
+  activePointers.delete(e.pointerId)
+  viewPanning = false
+  panCandidate = false
+  if (pinchActive && activePointers.size < 2) {
+    pinchActive = false
+    redrawArchimateCanvas()
+  }
   const p = toLogical(e, archimateCanvas.value)
   const x = p.x
   const y = p.y
-  
+
   if (archimateIsConnecting && archimateConnectStartElement) {
     for (let i = archimateElements.length - 1; i >= 0; i--) {
       const elem = archimateElements[i]
@@ -2816,16 +3117,35 @@ const handleArchimateDoubleClick = (e: MouseEvent) => {
   const p = toLogical(e, archimateCanvas.value)
   const x = p.x
   const y = p.y
-  
+
   for (let i = archimateElements.length - 1; i >= 0; i--) {
     const elem = archimateElements[i]
     if (x >= elem.x && x <= elem.x + elem.width &&
         y >= elem.y && y <= elem.y + elem.height) {
-      archimateEditingElement.value = JSON.parse(JSON.stringify(elem))
-      showArchimateEditModal.value = true
+      // 双击编辑延迟打开编辑框：350ms 内若第三次点击同一元素则改为三击删除
+      clearPendingEdit()
+      pendingDblClick = { kind: 'archimate', elemId: elem.id }
+      pendingEditTimer = window.setTimeout(() => {
+        pendingEditTimer = null
+        pendingDblClick = null
+        archimateEditingElement.value = JSON.parse(JSON.stringify(elem))
+        showArchimateEditModal.value = true
+      }, TRIPLE_CLICK_MS)
       return
     }
   }
+}
+
+// 删除 ArchiMate 元素（三击删除复用，与右键删除并行）：入撤销历史 + 清理关联连线
+const deleteArchimateElement = (id: number) => {
+  const idx = archimateElements.findIndex(el => el.id === id)
+  if (idx === -1) return
+  saveArchimateHistory()
+  archimateElements.splice(idx, 1)
+  archimateConnections = archimateConnections.filter(c => c.startElement !== id && c.endElement !== id)
+  archimateSelectedElement = null
+  redrawArchimateCanvas()
+  updateStats()
 }
 
 const saveArchimateEdit = () => {
@@ -2945,36 +3265,31 @@ const initErCanvas = () => {
   const canvasEl = document.getElementById('erCanvas') as HTMLCanvasElement
   if (canvasEl) {
     erCanvas.value = canvasEl
+    setCanvasView(canvasEl, erView.value)
     setupCanvasTransform(canvasEl)
     erCtx = canvasEl.getContext('2d')
     redrawErCanvas()
-    // 先移除再添加，避免切换标签页时监听器重复累积
-    document.removeEventListener('mousemove', handleErMouseMove)
-    document.removeEventListener('mouseup', handleErMouseUp)
-    document.addEventListener('mousemove', handleErMouseMove)
-    document.addEventListener('mouseup', handleErMouseUp)
+    // 先移除所有画布的 pointer 监听再注册当前画布：document 上始终只留一个 handler，避免标签切换累积导致同一事件被处理多次
+    document.removeEventListener('pointermove', handleMouseMove)
+    document.removeEventListener('pointermove', handleArchimateMouseMove)
+    document.removeEventListener('pointermove', handleErMouseMove)
+    document.removeEventListener('pointerup', handleMouseUp)
+    document.removeEventListener('pointerup', handleArchimateMouseUp)
+    document.removeEventListener('pointerup', handleErMouseUp)
+    document.removeEventListener('pointercancel', handleMouseUp)
+    document.removeEventListener('pointercancel', handleArchimateMouseUp)
+    document.removeEventListener('pointercancel', handleErMouseUp)
+    document.addEventListener('pointermove', handleErMouseMove)
+    document.addEventListener('pointerup', handleErMouseUp)
+    document.addEventListener('pointercancel', handleErMouseUp)
   }
 }
 
 const redrawErCanvas = () => {
   if (!erCtx || !erCanvas.value) return
-  erCtx.clearRect(0, 0, LOGICAL_W, LOGICAL_H)
-  
-  // 绘制网格背景
-  erCtx.strokeStyle = '#e8e8e8'
-  erCtx.lineWidth = 1
-  for (let x = 0; x < LOGICAL_W; x += 20) {
-    erCtx.beginPath()
-    erCtx.moveTo(x, 0)
-    erCtx.lineTo(x, LOGICAL_H)
-    erCtx.stroke()
-  }
-  for (let y = 0; y < LOGICAL_H; y += 20) {
-    erCtx.beginPath()
-    erCtx.moveTo(0, y)
-    erCtx.lineTo(LOGICAL_W, y)
-    erCtx.stroke()
-  }
+  const v = erView.value
+  erCtx.clearRect(v.x, v.y, LOGICAL_W / v.scale, LOGICAL_H / v.scale)
+  drawGridFor(erCtx, v)
   
   // 绘制关系线
   erRelations.forEach((rel: any) => {
@@ -3168,12 +3483,27 @@ const drawErRelation = (start: any, end: any, type: string) => {
 
 const handleErClick = (e: MouseEvent) => {
   if (!erCanvas.value) return
+  if (viewMoved) { viewMoved = false; return }
   const p = toLogical(e, erCanvas.value)
   let x = p.x
   let y = p.y
+
+  // 三击删除：双击编辑延迟期内第三次点击同一实体 → 删除（与右键删除并行）
+  if (pendingDblClick && pendingEditTimer) {
+    if (pendingDblClick.kind === 'er') {
+      const hit = erEntities.find(ent => x >= ent.x && x <= ent.x + ent.width && y >= ent.y && y <= ent.y + (ent.displayHeight || 80))
+      if (hit && hit.id === pendingDblClick.elemId) {
+        clearPendingEdit()
+        deleteErEntity(hit.id)
+        return
+      }
+    }
+    clearPendingEdit()
+  }
+
   // 钳制坐标，避免在画布边缘点击时把实体创建到可见区域之外
-  x = Math.max(0, Math.min(LOGICAL_W - 150, x))
-  y = Math.max(0, Math.min(LOGICAL_H - 80, y))
+  x = x
+  y = y
 
   // 防止双击时重复创建实体（与 UML 一致的防抖）
   const now = Date.now()
@@ -3215,14 +3545,29 @@ const handleErClick = (e: MouseEvent) => {
   }
 }
 
-const handleErMouseDown = (e: MouseEvent) => {
+const handleErMouseDown = (e: PointerEvent) => {
   if (!erCanvas.value) return
+  cancelZoomAnim()  // 手势开始：打断进行中的缩放动画
   const p = toLogical(e, erCanvas.value)
   const x = p.x
   const y = p.y
-  
+
+  // 触屏多指跟踪：第二指按下即进入 pinch 双指缩放
+  activePointers.set(e.pointerId, { x, y })
+  if (activePointers.size === 2) {
+    const pts = [...activePointers.values()]
+    pinchStartDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
+    pinchStartScale = erView.value.scale
+    pinchActive = true
+    viewPanning = false
+    panCandidate = false
+    erIsDragging = false
+    erSelectedEntity = null
+    return
+  }
+
   const currentTool = selectedErTool.value
-  
+
   // 关系工具
   if (currentTool === 'oneToOne' || currentTool === 'oneToMany' || currentTool === 'manyToMany') {
     for (let i = erEntities.length - 1; i >= 0; i--) {
@@ -3236,7 +3581,7 @@ const handleErMouseDown = (e: MouseEvent) => {
     }
     return
   }
-  
+
   // 选择工具 - 拖拽实体
   for (let i = erEntities.length - 1; i >= 0; i--) {
     const entity = erEntities[i]
@@ -3248,29 +3593,84 @@ const handleErMouseDown = (e: MouseEvent) => {
       return
     }
   }
-  
+
+  // 空处：记录候选平移（任意非连线工具拖动空白都平移，轻点仍创建/选中；关系工具不平移）
+  panCandidate = true
+  panCandidateStartX = x
+  panCandidateStartY = y
   erSelectedEntity = null
 }
 
-const handleErMouseMove = (e: MouseEvent) => {
+const handleErMouseMove = (e: PointerEvent) => {
   if (!erCanvas.value) return
   const p = toLogical(e, erCanvas.value)
   const x = p.x
   const y = p.y
-  
+
+  // 更新触点位置；pinch 进行中直接处理双指缩放
+  if (activePointers.has(e.pointerId)) activePointers.set(e.pointerId, { x, y })
+  if (pinchActive && activePointers.size >= 2) {
+    const pts = [...activePointers.values()]
+    const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
+    const center = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }
+    if (pinchStartDist > 0) {
+      const v = erView.value
+      const newScale = Math.min(8, Math.max(0.2, pinchStartScale * (dist / pinchStartDist)))
+      const factor = newScale / v.scale
+      v.x = center.x - (center.x - v.x) * factor
+      v.y = center.y - (center.y - v.y) * factor
+      v.scale = newScale
+    }
+    setupCanvasTransform(erCanvas.value!)
+    redrawErCanvas()
+    return
+  }
+
+  // 候选平移：拖动超过阈值才真正开始平移画布
+  if (panCandidate) {
+    const dx = x - panCandidateStartX
+    const dy = y - panCandidateStartY
+    if (Math.hypot(dx, dy) > PAN_THRESHOLD) {
+      viewPanning = true
+      viewMoved = true
+      panCandidate = false
+      panStartX = x
+      panStartY = y
+    } else {
+      return
+    }
+  }
+
+  if (viewPanning) {
+    const v = erView.value
+    v.x -= (x - panStartX)
+    v.y -= (y - panStartY)
+    panStartX = x
+    panStartY = y
+    viewMoved = true
+    redrawErCanvas()
+    return
+  }
   if (erIsDragging && erSelectedEntity) {
-    erSelectedEntity.x = Math.max(0, Math.min(LOGICAL_W - erSelectedEntity.width, x - erDragOffset.x))
-    erSelectedEntity.y = Math.max(0, Math.min(LOGICAL_H - erSelectedEntity.displayHeight, y - erDragOffset.y))
+    erSelectedEntity.x = x - erDragOffset.x
+    erSelectedEntity.y = y - erDragOffset.y
     redrawErCanvas()
   }
 }
 
-const handleErMouseUp = (e: MouseEvent) => {
+const handleErMouseUp = (e: PointerEvent) => {
   if (!erCanvas.value) return
+  activePointers.delete(e.pointerId)
+  viewPanning = false
+  panCandidate = false
+  if (pinchActive && activePointers.size < 2) {
+    pinchActive = false
+    redrawErCanvas()
+  }
   const p = toLogical(e, erCanvas.value)
   const x = p.x
   const y = p.y
-  
+
   if (erIsConnecting && erConnectStartEntity) {
     for (let i = erEntities.length - 1; i >= 0; i--) {
       const entity = erEntities[i]
@@ -3309,16 +3709,35 @@ const handleErDoubleClick = (e: MouseEvent) => {
   const p = toLogical(e, erCanvas.value)
   const x = p.x
   const y = p.y
-  
+
   for (let i = erEntities.length - 1; i >= 0; i--) {
     const entity = erEntities[i]
     if (x >= entity.x && x <= entity.x + entity.width &&
         y >= entity.y && y <= entity.y + (entity.displayHeight || 80)) {
-      erEditingEntity.value = JSON.parse(JSON.stringify(entity))
-      showErEditModal.value = true
+      // 双击编辑延迟打开编辑框：350ms 内若第三次点击同一实体则改为三击删除
+      clearPendingEdit()
+      pendingDblClick = { kind: 'er', elemId: entity.id }
+      pendingEditTimer = window.setTimeout(() => {
+        pendingEditTimer = null
+        pendingDblClick = null
+        erEditingEntity.value = JSON.parse(JSON.stringify(entity))
+        showErEditModal.value = true
+      }, TRIPLE_CLICK_MS)
       return
     }
   }
+}
+
+// 删除 ER 实体（三击删除复用，与右键删除并行）：入撤销历史 + 清理关联关系
+const deleteErEntity = (id: number) => {
+  const idx = erEntities.findIndex(ent => ent.id === id)
+  if (idx === -1) return
+  saveErHistory()
+  erEntities.splice(idx, 1)
+  erRelations = erRelations.filter(r => r.startEntity !== id && r.endEntity !== id)
+  erSelectedEntity = null
+  redrawErCanvas()
+  updateStats()
 }
 
 const addErField = () => {
@@ -3928,6 +4347,12 @@ const removeMethod = (index: number) => {
 
 watch(activeTab, (newTab) => {
   updateStats()
+  // 切画布时清掉未完成的三击编辑等待与触点跟踪，避免残留状态串台
+  clearPendingEdit()
+  activePointers.clear()
+  pinchActive = false
+  viewPanning = false
+  panCandidate = false
   if (newTab === 'uml') {
     // 切换到 UML 标签时，默认选择选择工具
     selectedTool.value = 'select'
@@ -4039,15 +4464,23 @@ const exitCollabHeader = async () => {
 // === 通用顶部 toast 通知（替代浏览器 alert 弹窗）===
 const toastMsg = ref('')
 const toastType = ref<'success' | 'error' | 'warning' | 'info'>('info')
+let toastTimer: number | null = null
 const toastIcon = computed(() => ({
   success: 'fa-circle-check', error: 'fa-circle-exclamation', warning: 'fa-triangle-exclamation', info: 'fa-circle-info'
 }[toastType.value]))
-// 提示不自动收起：保持显示，直到用户点 × 或下一条提示替换
+// 纯提示（info/success）3 秒自动关闭；需用户处理/确认的（warning/error）保持显示，点 × 关闭
 const showToast = (text: string, type: 'success' | 'error' | 'warning' | 'info' = 'info') => {
   toastMsg.value = text
   toastType.value = type
+  if (toastTimer) window.clearTimeout(toastTimer)
+  if (type === 'info' || type === 'success') {
+    toastTimer = window.setTimeout(() => { toastMsg.value = '' }, 3000)
+  }
 }
-const closeToast = () => { toastMsg.value = '' }
+const closeToast = () => {
+  if (toastTimer) window.clearTimeout(toastTimer)
+  toastMsg.value = ''
+}
 const showCollabToast = (text: string) => showToast(text, 'info')
 // 协作入口：确认后进入 / 退出
 const toggleCollab = () => {
@@ -4323,7 +4756,7 @@ const joinCollabProject = async (id: string) => {
 const joinCurrentProject = async () => {
   const uid = collabSearchUserId.value.trim()
   if (!uid) {
-    showCollabToast('请输入对方账户 ID', 'warning')
+    showToast('请输入对方账户 ID', 'warning')
     return
   }
   collabSearchMsg.value = ''
@@ -4774,7 +5207,7 @@ onMounted(() => {
 
     <div v-if="activeTab === 'dashboard'" class="dashboard-grid">
       <div class="card">
-        <div class="card-icon" style="background: linear-gradient(135deg, #1f5eff 0%, #764ba2 100%);">
+        <div class="card-icon" style="background: linear-gradient(135deg, #1f5eff 0%, #3b82f6 100%);">
           <i class="fas fa-folder-open"></i>
         </div>
         <h3 class="card-title">项目管理</h3>
@@ -4785,7 +5218,7 @@ onMounted(() => {
       </div>
 
       <div class="card">
-        <div class="card-icon" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
+        <div class="card-icon" style="background: linear-gradient(135deg, #2563eb 0%, #4a7bff 100%);">
           <i class="fas fa-diagram-project"></i>
         </div>
         <h3 class="card-title">UML建模</h3>
@@ -4796,7 +5229,7 @@ onMounted(() => {
       </div>
 
       <div class="card">
-        <div class="card-icon" style="background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);">
+        <div class="card-icon" style="background: linear-gradient(135deg, #1d4ed8 0%, #3b82f6 100%);">
           <i class="fas fa-cubes"></i>
         </div>
         <h3 class="card-title">ArchiMate建模</h3>
@@ -4807,7 +5240,7 @@ onMounted(() => {
       </div>
 
       <div class="card">
-        <div class="card-icon" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
+        <div class="card-icon" style="background: linear-gradient(135deg, #2f6bff 0%, #5b8dff 100%);">
           <i class="fas fa-database"></i>
         </div>
         <h3 class="card-title">数据建模</h3>
@@ -4818,7 +5251,7 @@ onMounted(() => {
       </div>
 
       <div class="card">
-        <div class="card-icon" style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);">
+        <div class="card-icon" style="background: linear-gradient(135deg, #1f5eff 0%, #2f6bff 100%);">
           <i class="fas fa-code"></i>
         </div>
         <h3 class="card-title">代码生成</h3>
@@ -4829,7 +5262,7 @@ onMounted(() => {
       </div>
 
       <div class="card">
-        <div class="card-icon" style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);">
+        <div class="card-icon" style="background: linear-gradient(135deg, #2456ff 0%, #6a5acd 100%);">
           <i class="fas fa-robot"></i>
         </div>
         <h3 class="card-title">AI助手</h3>
@@ -4900,10 +5333,18 @@ onMounted(() => {
         width="1150"
         height="600"
         @click="handleCanvasClick"
-        @mousedown="handleMouseDown"
+        @pointerdown="handleMouseDown"
+        @wheel.prevent="handleUmlWheel"
         @dblclick="handleDoubleClick"
         @contextmenu="handleUmlContextMenu"
       ></canvas>
+      <!-- 悬浮缩放控制（放大/缩小/百分比/复位） -->
+      <div class="canvas-zoom-controls">
+        <button class="zoom-btn" @click="zoomControl('uml', 'out')" title="缩小"><i class="fas fa-minus"></i></button>
+        <button class="zoom-btn" @click="zoomControl('uml', 'in')" title="放大"><i class="fas fa-plus"></i></button>
+        <span class="zoom-pct">{{ Math.round(umlView.scale * 100) }}%</span>
+        <button class="zoom-btn" @click="zoomControl('uml', 'reset')" title="复位到 100%"><i class="fas fa-expand"></i></button>
+      </div>
       <div class="canvas-statusbar">
         <div class="status-item"><i class="fas fa-folder"></i> <strong>{{ currentModelName || '未选择项目' }}</strong></div>
         <div class="status-item"><i class="fas fa-box"></i> {{ elements.length }} 元素</div>
@@ -4916,7 +5357,7 @@ onMounted(() => {
           </span>
           在线 {{ onlineUsers.length }}
         </div>
-        <div class="status-item status-right"><i class="fas fa-info-circle"></i> 双击编辑 · 右键删除 · 连线工具点两元素</div>
+        <div class="status-item status-right"><i class="fas fa-info-circle"></i> 双击编辑 · 三击删除 · 右键删除 · 连线工具点两元素</div>
       </div>
     </div>
 
@@ -4924,21 +5365,28 @@ onMounted(() => {
     <div v-if="activeTab === 'archimate'" class="card canvas-container">
       <canvas
         ref="archimateCanvas"
-        id="archimateCanvas" 
-        width="1150" 
+        id="archimateCanvas"
+        width="1150"
         height="600"
         @click="handleArchimateClick"
-        @mousedown="handleArchimateMouseDown"
+        @pointerdown="handleArchimateMouseDown"
+        @wheel.prevent="handleArchimateWheel"
         @dblclick="handleArchimateDoubleClick"
         @contextmenu="handleArchimateContextMenu"
       ></canvas>
-      
+      <!-- 悬浮缩放控制（放大/缩小/百分比/复位） -->
+      <div class="canvas-zoom-controls">
+        <button class="zoom-btn" @click="zoomControl('archimate', 'out')" title="缩小"><i class="fas fa-minus"></i></button>
+        <button class="zoom-btn" @click="zoomControl('archimate', 'in')" title="放大"><i class="fas fa-plus"></i></button>
+        <span class="zoom-pct">{{ Math.round(archView.scale * 100) }}%</span>
+        <button class="zoom-btn" @click="zoomControl('archimate', 'reset')" title="复位到 100%"><i class="fas fa-expand"></i></button>
+      </div>
       <div class="canvas-statusbar">
         <div class="status-item"><i class="fas fa-folder"></i> <strong>{{ currentModelName || '未选择项目' }}</strong></div>
         <div class="status-item"><i class="fas fa-cube"></i> {{ archimateElements.length }} 元素</div>
         <div class="status-item"><i class="fas fa-link"></i> {{ archimateConnections.length }} 关系</div>
         <div class="status-item"><i class="fas fa-mouse-pointer"></i> {{ selectedArchimateToolName }}</div>
-        <div class="status-item status-right"><i class="fas fa-info-circle"></i> 双击编辑 · 右键删除 · 连线工具点两元素</div>
+        <div class="status-item status-right"><i class="fas fa-info-circle"></i> 双击编辑 · 三击删除 · 右键删除 · 连线工具点两元素</div>
       </div>
     </div>
 
@@ -4946,21 +5394,28 @@ onMounted(() => {
     <div v-if="activeTab === 'data'" class="card canvas-container">
       <canvas
         ref="erCanvas"
-        id="erCanvas" 
-        width="1150" 
+        id="erCanvas"
+        width="1150"
         height="600"
         @click="handleErClick"
-        @mousedown="handleErMouseDown"
+        @pointerdown="handleErMouseDown"
+        @wheel.prevent="handleErWheel"
         @dblclick="handleErDoubleClick"
         @contextmenu="handleErContextMenu"
       ></canvas>
-      
+      <!-- 悬浮缩放控制（放大/缩小/百分比/复位） -->
+      <div class="canvas-zoom-controls">
+        <button class="zoom-btn" @click="zoomControl('er', 'out')" title="缩小"><i class="fas fa-minus"></i></button>
+        <button class="zoom-btn" @click="zoomControl('er', 'in')" title="放大"><i class="fas fa-plus"></i></button>
+        <span class="zoom-pct">{{ Math.round(erView.scale * 100) }}%</span>
+        <button class="zoom-btn" @click="zoomControl('er', 'reset')" title="复位到 100%"><i class="fas fa-expand"></i></button>
+      </div>
       <div class="canvas-statusbar">
         <div class="status-item"><i class="fas fa-folder"></i> <strong>{{ currentModelName || '未选择项目' }}</strong></div>
         <div class="status-item"><i class="fas fa-table"></i> {{ erEntities.length }} 表</div>
         <div class="status-item"><i class="fas fa-link"></i> {{ erRelations.length }} 关系</div>
         <div class="status-item"><i class="fas fa-mouse-pointer"></i> {{ selectedErToolName }}</div>
-        <div class="status-item status-right"><i class="fas fa-info-circle"></i> 双击编辑 · 右键删除 · 连线工具点两表</div>
+        <div class="status-item status-right"><i class="fas fa-info-circle"></i> 双击编辑 · 三击删除 · 右键删除 · 连线工具点两表</div>
       </div>
     </div>
 
@@ -6553,6 +7008,52 @@ onMounted(() => {
   border-radius: var(--radius);
   overflow: hidden;
   box-shadow: var(--shadow-sm);
+}
+.canvas-container canvas {
+  touch-action: none;  /* 触屏：拖动/缩放手势交给画布处理，不触发页面滚动 */
+  cursor: default;
+}
+
+/* 悬浮缩放控制按钮组（画布右上角，触屏/桌面通用） */
+.canvas-zoom-controls {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #e0e4ea;
+  border-radius: 999px;
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(4px);
+}
+.canvas-zoom-controls .zoom-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #444;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.canvas-zoom-controls .zoom-btn:hover {
+  background: #1f5eff;
+  color: #fff;
+}
+.canvas-zoom-controls .zoom-pct {
+  min-width: 46px;
+  text-align: center;
+  font-size: 12px;
+  color: #666;
+  user-select: none;
 }
 
 /* 关系基数标注工具栏（UML 连线） */

@@ -242,7 +242,7 @@ const submit = () => {
         </template>
       </p>
 
-      <p class="auth-foot">本地演示版 · 数据存储于本机 SQLite</p>
+      <p class="auth-foot">公开演示版 · 数据存储于云服务器</p>
     </div>
   </div>
 </template>
