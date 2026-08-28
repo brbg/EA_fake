@@ -5271,6 +5271,10 @@ onMounted(() => {
 </template>
 </div>
 
+    <!-- 页面切换过渡：tab 内容统一淡入淡出（key 变化触发） -->
+    <Transition name="page-fade" mode="out-in">
+    <div :key="activeTab" class="page-view">
+
     <div v-if="activeTab === 'dashboard'" class="dashboard-grid">
       <div class="card">
         <div class="card-icon" style="background: linear-gradient(135deg, #1f5eff 0%, #3b82f6 100%);">
@@ -5717,6 +5721,8 @@ onMounted(() => {
     <div v-if="activeTab === 'ai'" class="card" style="padding: 0; height: calc(100vh - 120px);">
       <AIAssistant :project-context="projectContext" :project-id="currentModelId || ''" />
     </div>
+    </div>
+    </Transition>
   </div>
 
   <!-- AI 下拉菜单的外层遮罩：点击任意空白关闭 -->
@@ -7120,6 +7126,23 @@ onMounted(() => {
   font-size: 12px;
   color: #666;
   user-select: none;
+}
+
+/* 页面（tab 内容）切换过渡：淡入淡出 + 轻微位移，慢而丝滑 */
+.page-fade-enter-active,
+.page-fade-leave-active {
+  transition: opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1), transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.page-fade-enter-from {
+  opacity: 0;
+  transform: translateY(18px);
+}
+.page-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-10px);
+}
+.page-view {
+  min-height: 60vh;
 }
 
 /* 关系基数标注工具栏（UML 连线） */
