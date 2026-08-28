@@ -3910,6 +3910,24 @@ const kickCollabMember = async (userId: string) => {
   await loadModels()
   await toggleCollabDropdown()
 }
+const endCollabAll = async () => {
+  if (!currentModelId.value) return
+  const members = headerCollabMembers.value?.members || []
+  if (!members.length) {
+    showCollabToast('当前没有协作者')
+    return
+  }
+  if (!confirm(`确定结束协作？将强制移出全部 ${members.length} 位协作者，他们不再看到该项目。`)) return
+  for (const m of members) {
+    if (m.user_id !== authUser.value?.id) {
+      await collabApi.revoke(currentModelId.value, m.user_id)
+    }
+  }
+  showCollabToast('已结束协作，移出全部协作者')
+  await loadModels()
+  await toggleCollabDropdown()
+}
+
 const exitCollabHeader = async () => {
   if (!currentModelId.value || !confirm('确定退出该项目的协作？退出后项目将从你的列表移除。')) return
   const { ok, status, data } = await collabApi.leave(currentModelId.value)
@@ -4342,7 +4360,9 @@ onMounted(() => {
               <div v-if="currentModelRole === 'editor'" class="dropdown-action danger" @click="exitCollabHeader">
                 <i class="fas fa-sign-out-alt"></i> 退出协作
               </div>
-              <div v-else-if="currentModelRole === 'owner'" class="dropdown-hint" style="margin-top:8px;">你是项目拥有者</div>
+              <div v-else-if="currentModelRole === 'owner'" class="dropdown-action danger" @click="endCollabAll">
+                <i class="fas fa-hand"></i> 结束协作（移出全部协作者）
+              </div>
               <div class="dropdown-action" @click="toggleCollab">
                 <i class="fas" :class="collabEnabled ? 'fa-pause' : 'fa-play'"></i>
                 {{ collabEnabled ? '退出协作模式' : '进入协作模式' }}
@@ -5382,11 +5402,6 @@ onMounted(() => {
                       <strong>{{ mem.username }}</strong>
                       <div style="font-size: 12px; color: #999;">{{ mem.role === 'editor' ? '协作者' : (mem.role || '成员') }} · {{ (mem.joined_at || '').replace('T', ' ').slice(0, 16) }}</div>
                     </div>
-                    <button
-                      class="btn btn-outline"
-                      style="padding: 2px 10px; font-size: 12px; color: #e74c3c;"
-                      @click="revokeCollabProject(m.id, mem.user_id)"
-                    >取消</button>
                   </div>
                   <p v-if="!collabProjectMembers[m.id].members.length" style="color: #999; font-size: 12px;">暂无协作者</p>
                 </template>
