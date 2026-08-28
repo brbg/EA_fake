@@ -2215,6 +2215,7 @@ const handleMouseMove = (e: PointerEvent) => {
     panLastClientX = e.clientX
     panLastClientY = e.clientY
     viewMoved = true
+    setupCanvasTransform(canvas!)  // 关键：把新视图应用到 ctx 变换，画面才会跟随
     redraw()
     return
   }
@@ -3081,6 +3082,7 @@ const handleArchimateMouseMove = (e: PointerEvent) => {
     panLastClientX = e.clientX
     panLastClientY = e.clientY
     viewMoved = true
+    setupCanvasTransform(archimateCanvas.value!)  // 关键：把新视图应用到 ctx 变换
     redrawArchimateCanvas()
     return
   }
@@ -3666,6 +3668,7 @@ const handleErMouseMove = (e: PointerEvent) => {
     panLastClientX = e.clientX
     panLastClientY = e.clientY
     viewMoved = true
+    setupCanvasTransform(erCanvas.value!)  // 关键：把新视图应用到 ctx 变换
     redrawErCanvas()
     return
   }
