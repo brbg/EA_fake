@@ -497,7 +497,8 @@ def _delete_project_data(project_id, model_id):
     """级联删除一个项目的所有数据（db key + 内存缓存）。"""
     for key in (f'model:{model_id}', f'project:{project_id}', f'comments:{model_id}',
                 f'memory:{model_id}', f'operation_logs:{project_id}', f'snapshots:{project_id}',
-                f'req:{project_id}', f'tc:{project_id}', f'def:{project_id}', f'task:{project_id}'):
+                f'req:{project_id}', f'tc:{project_id}', f'def:{project_id}', f'task:{project_id}',
+                f'knowledge:{project_id}', f'collab_proposals:{project_id}'):
         db.delete(key)
     for k in db.keys('snapshot:'):
         v = db.get(k)
