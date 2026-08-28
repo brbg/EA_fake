@@ -3929,6 +3929,7 @@ const onlineUsers = ref<string[]>([])
 const showCollabDropdown = ref(false)
 const showMyId = ref(false)
 const showJoinInput = ref(false)
+const showMyCollab = ref(false)
 const headerCollabMembers = ref<{ owner_id: string; members: Array<{ user_id: string; username: string; role?: string }> } | null>(null)
 const onlineUserSet = computed(() => new Set(onlineUsers.value))
 const toggleCollabDropdown = async () => {
@@ -4085,8 +4086,10 @@ const initSocket = () => {
   })
   socket.on('proposal_rejected', (d: any) => {
     if (d?.project_id === currentModelId.value) {
-      showCollabToast(`你的变更「${d?.title || ''}」已被拒绝`)
+      showCollabToast(`你的变更「${d?.title || ''}」已被拒绝，已同步回所有者版本`)
       loadProposals()
+      // 拒绝后自动重载模型，画布回到与所有者一致（撤销本地未批准改动）
+      loadModelFromServer(currentModelId.value)
     }
   })
   socket.on('disconnect', () => {
@@ -4126,6 +4129,8 @@ const collabProjectMembers = ref<Record<string, { owner_name: string; members: A
 const collabExpanded = ref('')
 // 我已加入的协作项目（role=editor）
 const joinedCollabModels = computed(() => models.value.filter(m => m.role === 'editor'))
+// 项目管理列表只显示自己拥有的项目（协作项目走右上角「我协作的项目」）
+const ownedModels = computed(() => models.value.filter(m => !m.role || m.role === 'owner'))
 // 我拥有的项目（可管理协作者）
 const ownedCollabModels = computed(() => models.value.filter(m => !m.role || m.role === 'owner'))
 const joinedProjectIds = computed(() => new Set(models.value.map(m => m.id)))
@@ -4241,8 +4246,20 @@ const joinCollabProject = async (id: string) => {
       showCollabToast(data?.error || `加入失败: HTTP ${status}`)
       return
     }
-    showCollabToast('已加入协作，项目已添加到列表')
+    showCollabToast('已加入协作，正在打开项目…')
     await loadModels()
+    // 自动进入该项目（不依赖项目管理列表）
+    const model = models.value.find((m: any) => m.id === id)
+    if (model) {
+      await openModel(model)
+    } else {
+      currentModelId.value = id
+      currentModelName.value = data?.project?.name || '协作项目'
+      activeTab.value = 'uml'
+      await loadModelFromServer(id)
+      joinProjectRoom()
+    }
+    showCollabDropdown.value = false
   } catch (e: any) {
     showCollabToast(e?.message || '加入失败')
   }
@@ -4410,6 +4427,18 @@ onMounted(() => {
                   <button class="kick-btn" :disabled="joinedProjectIds.has(p.id)" @click="joinCollabProject(p.id)">{{ joinedProjectIds.has(p.id) ? '已加入' : '加入' }}</button>
                 </div>
               </div>
+            </div>
+            <div class="dropdown-hub-item" @click="showMyCollab = !showMyCollab">
+              <i class="fas fa-folder-open"></i> 我协作的项目（{{ joinedCollabModels.length }}）
+            </div>
+            <div v-if="showMyCollab" class="hub-box">
+              <div v-if="joinedCollabModels.length">
+                <div v-for="m in joinedCollabModels" :key="m.id" class="dropdown-user">
+                  <span class="user-name">{{ m.name }}</span>
+                  <button class="kick-btn" style="color:#1f5eff; border-color:#b9c8ff;" @click="showCollabDropdown = false; openModel(m)">{{ currentModelId === m.id ? '当前' : '打开' }}</button>
+                </div>
+              </div>
+              <p v-else class="dropdown-hint">暂无，可先通过「加入协作」加入。</p>
             </div>
 
             <!-- 项目协作（打开项目时） -->
@@ -4730,7 +4759,7 @@ onMounted(() => {
       </div>
 
       <div class="model-list">
-        <div v-for="model in models" :key="model.id" class="model-item">
+        <div v-for="model in ownedModels" :key="model.id" class="model-item">
           <div class="model-icon" :style="projectIconStyle(model.name)">{{ projectInitial(model.name) }}</div>
           <div class="model-info">
             <h4>
@@ -4752,8 +4781,9 @@ onMounted(() => {
             </button>
           </div>
         </div>
-        <div v-if="models.length === 0" style="text-align: center; padding: 40px; color: #999;">
-          暂无项目，请创建一个新项目
+        <div v-if="ownedModels.length === 0" style="text-align: center; padding: 40px; color: #999;">
+          <template v-if="joinedCollabModels.length">暂无自有项目；协作项目请通过右上角「协作 → 我协作的项目」进入</template>
+          <template v-else>暂无项目，请创建一个新项目</template>
         </div>
       </div>
     </div>
