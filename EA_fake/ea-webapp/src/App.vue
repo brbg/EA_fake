@@ -4378,8 +4378,11 @@ onMounted(() => {
               <div v-if="currentModelRole === 'editor'" class="dropdown-action danger" @click="exitCollabHeader">
                 <i class="fas fa-sign-out-alt"></i> 退出协作
               </div>
-              <div v-else-if="currentModelRole === 'owner'" class="dropdown-action danger" @click="endCollabAll">
+              <div v-else-if="currentModelRole === 'owner' && collabEnabled" class="dropdown-action danger" @click="endCollabAll">
                 <i class="fas fa-hand"></i> 结束协作（移出全部协作者）
+              </div>
+              <div class="dropdown-action" @click="showCollabDropdown = false; openCollabModal()">
+                <i class="fas fa-people-arrows"></i> 协作管理（加入 / 审批 / 查看）
               </div>
               <div class="dropdown-action" @click="toggleCollab">
                 <i class="fas" :class="collabEnabled ? 'fa-pause' : 'fa-play'"></i>
@@ -4678,13 +4681,9 @@ onMounted(() => {
     <div v-if="activeTab === 'projects'" class="card">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
         <h3 class="card-title" style="margin: 0;">项目列表</h3>
-        <div style="display: flex; gap: 10px;">
-          <button class="btn btn-outline" @click="openCollabModal" title="加入 / 管理协作">
-            <i class="fas fa-users"></i> 协作
-          </button>
-          <button class="btn btn-primary" @click="showCreateModal = true">
-            <i class="fas fa-plus"></i> 新建项目
-          </button>
+        <button class="btn btn-primary" @click="showCreateModal = true">
+          <i class="fas fa-plus"></i> 新建项目
+        </button>
         </div>
       </div>
 
