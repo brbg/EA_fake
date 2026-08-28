@@ -720,14 +720,14 @@ const loadModels = async () => {
     const { ok, data } = await modelApi.list()
     if (!ok) {
       console.error('Failed to load models:', data)
-      alert('加载项目列表失败，请检查后端服务是否运行')
+      showToast('加载项目列表失败，请检查后端服务是否运行', 'error')
       return
     }
     models.value = Array.isArray(data?.models) ? data.models : []
     updateStats()
   } catch (e) {
     console.error('Failed to load models:', e)
-    alert('加载项目列表失败，请检查后端服务是否运行')
+    showToast('加载项目列表失败，请检查后端服务是否运行', 'error')
   }
 }
 
@@ -753,7 +753,7 @@ const updateStats = () => {
 
 const createModel = async () => {
   if (!newModel.value.name) {
-    alert('请输入项目名称')
+    showToast('请输入项目名称', 'warning')
     return
   }
   const modelName = newModel.value.name
@@ -761,7 +761,7 @@ const createModel = async () => {
     const { ok, status, data } = await modelApi.create(newModel.value)
     if (!ok || !data?.id) {
       console.error('Create failed:', status, data)
-      alert(data?.error || `创建失败: HTTP ${status}`)
+      showToast(data?.error || `创建失败: HTTP ${status}`, 'error')
       return
     }
     showCreateModal.value = false
@@ -788,11 +788,11 @@ const createModel = async () => {
     erSelectedEntity = null
     activeTab.value = 'uml'
     updateStats()
-    alert('项目创建成功')
+    showToast('项目创建成功', 'success')
   } catch (e: any) {
     console.error('Failed to create model:', e)
     const errorMsg = e?.message || '未知错误'
-    alert(`创建失败: ${errorMsg}\n请检查后端服务是否运行`)
+    showToast(`创建失败: ${errorMsg}`, 'error')
   }
 }
 
@@ -817,15 +817,15 @@ const deleteModel = async (id: string) => {
         redrawArchimateCanvas()
         redrawErCanvas()
       }
-      alert('项目删除成功')
+      showToast('项目删除成功', 'success')
     } else {
       console.error('Delete failed:', status, data)
-      alert(data?.error || `删除失败: HTTP ${status}`)
+      showToast(data?.error || `删除失败: HTTP ${status}`, 'error')
     }
   } catch (e: any) {
     console.error('Failed to delete model:', e)
     const errorMsg = e?.message || '未知错误'
-    alert(`删除失败: ${errorMsg}\n请检查后端服务是否运行`)
+    showToast(`删除失败: ${errorMsg}`, 'error')
   }
 }
 
@@ -969,7 +969,7 @@ const reverseCode = async () => {
       redrawErCanvas()
     }
     updateStats()
-    alert(`反推成功：${target === 'uml' ? 'UML 类图' : 'ER 模型'}已生成到画布，记得点「保存」落盘`)
+    showToast(`反推成功：${target === 'uml' ? 'UML 类图' : 'ER 模型'}已生成，记得点「保存」`, 'success')
   } catch (e: any) {
     reverseError.value = e?.message || '反推请求失败，请检查后端服务'
   } finally {
@@ -1026,7 +1026,7 @@ const generateDiagram = async () => {
     }
     updateStats()
     showGenDiagramModal.value = false
-    alert(`生成成功：已画到${kind === 'uml' ? 'UML' : 'ER'}画布，记得点「保存」落盘`)
+    showToast(`生成成功：已画到${kind === 'uml' ? 'UML' : 'ER'}画布，记得点「保存」`, 'success')
   } catch (e: any) {
     genDiagramError.value = e?.message || '生成请求失败，请检查后端服务'
   } finally {
@@ -1062,7 +1062,7 @@ const copyDoc = async () => {
   if (!generatedDoc.value) return
   try {
     await navigator.clipboard.writeText(generatedDoc.value)
-    alert('文档已复制到剪贴板')
+    showToast('文档已复制到剪贴板', 'info')
   } catch {
     const textarea = document.createElement('textarea')
     textarea.value = generatedDoc.value
@@ -1070,7 +1070,7 @@ const copyDoc = async () => {
     textarea.select()
     document.execCommand('copy')
     document.body.removeChild(textarea)
-    alert('文档已复制到剪贴板')
+    showToast('文档已复制到剪贴板', 'info')
   }
 }
 
@@ -1092,7 +1092,7 @@ const copyCode = async () => {
   if (!generatedCode.value || generatedCode.value.startsWith('//')) return
   try {
     await navigator.clipboard.writeText(generatedCode.value)
-    alert('代码已复制到剪贴板')
+    showToast('代码已复制到剪贴板', 'info')
   } catch {
     const textarea = document.createElement('textarea')
     textarea.value = generatedCode.value
@@ -1100,7 +1100,7 @@ const copyCode = async () => {
     textarea.select()
     document.execCommand('copy')
     document.body.removeChild(textarea)
-    alert('代码已复制到剪贴板')
+    showToast('代码已复制到剪贴板', 'info')
   }
 }
 
@@ -2782,11 +2782,11 @@ const saveArchimateModel = async () => {
       elements: archimateElements,
       connections: archimateConnections
     }
-    alert('ArchiMate 模型保存成功！\n（模型已保存到本地）')
+    showToast('ArchiMate 模型已保存到本地', 'success')
     console.log('ArchiMate Model:', modelData)
   } catch (e) {
     console.error('Failed to save Archimate model:', e)
-    alert('保存失败')
+    showToast('保存失败', 'error')
   }
 }
 
@@ -3303,11 +3303,11 @@ const saveErModel = async () => {
       entities: erEntities,
       relations: erRelations
     }
-    alert('ER 模型保存成功！\n（模型已保存到本地）')
+    showToast('ER 模型已保存到本地', 'success')
     console.log('ER Model:', modelData)
   } catch (e) {
     console.error('Failed to save ER model:', e)
-    alert('保存失败')
+    showToast('保存失败', 'error')
   }
 }
 
@@ -3321,7 +3321,7 @@ const exportErImage = () => {
 
 const generateErSql = () => {
   if (erEntities.length === 0) {
-    alert('请先创建实体')
+    showToast('请先创建实体', 'warning')
     return
   }
   
@@ -3374,12 +3374,12 @@ const generateErSql = () => {
   erSqlResult.value = sql
 
   // 显示SQL结果
-  alert('SQL 已生成！\n\n' + sql.substring(0, 500) + (sql.length > 500 ? '...\n\n(完整SQL已复制到控制台)' : ''))
+  showToast('SQL 已生成', 'success')
   console.log('Generated SQL:', sql)
 
   // 复制到剪贴板（捕获非安全上下文下的拒绝，避免未处理 rejection）
   navigator.clipboard.writeText(sql).then(() => {
-    alert('SQL 已复制到剪贴板！')
+    showToast('SQL 已复制到剪贴板', 'info')
   }).catch(() => {
     // 剪贴板不可用时静默降级，SQL 已在弹窗中展示
   })
@@ -3515,7 +3515,7 @@ const generateErMysql = () => {
 
 const saveModel = async () => {
   if (!currentModelId.value) {
-    alert('请先创建或选择一个项目')
+    showToast('请先创建或选择一个项目', 'warning')
     return
   }
   // 协作者：不能直接保存，走「提交变更申请」（owner 审批后落库）
@@ -3534,23 +3534,23 @@ const saveModel = async () => {
     })
     if (!ok) {
       console.error('Save failed:', status, data)
-      alert(data?.error || `保存失败: HTTP ${status}`)
+      showToast(data?.error || `保存失败: HTTP ${status}`, 'error')
       return
     }
-    alert('模型保存成功')
+    showToast('模型保存成功', 'success')
     await loadModels()
     updateStats()
     broadcastElementUpdate()
   } catch (e: any) {
     console.error('Failed to save model:', e)
     const errorMsg = e?.message || '未知错误'
-    alert(`保存失败: ${errorMsg}\n请检查后端服务是否运行`)
+    showToast(`保存失败: ${errorMsg}`, 'error')
   }
 }
 
 const aiValidateModel = async () => {
   if (!currentModelId.value) {
-    alert('请先创建或选择一个项目')
+    showToast('请先创建或选择一个项目', 'warning')
     return
   }
   validating.value = true
@@ -3575,7 +3575,7 @@ const aiValidateModel = async () => {
 
 const aiReviewArchimate = async () => {
   if (!currentModelId.value) {
-    alert('请先创建或选择一个项目')
+    showToast('请先创建或选择一个项目', 'warning')
     return
   }
   reviewing.value = true
@@ -3611,7 +3611,7 @@ const aiReviewArchimate = async () => {
 // 选中元素 AI 分析（UML / ArchiMate / ER 三套画布共用）
 const aiAnalyzeElement = async (kind: 'uml' | 'archimate' | 'er') => {
   if (!currentModelId.value) {
-    alert('请先创建或选择一个项目')
+    showToast('请先创建或选择一个项目', 'warning')
     return
   }
   let element: any = null
@@ -3631,7 +3631,7 @@ const aiAnalyzeElement = async (kind: 'uml' | 'archimate' | 'er') => {
     ctxRelationships = erRelations
   }
   if (!element) {
-    alert('请先在画布上选中一个元素')
+    showToast('请先在画布上选中一个元素', 'warning')
     return
   }
 
@@ -3660,7 +3660,7 @@ const aiAnalyzeElement = async (kind: 'uml' | 'archimate' | 'er') => {
 // 对话式编辑：打开弹窗（UML / ArchiMate / ER 画布共用）
 const openAiEditModel = (kind: 'uml' | 'archimate' | 'er') => {
   if (!currentModelId.value) {
-    alert('请先创建或选择一个项目')
+    showToast('请先创建或选择一个项目', 'warning')
     return
   }
   editingModelKind.value = kind
@@ -3807,13 +3807,20 @@ let joinedProjectId = ''
 // 在线协作（默认关闭，需在「协作」入口确认进入）
 const collabEnabled = ref(false)
 const onlineUsers = ref<string[]>([])
-const collabToast = ref('')
-let collabToastTimer: number | null = null
-const showCollabToast = (text: string) => {
-  collabToast.value = text
-  if (collabToastTimer) window.clearTimeout(collabToastTimer)
-  collabToastTimer = window.setTimeout(() => { collabToast.value = '' }, 3000)
+// === 通用顶部 toast 通知（替代浏览器 alert 弹窗）===
+const toastMsg = ref('')
+const toastType = ref<'success' | 'error' | 'warning' | 'info'>('info')
+let toastTimer: number | null = null
+const toastIcon = computed(() => ({
+  success: 'fa-circle-check', error: 'fa-circle-exclamation', warning: 'fa-triangle-exclamation', info: 'fa-circle-info'
+}[toastType.value]))
+const showToast = (text: string, type: 'success' | 'error' | 'warning' | 'info' = 'info') => {
+  toastMsg.value = text
+  toastType.value = type
+  if (toastTimer) window.clearTimeout(toastTimer)
+  toastTimer = window.setTimeout(() => { toastMsg.value = '' }, 3500)
 }
+const showCollabToast = (text: string) => showToast(text, 'info')
 // 协作入口：确认后进入 / 退出
 const toggleCollab = () => {
   if (collabEnabled.value) {
@@ -3821,7 +3828,7 @@ const toggleCollab = () => {
     collabEnabled.value = false
     leaveProjectRoom(currentModelId.value)
     onlineUsers.value = []
-    collabToast.value = ''
+    toastMsg.value = ''
     return
   }
   if (!currentModelId.value) {
@@ -4154,7 +4161,9 @@ onMounted(() => {
 
   <!-- 协作提示 toast -->
   <transition name="fade">
-    <div v-if="collabToast" class="collab-toast"><i class="fas fa-people-group"></i> {{ collabToast }}</div>
+    <div v-if="toastMsg" class="app-toast" :class="'toast-' + toastType">
+      <i class="fas" :class="toastIcon"></i> {{ toastMsg }}
+    </div>
   </transition>
 
   <!-- 登录门禁：未认证前不渲染主界面 -->
@@ -6223,27 +6232,36 @@ onMounted(() => {
   justify-content: center;
   border: 1px solid #fff;
 }
-.collab-toast {
+/* 通用顶部 toast 通知（替代浏览器 alert） */
+.app-toast {
   position: fixed;
   top: 16px;
-  right: 16px;
-  z-index: 9999;
-  background: rgba(255, 255, 255, 0.95);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 99999;
+  background: rgba(255, 255, 255, 0.96);
   backdrop-filter: blur(10px);
-  border: 1px solid var(--glass-border);
-  border-radius: 12px;
+  border: 1px solid #e0e4ea;
+  border-left-width: 4px;
+  border-radius: 10px;
   box-shadow: var(--shadow-md);
-  padding: 10px 16px;
+  padding: 11px 18px;
   font-size: 13px;
   color: var(--text);
   display: flex;
   align-items: center;
   gap: 8px;
-  animation: modal-in 0.3s ease;
+  max-width: 80vw;
+  animation: modal-in 0.25s ease;
 }
-.collab-toast i {
-  color: var(--brand);
-}
+.app-toast.toast-success { border-left-color: #16a34a; }
+.app-toast.toast-success i { color: #16a34a; }
+.app-toast.toast-error { border-left-color: #dc2626; }
+.app-toast.toast-error i { color: #dc2626; }
+.app-toast.toast-warning { border-left-color: #d97706; }
+.app-toast.toast-warning i { color: #d97706; }
+.app-toast.toast-info { border-left-color: #1f5eff; }
+.app-toast.toast-info i { color: #1f5eff; }
 /* 协作管理：协作者徽标 / 结果行 / 顶栏开关 */
 .collab-badge {
   display: inline-block;
