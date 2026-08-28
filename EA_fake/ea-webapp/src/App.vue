@@ -7125,7 +7125,7 @@ onMounted(() => {
 /* 页面（tab 内容）切换过渡：新内容淡入。
    用纯 CSS 动画而非 <Transition> 包裹，DOM 立即就位 → canvas 的 nextTick 初始化不受影响 */
 .tab-page {
-  animation: page-in 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+  animation: page-in 0.6s cubic-bezier(0.22, 1, 0.36, 1);
 }
 @keyframes page-in {
   from { opacity: 0; transform: translateY(16px); }
