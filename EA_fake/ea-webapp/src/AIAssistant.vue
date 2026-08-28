@@ -654,6 +654,9 @@ const scrollToBottom = () => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
 }
 
 .chat-message {
@@ -675,16 +678,22 @@ const scrollToBottom = () => {
   border-radius: 12px;
   line-height: 1.5;
   font-size: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
 }
 
 .chat-message.user .chat-bubble {
-  background: #1f5eff;
+  background: linear-gradient(135deg, #1f5eff, #4a7bff);
   color: white;
   border-bottom-right-radius: 4px;
+  border: none;
+  box-shadow: 0 4px 14px rgba(31, 94, 255, 0.28);
 }
 
 .chat-message.bot .chat-bubble {
-  background: #f1f3f5;
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   color: #333;
   border-bottom-left-radius: 4px;
 }
@@ -730,18 +739,21 @@ const scrollToBottom = () => {
   display: flex;
   gap: 8px;
   padding: 16px;
-  border-top: 1px solid #e8ecf0;
-  background: white;
+  border-top: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
 }
 
 .chat-input textarea {
   flex: 1;
   padding: 12px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--glass-border);
   border-radius: 8px;
   resize: none;
   font-size: 14px;
   font-family: inherit;
+  background: rgba(255, 255, 255, 0.8);
 }
 
 .chat-input textarea:focus {

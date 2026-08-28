@@ -6085,7 +6085,7 @@ onMounted(() => {
 
   <!-- 引导式使用教学（根层，覆盖全站） -->
   <div v-if="showTour">
-    <div class="tour-overlay" @click="nextTourStep"></div>
+    <div class="tour-overlay"></div>
     <div class="tour-highlight" :style="tourHighlightStyle"></div>
     <div class="tour-tooltip">
       <div class="tour-progress">
@@ -7228,14 +7228,14 @@ onMounted(() => {
   inset: 0;
   z-index: 9988;
   background: transparent;
-  cursor: pointer;
+  pointer-events: none;  /* 引导不锁页面：可滑动/缩放/操作，只用底部按钮翻页 */
 }
 .tour-highlight {
   position: fixed;
   z-index: 9990;
   border-radius: 14px;
   border: 2px solid #1f5eff;
-  box-shadow: 0 0 0 9999px rgba(15, 23, 42, 0.5);
+  box-shadow: 0 0 0 9999px rgba(15, 23, 42, 0.25);
   pointer-events: none;
   transition: left 0.35s cubic-bezier(0.25, 0.46, 0.45, 0.94),
     top 0.35s cubic-bezier(0.25, 0.46, 0.45, 0.94),
