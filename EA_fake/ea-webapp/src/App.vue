@@ -3884,6 +3884,52 @@ let joinedProjectId = ''
 // 在线协作（默认关闭，需在「协作」入口确认进入）
 const collabEnabled = ref(false)
 const onlineUsers = ref<string[]>([])
+// 右上角协作状态下拉
+const showCollabDropdown = ref(false)
+const headerCollabMembers = ref<{ owner_id: string; members: Array<{ user_id: string; username: string; role?: string }> } | null>(null)
+const onlineUserSet = computed(() => new Set(onlineUsers.value))
+const toggleCollabDropdown = async () => {
+  showCollabDropdown.value = !showCollabDropdown.value
+  if (showCollabDropdown.value && currentModelId.value) {
+    try {
+      const { ok, data } = await collabApi.collaborators(currentModelId.value)
+      headerCollabMembers.value = ok && data ? data : null
+    } catch {
+      headerCollabMembers.value = null
+    }
+  }
+}
+const kickCollabMember = async (userId: string) => {
+  if (!currentModelId.value || !confirm('确定把该用户踢出项目协作？')) return
+  const { ok, status, data } = await collabApi.revoke(currentModelId.value, userId)
+  if (!ok) {
+    showCollabToast(data?.error || `踢出失败: HTTP ${status}`)
+    return
+  }
+  showCollabToast('已踢出该用户')
+  await loadModels()
+  await toggleCollabDropdown()
+}
+const exitCollabHeader = async () => {
+  if (!currentModelId.value || !confirm('确定退出该项目的协作？退出后项目将从你的列表移除。')) return
+  const { ok, status, data } = await collabApi.leave(currentModelId.value)
+  if (!ok) {
+    showCollabToast(data?.error || `退出失败: HTTP ${status}`)
+    return
+  }
+  showCollabToast('已退出协作')
+  collabEnabled.value = false
+  leaveProjectRoom(currentModelId.value)
+  onlineUsers.value = []
+  showCollabDropdown.value = false
+  if (currentModelId.value) {
+    currentModelId.value = ''
+    currentModelName.value = ''
+    clearCanvas()
+    activeTab.value = 'projects'
+  }
+  await loadModels()
+}
 // === 通用顶部 toast 通知（替代浏览器 alert 弹窗）===
 const toastMsg = ref('')
 const toastType = ref<'success' | 'error' | 'warning' | 'info'>('info')
@@ -4261,15 +4307,49 @@ onMounted(() => {
         </div>
       </div>
       <div class="header-right">
-        <button
-          class="btn-help collab-toggle"
-          :class="{ active: collabEnabled }"
-          @click="toggleCollab"
-          :title="collabEnabled ? '退出协作模式' : '进入协作模式（与协作者实时同步）'"
-        >
-          <i class="fas fa-users"></i>
-          <span>{{ collabEnabled ? '协作中' : '协作' }}</span>
-        </button>
+        <div class="header-collab" style="position: relative;">
+          <button
+            class="btn-help collab-toggle"
+            :class="{ active: collabEnabled }"
+            @click="toggleCollabDropdown"
+            :title="'协作状态：' + (collabEnabled ? '协作中' : '未进入')"
+          >
+            <i class="fas fa-users"></i>
+            <span>{{ collabEnabled ? '协作中' : '协作' }}</span>
+            <i v-if="onlineUsers.length" class="collab-badge-num">{{ onlineUsers.length }}</i>
+          </button>
+          <!-- 协作状态下拉 -->
+          <div v-if="showCollabDropdown" class="header-collab-dropdown">
+            <div class="dropdown-title">
+              协作状态：
+              <b :style="{ color: collabEnabled ? '#16a34a' : '#999' }">{{ collabEnabled ? '协作中' : '未进入' }}</b>
+            </div>
+            <div v-if="!currentModelId" class="dropdown-hint">请先打开一个项目</div>
+            <template v-else>
+              <div class="dropdown-hint">
+                已加入协作的用户（{{ (headerCollabMembers?.members || []).length }}）
+                <span v-if="onlineUsers.length" style="color:#16a34a;"> · {{ onlineUsers.length }} 在线</span>
+              </div>
+              <div v-if="(headerCollabMembers?.members || []).length" class="dropdown-list">
+                <div v-for="m in headerCollabMembers.members" :key="m.user_id" class="dropdown-user">
+                  <span class="user-dot" :style="{ background: onlineUserSet.has(m.username) ? '#16a34a' : '#ccc' }"></span>
+                  <span class="user-name">{{ m.username }}</span>
+                  <span v-if="m.user_id === authUser?.id" class="user-self">我</span>
+                  <button v-if="currentModelRole === 'owner' && m.user_id !== authUser?.id" class="kick-btn" @click="kickCollabMember(m.user_id)">踢出</button>
+                </div>
+              </div>
+              <p v-else class="dropdown-hint">暂无协作者，可让对方输入你的账户 ID 加入。</p>
+              <div v-if="currentModelRole === 'editor'" class="dropdown-action danger" @click="exitCollabHeader">
+                <i class="fas fa-sign-out-alt"></i> 退出协作
+              </div>
+              <div v-else-if="currentModelRole === 'owner'" class="dropdown-hint" style="margin-top:8px;">你是项目拥有者</div>
+              <div class="dropdown-action" @click="toggleCollab">
+                <i class="fas" :class="collabEnabled ? 'fa-pause' : 'fa-play'"></i>
+                {{ collabEnabled ? '退出协作模式' : '进入协作模式' }}
+              </div>
+            </template>
+          </div>
+        </div>
         <button class="btn-help" @click="showHelpModal = true" title="新手教程">
           <i class="fas fa-circle-question"></i>
           <span>帮助</span>
@@ -6457,11 +6537,83 @@ onMounted(() => {
   font-size: 14px;
   color: #333;
 }
+.collab-toggle {
+  position: relative;
+}
 .collab-toggle.active {
   background: var(--brand);
   color: #fff;
   border-color: var(--brand);
 }
+.collab-badge-num {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #dc2626;
+  color: #fff;
+  font-size: 10px;
+  font-style: normal;
+  line-height: 16px;
+  text-align: center;
+}
+.header-collab-dropdown {
+  position: absolute;
+  top: 42px;
+  right: 0;
+  z-index: 9999;
+  width: 280px;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: rgba(255, 255, 255, 0.97);
+  backdrop-filter: blur(10px);
+  border: 1px solid #e0e4ea;
+  border-radius: 12px;
+  box-shadow: var(--shadow-md);
+  padding: 12px;
+  font-size: 13px;
+  color: var(--text);
+}
+.dropdown-title { font-size: 13px; margin-bottom: 8px; }
+.dropdown-hint { font-size: 12px; color: #999; margin: 6px 0; }
+.dropdown-list { margin: 4px 0; }
+.dropdown-user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  margin-bottom: 4px;
+}
+.dropdown-user:hover { background: #f4f7ff; }
+.user-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.user-name { flex: 1; font-size: 13px; }
+.user-self { font-size: 11px; color: #1f5eff; }
+.kick-btn {
+  padding: 3px 10px;
+  border: 1px solid #f0c0c0;
+  border-radius: 999px;
+  background: #fff;
+  color: #dc2626;
+  font-size: 12px;
+  cursor: pointer;
+}
+.kick-btn:hover { background: #dc2626; color: #fff; }
+.dropdown-action {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: #1f5eff;
+  margin-top: 6px;
+}
+.dropdown-action:hover { background: #f4f7ff; }
+.dropdown-action.danger { color: #dc2626; }
 .fade-enter-active, .fade-leave-active {
   transition: opacity 0.25s ease;
 }
