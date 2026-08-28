@@ -795,6 +795,9 @@ const createModel = async () => {
     await loadModels()
     currentModelId.value = data.id
     currentModelName.value = modelName
+    // 新项目是自己的：退出协作模式
+    collabEnabled.value = false
+    onlineUsers.value = []
     joinProjectRoom()
     elements = []
     connections = []
