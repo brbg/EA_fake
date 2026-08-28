@@ -875,6 +875,11 @@ const openModel = async (model: Model) => {
   activeTab.value = 'uml'
   currentModelId.value = model.id
   currentModelName.value = model.name
+  // 协作者打开他人项目：自动进入协作模式（owner 打开自己的项目不自动进）
+  if (model.role === 'editor') {
+    collabEnabled.value = true
+    if (!socket) initSocket()
+  }
   joinProjectRoom()
   await loadModelFromServer(model.id)
 }
@@ -4256,6 +4261,8 @@ const joinCollabProject = async (id: string) => {
       currentModelId.value = id
       currentModelName.value = data?.project?.name || '协作项目'
       activeTab.value = 'uml'
+      collabEnabled.value = true
+      if (!socket) initSocket()
       await loadModelFromServer(id)
       joinProjectRoom()
     }
@@ -4291,6 +4298,8 @@ const joinCurrentProject = async () => {
       currentModelId.value = pid
       currentModelName.value = pname
       activeTab.value = 'uml'
+      collabEnabled.value = true
+      if (!socket) initSocket()
       await loadModelFromServer(pid)
       joinProjectRoom()
     }
