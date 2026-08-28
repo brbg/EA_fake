@@ -218,7 +218,7 @@ class SimpleModel:
         self.views = [v for v in self.views if v['uuid'] != uuid]
 
     def save_version(self, comment=''):
-        """保存版本"""
+        """保存版本（快照 UML / ArchiMate / ER 全量数据）"""
         version_entry = {
             'version': self.version,
             'timestamp': datetime.datetime.now().isoformat(),
@@ -226,7 +226,11 @@ class SimpleModel:
             'snapshot': {
                 'elements': self.elements.copy(),
                 'relationships': self.relationships.copy(),
-                'views': self.views.copy()
+                'views': self.views.copy(),
+                'archimate_elements': self.archimate_elements.copy(),
+                'archimate_connections': self.archimate_connections.copy(),
+                'er_entities': self.er_entities.copy(),
+                'er_relations': self.er_relations.copy(),
             }
         }
         self.history.append(version_entry)
@@ -237,12 +241,16 @@ class SimpleModel:
         self.version = '.'.join(parts)
 
     def restore_version(self, version_index):
-        """恢复版本"""
+        """恢复版本（旧快照缺 archimate/er 字段时回退空，兼容历史数据）"""
         if version_index >= 0 and version_index < len(self.history):
             snapshot = self.history[version_index]['snapshot']
-            self.elements = snapshot['elements'].copy()
-            self.relationships = snapshot['relationships'].copy()
-            self.views = snapshot['views'].copy()
+            self.elements = (snapshot.get('elements') or []).copy()
+            self.relationships = (snapshot.get('relationships') or []).copy()
+            self.views = (snapshot.get('views') or []).copy()
+            self.archimate_elements = (snapshot.get('archimate_elements') or []).copy()
+            self.archimate_connections = (snapshot.get('archimate_connections') or []).copy()
+            self.er_entities = (snapshot.get('er_entities') or []).copy()
+            self.er_relations = (snapshot.get('er_relations') or []).copy()
             self.version = self.history[version_index]['version']
             return True
         return False

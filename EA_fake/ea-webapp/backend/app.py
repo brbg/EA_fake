@@ -320,11 +320,15 @@ def perform_health_check(model, project):
             suggestions.append('建议添加架构元素来构建完整的模型')
             score -= 20
         
-        # 检查孤立元素
+        # 检查孤立元素（兼容 startElement/endElement 与 source/target 两种连线格式）
         elem_with_rels = set()
         for rel in model.relationships:
-            elem_with_rels.add(rel['source'])
-            elem_with_rels.add(rel['target'])
+            a = rel.get('startElement') or rel.get('source')
+            b = rel.get('endElement') or rel.get('target')
+            if a:
+                elem_with_rels.add(a)
+            if b:
+                elem_with_rels.add(b)
         
         isolated_count = len(model.elements) - len(elem_with_rels)
         if isolated_count > 0:

@@ -2172,6 +2172,68 @@ const layoutElementsFlow = (els: any[], startX: number, startY: number) => {
   })
 }
 
+// === 模型版本历史 / 项目健康度 ===
+const showVersionModal = ref(false)
+const versionComment = ref('')
+const versionHistory = ref<Array<{ version: string; timestamp: string; comment: string }>>([])
+const versionSaving = ref(false)
+const versionLoading = ref(false)
+const loadVersions = async () => {
+  if (!currentModelId.value) return
+  versionLoading.value = true
+  try {
+    const { ok, data } = await modelApi.versions(currentModelId.value)
+    versionHistory.value = ok && Array.isArray(data?.history) ? data.history : []
+  } catch {
+    versionHistory.value = []
+  } finally {
+    versionLoading.value = false
+  }
+}
+const saveVersionReq = async () => {
+  if (!currentModelId.value) return
+  versionSaving.value = true
+  try {
+    const { ok, status, data } = await modelApi.saveVersion(currentModelId.value, versionComment.value.trim())
+    versionComment.value = ''
+    if (!ok) { showToast(data?.error || `保存失败: HTTP ${status}`, 'error'); return }
+    showToast(`已保存版本 v${data?.version || ''}`, 'success')
+    await loadVersions()
+  } finally {
+    versionSaving.value = false
+  }
+}
+const restoreVersionReq = async (index: number, ver: string) => {
+  if (!currentModelId.value || !confirm(`确定恢复到版本 v${ver}？当前未保存的修改会丢失。`)) return
+  const { ok, status, data } = await modelApi.restoreVersion(currentModelId.value, index)
+  if (!ok) { showToast(data?.error || `恢复失败: HTTP ${status}`, 'error'); return }
+  showToast(`已恢复到 v${data?.version || ''}`, 'success')
+  await loadModelFromServer(currentModelId.value)
+  await loadVersions()
+}
+
+const showHealthModal = ref(false)
+const healthResult = ref<{ score?: number; issues?: string[]; suggestions?: string[] } | null>(null)
+const healthLoading = ref(false)
+const loadHealth = async () => {
+  if (!currentModelId.value) return
+  healthLoading.value = true
+  healthResult.value = null
+  try {
+    const { ok, data } = await modelApi.health(currentModelId.value)
+    if (ok) healthResult.value = data || {}
+    else showToast('健康度分析失败', 'error')
+  } catch {
+    showToast('健康度分析失败', 'error')
+  } finally {
+    healthLoading.value = false
+  }
+}
+const openHealthModal = () => {
+  showHealthModal.value = true
+  loadHealth()
+}
+
 const initCanvasEvents = () => {
   initCanvas()
   document.removeEventListener('mousemove', handleMouseMove)
@@ -4250,6 +4312,18 @@ onMounted(() => {
       </button>
     </div>
     <div class="ribbon-group">
+      <div class="ribbon-group-label">工具</div>
+      <button class="toolbar-btn" @click="showVersionModal = true; loadVersions()" title="模型版本历史 / 保存 / 一键恢复">
+        <i class="fas fa-history"></i> 版本
+      </button>
+      <button class="toolbar-btn" @click="openHealthModal" title="项目健康度体检（评分 + 问题 + 建议）">
+        <i class="fas fa-heart-pulse"></i> 健康度
+      </button>
+      <button class="toolbar-btn" @click="openGenerateDiagram('uml')" title="粘贴需求文档，AI 自动生成模型">
+        <i class="fas fa-file-lines"></i> 需求→模型
+      </button>
+    </div>
+    <div class="ribbon-group">
       <div class="ribbon-group-label">AI</div>
       <div style="position:relative; display:inline-block;">
         <button class="toolbar-btn" @click="toggleAiMenu('uml')" :class="{ active: openAiMenu === 'uml' }" title="AI 功能" data-tour="ai">
@@ -5324,6 +5398,53 @@ onMounted(() => {
           <i class="fas fa-robot" style="color:#1f5eff;"></i> 去 AI 助手对话（描述你的架构）
         </button>
       </div>
+    </div>
+  </div>
+
+  <!-- 模型版本历史 -->
+  <div v-if="showVersionModal" class="modal-overlay" @click.self="showVersionModal = false">
+    <div class="modal-content" style="max-width: 520px;">
+      <span class="modal-close" @click="showVersionModal = false">&times;</span>
+      <h3 style="margin-bottom: 16px;"><i class="fas fa-history" style="color:#1f5eff; margin-right:6px;"></i>模型版本历史</h3>
+      <div style="display:flex; gap:8px; margin-bottom: 12px;">
+        <input v-model="versionComment" placeholder="版本说明（如：完成订单模块）" style="flex:1; padding:10px; border:1px solid #ddd; border-radius:8px; font-size:14px;" />
+        <button class="btn btn-primary" @click="saveVersionReq" :disabled="versionSaving">{{ versionSaving ? '保存中...' : '保存当前版本' }}</button>
+      </div>
+      <div v-if="versionLoading" style="color:#999; font-size:12px;">加载中…</div>
+      <div v-else-if="versionHistory.length">
+        <div v-for="(v, i) in versionHistory" :key="i" class="collab-result-row">
+          <div>
+            <strong>v{{ v.version }}</strong>
+            <div style="font-size:12px; color:#999;">{{ (v.timestamp || '').replace('T',' ').slice(0,16) }} · {{ v.comment || '无说明' }}</div>
+          </div>
+          <button class="btn btn-outline" style="padding:4px 12px; font-size:12px;" @click="restoreVersionReq(i, v.version)">恢复</button>
+        </div>
+      </div>
+      <p v-else style="color:#999; font-size:12px;">暂无版本，点「保存当前版本」创建第一个版本。</p>
+    </div>
+  </div>
+
+  <!-- 项目健康度 -->
+  <div v-if="showHealthModal" class="modal-overlay" @click.self="showHealthModal = false">
+    <div class="modal-content" style="max-width: 500px;">
+      <span class="modal-close" @click="showHealthModal = false">&times;</span>
+      <h3 style="margin-bottom: 16px;"><i class="fas fa-heart-pulse" style="color:#16a34a; margin-right:6px;"></i>项目健康度</h3>
+      <div v-if="healthLoading" style="color:#999; font-size:12px; text-align:center; padding:20px;">分析中…</div>
+      <template v-else-if="healthResult">
+        <div style="text-align:center; margin-bottom: 16px;">
+          <div :style="{ fontSize: '52px', fontWeight: 800, color: healthResult.score >= 80 ? '#16a34a' : (healthResult.score >= 60 ? '#d97706' : '#dc2626') }">{{ healthResult.score }}</div>
+          <div style="color:#999; font-size:13px;">健康评分</div>
+        </div>
+        <div v-if="healthResult.issues?.length" style="margin-bottom: 12px;">
+          <h4 style="margin:0 0 8px; color:#dc2626;"><i class="fas fa-circle-exclamation"></i> 问题（{{ healthResult.issues.length }}）</h4>
+          <div v-for="(it, i) in healthResult.issues" :key="i" style="font-size:13px; color:#555; padding:4px 0;">· {{ it }}</div>
+        </div>
+        <div v-if="healthResult.suggestions?.length">
+          <h4 style="margin:0 0 8px; color:#1f5eff;"><i class="fas fa-lightbulb"></i> 改进建议</h4>
+          <div v-for="(s, i) in healthResult.suggestions" :key="i" style="font-size:13px; color:#555; padding:4px 0;">· {{ s }}</div>
+        </div>
+        <p v-if="!healthResult.issues?.length && !healthResult.suggestions?.length" style="color:#16a34a; font-size:13px;">项目状态健康，无问题 🎉</p>
+      </template>
     </div>
   </div>
 
