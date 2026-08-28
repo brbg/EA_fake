@@ -286,25 +286,81 @@ def remove_project_member(project_id, member_id):
     
     return jsonify({'message': '成员移除成功'})
 
+def ai_health_check(model):
+    """AI 深度分析模型健康度，返回 {score, issues, suggestions, summary}；失败返回 None。"""
+    lines = []
+    for e in (model.elements or [])[:30]:
+        attrs = ' '.join((e.get('attributes') or [])[:5])
+        methods = ' '.join((e.get('methods') or [])[:5])
+        lines.append(f"类 {e.get('name')}({e.get('type')}) 属性:{attrs} 方法:{methods}".strip())
+    for c in (model.relationships or [])[:40]:
+        a = c.get('startElement') or c.get('source')
+        b = c.get('endElement') or c.get('target')
+        lines.append(f"关系: {a} -{c.get('type')}-> {b}")
+    for e in (model.archimate_elements or [])[:20]:
+        lines.append(f"ArchiMate[{e.get('layer')}] {e.get('name')}({e.get('type')})")
+    for t in (model.er_entities or [])[:20]:
+        cols = ' '.join(f.get('name') for f in (t.get('fields') or [])[:6])
+        lines.append(f"表 {t.get('name')} 列:{cols}")
+    desc = '\n'.join(lines) or '(空模型)'
+
+    prompt = f"""你是资深企业架构师。请审查下面这个建模项目的 UML 类图 / ArchiMate 架构 / ER 数据模型：
+{desc}
+
+给出健康度诊断。只输出 JSON：
+{{"score": 0-100的整数, "issues": ["具体问题1", "..."], "suggestions": ["改进建议1", "..."], "summary": "一句话总体评价"}}
+要求：问题要具体（结合类/关系/分层/数据表，如"某类直接依赖多个具体实现，应抽象接口"）；至少 1 条、最多 5 条；只依据给定内容，不要编造。"""
+
+    res = AIService.chat_completion([{'role': 'user', 'content': prompt}],
+                                    max_tokens=500, temperature=0.3)
+    if isinstance(res, dict) and res.get('error'):
+        return None
+    content = ''
+    if isinstance(res, dict):
+        choices = res.get('choices') or []
+        if choices:
+            content = (choices[0].get('message') or {}).get('content') or ''
+    parsed = _ai_parse_json_response(content) if content else {}
+    if not parsed:
+        return None
+    try:
+        score = max(0, min(100, int(parsed.get('score'))))
+    except (TypeError, ValueError):
+        score = 70
+    return {
+        'score': score,
+        'issues': [str(x) for x in (parsed.get('issues') or [])[:5]],
+        'suggestions': [str(x) for x in (parsed.get('suggestions') or [])[:5]],
+        'summary': str(parsed.get('summary') or ''),
+    }
+
+
 @app.route('/api/projects/<project_id>/health', methods=['GET'])
 def project_health_check(project_id):
-    """项目健康检查"""
+    """项目健康检查（AI 深度分析，未启用/失败回退规则检查）"""
     session_id = request.headers.get('X-Session-Id')
     if session_id not in sessions_cache:
         return jsonify({'error': '未登录'}), 401
-    
+
     projects = load_projects()
     if project_id not in projects:
         return jsonify({'error': '项目不存在'}), 404
-    
+
     project = projects[project_id]
     model = load_model_from_cache(project.model_id)
-    
-    # 执行健康检查
-    health_result = perform_health_check(model, project)
+
+    # 优先 AI 深度分析
+    health_result = None
+    if ai_service_config.enabled:
+        try:
+            health_result = ai_health_check(model)
+        except Exception:
+            health_result = None
+    if health_result is None:
+        health_result = perform_health_check(model, project)
     project.health_check = health_result
     save_project(project)
-    
+
     return jsonify(health_result)
 
 def perform_health_check(model, project):

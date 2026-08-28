@@ -2213,7 +2213,7 @@ const restoreVersionReq = async (index: number, ver: string) => {
 }
 
 const showHealthModal = ref(false)
-const healthResult = ref<{ score?: number; issues?: string[]; suggestions?: string[] } | null>(null)
+const healthResult = ref<{ score?: number; issues?: string[]; suggestions?: string[]; summary?: string } | null>(null)
 const healthLoading = ref(false)
 const loadHealth = async () => {
   if (!currentModelId.value) return
@@ -5431,10 +5431,13 @@ onMounted(() => {
       <h3 style="margin-bottom: 16px;"><i class="fas fa-heart-pulse" style="color:#16a34a; margin-right:6px;"></i>项目健康度</h3>
       <div v-if="healthLoading" style="color:#999; font-size:12px; text-align:center; padding:20px;">分析中…</div>
       <template v-else-if="healthResult">
-        <div style="text-align:center; margin-bottom: 16px;">
+        <div style="text-align:center; margin-bottom: 14px;">
           <div :style="{ fontSize: '52px', fontWeight: 800, color: healthResult.score >= 80 ? '#16a34a' : (healthResult.score >= 60 ? '#d97706' : '#dc2626') }">{{ healthResult.score }}</div>
-          <div style="color:#999; font-size:13px;">健康评分</div>
+          <div style="color:#999; font-size:13px;">健康评分（AI 深度分析）</div>
         </div>
+        <p v-if="healthResult.summary" style="font-size:13px; color:#444; background:#f4f7ff; border:1px solid #dbe4ff; border-radius:10px; padding:10px 12px; margin:0 0 14px;">
+          <i class="fas fa-quote-left" style="color:#1f5eff; margin-right:4px;"></i>{{ healthResult.summary }}
+        </p>
         <div v-if="healthResult.issues?.length" style="margin-bottom: 12px;">
           <h4 style="margin:0 0 8px; color:#dc2626;"><i class="fas fa-circle-exclamation"></i> 问题（{{ healthResult.issues.length }}）</h4>
           <div v-for="(it, i) in healthResult.issues" :key="i" style="font-size:13px; color:#555; padding:4px 0;">· {{ it }}</div>
