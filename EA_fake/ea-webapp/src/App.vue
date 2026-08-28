@@ -1012,6 +1012,7 @@ const generateDiagram = async () => {
       saveUmlHistory()
       elements = data?.elements || []
       connections = data?.relationships || []
+      layoutElementsFlow(elements, 40, 40)  // 防重叠布局
       selectedElement = null
       activeTab.value = 'uml'
       redraw()
@@ -2063,6 +2064,7 @@ const applyPatternToCanvas = (pattern: any) => {
   const offY = 40 + Math.floor(patternInsertCount / 3) * 60
   patternInsertCount++
   const { elements: pe, connections: pc } = buildPatternElements(pattern, offX, offY)
+  layoutElementsFlow(pe, offX, offY)  // 防重叠布局
   elements.push(...pe)
   connections.push(...pc)
   redraw()
@@ -2127,6 +2129,7 @@ const overwritePattern = () => {
   connections.splice(0, connections.length)
   patternInsertCount = 0
   const { elements: pe, connections: pc } = buildPatternElements(pattern, 40, 40)
+  layoutElementsFlow(pe, 40, 40)  // 防重叠布局
   elements.push(...pe)
   connections.push(...pc)
   selectedElement = null
@@ -2135,6 +2138,38 @@ const overwritePattern = () => {
   redraw()
   updateStats()
   showCollabToast(`已用「${rec.name}」覆盖当前画布`)
+}
+
+// === 防重叠布局：按实际文本宽度流式排布，超宽自动换行 ===
+const measureAndSizeElement = (e: any) => {
+  if (!ctx) return
+  const lineH = 14
+  ctx.font = 'bold 12px Arial'
+  let maxW = ctx.measureText(e.name || '').width
+  ctx.font = '11px Arial'
+  ;(e.attributes || []).forEach((a: string) => { maxW = Math.max(maxW, ctx.measureText(a || '').width) })
+  ;(e.methods || []).forEach((m: string) => { maxW = Math.max(maxW, ctx.measureText(m || '').width) })
+  e.width = Math.max(120, Math.ceil(maxW) + 18)
+  const attrH = Math.max(1, (e.attributes || []).length) * lineH
+  const methH = (e.methods || []).length * lineH
+  e.height = 25 + 10 + attrH + ((e.methods || []).length ? 7 + methH : 0) + 8
+}
+const layoutElementsFlow = (els: any[], startX: number, startY: number) => {
+  if (!ctx) return
+  let x = startX, y = startY, rowMaxH = 0
+  els.forEach(e => {
+    measureAndSizeElement(e)
+    if (x + e.width > LOGICAL_W - 20) {
+      // 超出画布宽度：换行
+      x = startX
+      y += rowMaxH + 40
+      rowMaxH = 0
+    }
+    e.x = x
+    e.y = y
+    x += e.width + 40
+    rowMaxH = Math.max(rowMaxH, e.height)
+  })
 }
 
 const initCanvasEvents = () => {
