@@ -4559,15 +4559,15 @@ onMounted(() => {
       </template>
       <!-- 视图编辑页面显示项目名称、元素和关系数量 -->
       <template v-else>
-        <div class="stat-card">
+        <div class="stat-card stat-card-sm">
           <div class="stat-value" style="font-size: 14px;">{{ currentModelName || '未选择项目' }}</div>
           <div class="stat-label">当前项目</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card stat-card-sm">
           <div class="stat-value">{{ stats.elements }}</div>
           <div class="stat-label">架构元素</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card stat-card-sm">
           <div class="stat-value">{{ stats.relationships }}</div>
           <div class="stat-label">关系连接</div>
         </div>
@@ -6264,6 +6264,18 @@ onMounted(() => {
   text-align: center;
   box-shadow: var(--shadow-sm);
   transition: transform 0.2s, box-shadow 0.2s;
+}
+
+/* 项目编辑页的统计卡片：当前项目/架构元素/关系连接（缩小版） */
+.stat-card-sm {
+  padding: 8px 14px;
+}
+.stat-card-sm .stat-value {
+  font-size: 18px;
+  margin-bottom: 2px;
+}
+.stat-card-sm .stat-label {
+  font-size: 12px;
 }
 
 .stat-card:hover {
