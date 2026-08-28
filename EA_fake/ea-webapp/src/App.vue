@@ -1642,41 +1642,52 @@ const roundRectPath = (ctx: CanvasRenderingContext2D, x: number, y: number, w: n
 
 const drawElement = (elem: any) => {
   if (!ctx) return
-  
-  ctx.fillStyle = elem.color || '#ffffff'
-  ctx.strokeStyle = selectedElement?.id === elem.id ? '#1f5eff' : '#333'
-  ctx.lineWidth = selectedElement?.id === elem.id ? 3 : 2
-  
-  ctx.beginPath()
-  roundRectPath(ctx, elem.x, elem.y, elem.width, elem.height, 8)
-  ctx.fill()
-  ctx.stroke()
 
-  ctx.fillStyle = elem.headerColor || '#1f5eff'
-  ctx.beginPath()
-  roundRectPath(ctx, elem.x, elem.y, elem.width, 25, [8, 8, 0, 0])
-  ctx.fill()
-  
-  ctx.fillStyle = '#ffffff'
-  ctx.font = 'bold 12px Arial'
-  ctx.textAlign = 'center'
-  ctx.fillText(elem.name, elem.x + elem.width / 2, elem.y + 17)
-  
-  // 三段式类图：名称栏(25) + 属性区 + 方法区（中间横线分隔）
   const attrs = elem.attributes || []
   const methods = elem.methods || []
   const lineH = 14
+
+  // 自适应宽度：按 名称(粗体) / 属性 / 方法 最长一行计算
+  let maxW = 0
+  ctx.font = 'bold 12px Arial'
+  maxW = Math.max(maxW, ctx.measureText(elem.name || '').width)
+  ctx.font = '11px Arial'
+  attrs.forEach((a: string) => { maxW = Math.max(maxW, ctx.measureText(a || '').width) })
+  methods.forEach((m: string) => { maxW = Math.max(maxW, ctx.measureText(m || '').width) })
+  elem.width = Math.max(120, Math.ceil(maxW) + 18)
+
+  // 自适应高度：名称栏(25) + 属性区 + 方法区（中间横线分隔）
   const attrH = Math.max(1, attrs.length) * lineH
   const methH = methods.length * lineH
   const totalH = 25 + 10 + attrH + (methods.length ? 7 + methH : 0) + 8
   elem.height = totalH
 
+  // 框体
+  ctx.fillStyle = elem.color || '#ffffff'
+  ctx.strokeStyle = selectedElement?.id === elem.id ? '#1f5eff' : '#333'
+  ctx.lineWidth = selectedElement?.id === elem.id ? 3 : 2
+  ctx.beginPath()
+  roundRectPath(ctx, elem.x, elem.y, elem.width, elem.height, 8)
+  ctx.fill()
+  ctx.stroke()
+
+  // 名称栏
+  ctx.fillStyle = elem.headerColor || '#1f5eff'
+  ctx.beginPath()
+  roundRectPath(ctx, elem.x, elem.y, elem.width, 25, [8, 8, 0, 0])
+  ctx.fill()
+  ctx.fillStyle = '#ffffff'
+  ctx.font = 'bold 12px Arial'
+  ctx.textAlign = 'center'
+  ctx.fillText(elem.name, elem.x + elem.width / 2, elem.y + 17)
+
+  // 属性区
   ctx.fillStyle = '#333'
   ctx.font = '11px Arial'
   ctx.textAlign = 'left'
   let y = elem.y + 35
-  ;(elem.attributes || []).forEach((attr: string) => {
-    ctx!.fillText(attr, elem.x + 8, y)
+  attrs.forEach((attr: string) => {
+    ctx!.fillText(attr, elem.x + 9, y)
     y += lineH
   })
 
@@ -1695,7 +1706,7 @@ const drawElement = (elem: any) => {
   // 方法区
   y = elem.y + 25 + 10 + attrH + (methods.length ? 7 : 0)
   methods.forEach((m: string) => {
-    ctx!.fillText(m, elem.x + 8, y)
+    ctx!.fillText(m, elem.x + 9, y)
     y += lineH
   })
 }
