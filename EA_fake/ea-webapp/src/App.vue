@@ -5271,7 +5271,7 @@ onMounted(() => {
 </template>
 </div>
 
-    <div v-if="activeTab === 'dashboard'" class="dashboard-grid">
+    <div v-if="activeTab === 'dashboard'" class="dashboard-grid tab-page">
       <div class="card">
         <div class="card-icon" style="background: linear-gradient(135deg, #1f5eff 0%, #3b82f6 100%);">
           <i class="fas fa-folder-open"></i>
@@ -5339,7 +5339,7 @@ onMounted(() => {
       </div>
     </div>
 
-    <div v-if="activeTab === 'projects'" class="card">
+    <div v-if="activeTab === 'projects'" class="card tab-page">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
         <h3 class="card-title" style="margin: 0;">项目列表</h3>
         <button class="btn btn-primary" @click="showCreateModal = true">
@@ -5377,7 +5377,7 @@ onMounted(() => {
       </div>
     </div>
 
-    <div v-if="activeTab === 'uml'" class="card canvas-container">
+    <div v-if="activeTab === 'uml'" class="card canvas-container tab-page">
       <!-- 关系基数标注工具栏（选中连线时出现） -->
       <div v-if="selectedConnectionId && selConnCardinality" class="conn-cardinality-bar">
         <span style="color: #666;">关系基数：</span>
@@ -5428,7 +5428,7 @@ onMounted(() => {
     </div>
 
     <!-- ArchiMate 企业架构建模 -->
-    <div v-if="activeTab === 'archimate'" class="card canvas-container">
+    <div v-if="activeTab === 'archimate'" class="card canvas-container tab-page">
       <canvas
         ref="archimateCanvas"
         id="archimateCanvas"
@@ -5457,7 +5457,7 @@ onMounted(() => {
     </div>
 
     <!-- 数据建模（ER图） -->
-    <div v-if="activeTab === 'data'" class="card canvas-container">
+    <div v-if="activeTab === 'data'" class="card canvas-container tab-page">
       <canvas
         ref="erCanvas"
         id="erCanvas"
@@ -5485,7 +5485,7 @@ onMounted(() => {
       </div>
     </div>
 
-    <div v-if="activeTab === 'code'" class="card">
+    <div v-if="activeTab === 'code'" class="card tab-page">
       <h3 class="card-title">代码生成</h3>
       <p class="card-desc">从模型自动生成代码</p>
       
@@ -5629,7 +5629,7 @@ onMounted(() => {
       </div>
     </div>
 
-    <div v-if="activeTab === 'dev'" class="card">
+    <div v-if="activeTab === 'dev'" class="card tab-page">
       <h3 class="card-title"><i class="fas fa-tasks" style="color:#1f5eff;"></i> 研发管理</h3>
       <p class="card-desc">管理项目的需求、测试用例、缺陷与任务</p>
       <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px;">
@@ -5670,7 +5670,7 @@ onMounted(() => {
     </div>
 
     <!-- 后台管理（仅 admin） -->
-    <div v-if="activeTab === 'admin'" class="card">
+    <div v-if="activeTab === 'admin'" class="card tab-page">
       <h3 class="card-title"><i class="fas fa-shield-halved" style="color:#1f5eff;"></i> 后台管理</h3>
       <p class="card-desc">管理系统所有账号与各账号下的项目</p>
 
@@ -5714,7 +5714,7 @@ onMounted(() => {
       <p v-else style="color:#999;">暂无用户{{ adminLoading ? '（加载中）' : '' }}</p>
     </div>
 
-    <div v-if="activeTab === 'ai'" class="card" style="padding: 0; height: calc(100vh - 120px);">
+    <div v-if="activeTab === 'ai'" class="card tab-page" style="padding: 0; height: calc(100vh - 120px);">
       <AIAssistant :project-context="projectContext" :project-id="currentModelId || ''" />
     </div>
   </div>
@@ -7120,6 +7120,16 @@ onMounted(() => {
   font-size: 12px;
   color: #666;
   user-select: none;
+}
+
+/* 页面（tab 内容）切换过渡：新内容淡入。
+   用纯 CSS 动画而非 <Transition> 包裹，DOM 立即就位 → canvas 的 nextTick 初始化不受影响 */
+.tab-page {
+  animation: page-in 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 /* 关系基数标注工具栏（UML 连线） */
