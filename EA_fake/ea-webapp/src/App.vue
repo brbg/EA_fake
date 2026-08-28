@@ -2033,26 +2033,43 @@ const handleCanvasClick = (e: MouseEvent) => {
   let x = p.x
   let y = p.y
 
-  // —— 三击删除：纯 click 计数（触屏不依赖 dblclick），快速连点的中间击不创建元素 ——
+  // —— 双击编辑 / 三击删除：纯 click 计数（触屏不依赖 dblclick）。
+  // 连击必须「时间窗口内 + 屏幕位置接近 + 命中同一元素」，避免创建/点击空白污染计数。
+  // rapid 用屏幕坐标判定（容差固定物理像素），缩放不改变判定 ——
   const now = Date.now()
-  const rapid = now - lastTapTime < TRIPLE_CLICK_MS && Math.abs(x - lastTapX) < 12 && Math.abs(y - lastTapY) < 12
+  const hitNow = hitUmlElementAt(x, y)
+  const rapid = now - lastTapTime < TRIPLE_CLICK_MS && Math.abs(e.clientX - lastTapX) < 16 && Math.abs(e.clientY - lastTapY) < 16
   lastTapTime = now
-  lastTapX = x
-  lastTapY = y
-  if (rapid) {
+  lastTapX = e.clientX
+  lastTapY = e.clientY
+  if (rapid && hitNow?.id === tapAnchorElemId) {
     tapCount++
   } else {
     tapCount = 1
-    tapAnchorElemId = hitUmlElementAt(x, y)?.id ?? null
-    clearPendingEdit()  // 点击位置变化 → 取消待编辑
+    tapAnchorElemId = hitNow?.id ?? null
+    clearPendingEdit()  // 点击位置/目标变化 → 取消待编辑
   }
   if (tapCount >= 3) {
     tapCount = 0
     clearPendingEdit()
-    // 命中当前点击位置；若触屏抖动没命中，退回第一击命中的元素
-    const hit = hitUmlElementAt(x, y) || (tapAnchorElemId != null ? elements.find(el => el.id === tapAnchorElemId) : null)
-    if (hit) deleteUmlElement(hit.id)
+    if (tapAnchorElemId != null) {
+      const el = elements.find(el => el.id === tapAnchorElemId)
+      if (el) deleteUmlElement(el.id)
+    }
     return  // 三击：删除后不创建新元素
+  }
+  if (tapCount === 2 && tapAnchorElemId != null) {
+    // 双击：延迟打开编辑框（不依赖浏览器 dblclick，触屏更可靠）
+    clearPendingEdit()
+    const el = elements.find(el => el.id === tapAnchorElemId)
+    if (el) {
+      pendingEditTimer = window.setTimeout(() => {
+        pendingEditTimer = null
+        editingElement.value = JSON.parse(JSON.stringify(el))
+        showEditModal.value = true
+      }, TRIPLE_CLICK_MS)
+    }
+    return
   }
   if (rapid) return  // 快速连点的中间击：不创建，等待第三击
   
@@ -2909,25 +2926,40 @@ const handleArchimateClick = (e: MouseEvent) => {
   let x = p.x
   let y = p.y
 
-  // —— 三击删除：纯 click 计数（触屏不依赖 dblclick），快速连点的中间击不创建元素 ——
+  // —— 双击编辑 / 三击删除：纯 click 计数（触屏不依赖 dblclick），连击须命中同一元素，rapid 用屏幕坐标与缩放解耦 ——
   const now = Date.now()
-  const rapid = now - lastTapTime < TRIPLE_CLICK_MS && Math.abs(x - lastTapX) < 12 && Math.abs(y - lastTapY) < 12
+  const hitNow = hitArchimateElementAt(x, y)
+  const rapid = now - lastTapTime < TRIPLE_CLICK_MS && Math.abs(e.clientX - lastTapX) < 16 && Math.abs(e.clientY - lastTapY) < 16
   lastTapTime = now
-  lastTapX = x
-  lastTapY = y
-  if (rapid) {
+  lastTapX = e.clientX
+  lastTapY = e.clientY
+  if (rapid && hitNow?.id === tapAnchorElemId) {
     tapCount++
   } else {
     tapCount = 1
-    tapAnchorElemId = hitArchimateElementAt(x, y)?.id ?? null
+    tapAnchorElemId = hitNow?.id ?? null
     clearPendingEdit()
   }
   if (tapCount >= 3) {
     tapCount = 0
     clearPendingEdit()
-    const hit = hitArchimateElementAt(x, y) || (tapAnchorElemId != null ? archimateElements.find(el => el.id === tapAnchorElemId) : null)
-    if (hit) deleteArchimateElement(hit.id)
+    if (tapAnchorElemId != null) {
+      const el = archimateElements.find(el => el.id === tapAnchorElemId)
+      if (el) deleteArchimateElement(el.id)
+    }
     return  // 三击：删除后不创建新元素
+  }
+  if (tapCount === 2 && tapAnchorElemId != null) {
+    clearPendingEdit()
+    const el = archimateElements.find(el => el.id === tapAnchorElemId)
+    if (el) {
+      pendingEditTimer = window.setTimeout(() => {
+        pendingEditTimer = null
+        archimateEditingElement.value = JSON.parse(JSON.stringify(el))
+        showArchimateEditModal.value = true
+      }, TRIPLE_CLICK_MS)
+    }
+    return
   }
   if (rapid) return  // 快速连点的中间击：不创建，等待第三击
 
@@ -3516,25 +3548,40 @@ const handleErClick = (e: MouseEvent) => {
   let x = p.x
   let y = p.y
 
-  // —— 三击删除：纯 click 计数（触屏不依赖 dblclick），快速连点的中间击不创建元素 ——
+  // —— 双击编辑 / 三击删除：纯 click 计数（触屏不依赖 dblclick），连击须命中同一实体，rapid 用屏幕坐标与缩放解耦 ——
   const now = Date.now()
-  const rapid = now - lastTapTime < TRIPLE_CLICK_MS && Math.abs(x - lastTapX) < 12 && Math.abs(y - lastTapY) < 12
+  const hitNow = hitErEntityAt(x, y)
+  const rapid = now - lastTapTime < TRIPLE_CLICK_MS && Math.abs(e.clientX - lastTapX) < 16 && Math.abs(e.clientY - lastTapY) < 16
   lastTapTime = now
-  lastTapX = x
-  lastTapY = y
-  if (rapid) {
+  lastTapX = e.clientX
+  lastTapY = e.clientY
+  if (rapid && hitNow?.id === tapAnchorElemId) {
     tapCount++
   } else {
     tapCount = 1
-    tapAnchorElemId = hitErEntityAt(x, y)?.id ?? null
+    tapAnchorElemId = hitNow?.id ?? null
     clearPendingEdit()
   }
   if (tapCount >= 3) {
     tapCount = 0
     clearPendingEdit()
-    const hit = hitErEntityAt(x, y) || (tapAnchorElemId != null ? erEntities.find(ent => ent.id === tapAnchorElemId) : null)
-    if (hit) deleteErEntity(hit.id)
+    if (tapAnchorElemId != null) {
+      const ent = erEntities.find(ent => ent.id === tapAnchorElemId)
+      if (ent) deleteErEntity(ent.id)
+    }
     return  // 三击：删除后不创建新实体
+  }
+  if (tapCount === 2 && tapAnchorElemId != null) {
+    clearPendingEdit()
+    const ent = erEntities.find(ent => ent.id === tapAnchorElemId)
+    if (ent) {
+      pendingEditTimer = window.setTimeout(() => {
+        pendingEditTimer = null
+        erEditingEntity.value = JSON.parse(JSON.stringify(ent))
+        showErEditModal.value = true
+      }, TRIPLE_CLICK_MS)
+    }
+    return
   }
   if (rapid) return  // 快速连点的中间击：不创建，等待第三击
 
