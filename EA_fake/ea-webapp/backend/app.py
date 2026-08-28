@@ -14093,6 +14093,76 @@ def ai_qa():
         'answer': answer
     })
 
+# === AI 设计模式推荐（分析 UML 图 → 推荐最接近的设计模式）===
+
+DESIGN_PATTERNS_LIST = """- singleton 单例模式：保证一个类仅有一个实例，提供全局访问点
+- factory-method 工厂方法：定义创建对象的接口，由子类决定实例化哪个类
+- abstract-factory 抽象工厂：创建一系列相关对象，无需指定具体类
+- builder 建造者模式：将复杂对象的构建与表示分离
+- prototype 原型模式：通过拷贝原型实例创建新对象
+- adapter 适配器模式：将类的接口转换成客户期望的接口
+- bridge 桥接模式：抽象与实现分离，独立变化
+- composite 组合模式：对象组成树形结构表示部分-整体
+- decorator 装饰器模式：动态给对象添加职责
+- facade 外观模式：为子系统提供统一高层接口
+- flyweight 享元模式：共享细粒度对象减少内存
+- proxy 代理模式：为其他对象提供控制访问的代理
+- chain 责任链模式：多个对象链式处理请求
+- command 命令模式：将请求封装为对象
+- interpreter 解释器模式：定义文法并解释执行
+- iterator 迭代器模式：顺序访问集合元素
+- mediator 中介者模式：封装一组对象的交互
+- memento 备忘录模式：捕获并外部化对象状态
+- observer 观察者模式：对象一对多依赖，变化自动通知
+- state 状态模式：对象行为随状态改变
+- strategy 策略模式：定义一族算法可互换
+- template-method 模板方法：父类定义算法骨架，子类实现步骤
+- visitor 访问者模式：数据结构与操作分离"""
+
+
+@app.route('/api/v1/ai/pattern/recommend', methods=['POST'])
+def ai_recommend_pattern():
+    """分析 UML 图，推荐最接近的设计模式；无匹配返回 pattern=null。"""
+    session_id = request.headers.get('X-Session-Id')
+    if session_id not in sessions_cache:
+        return jsonify({'error': '未登录'}), 401
+    data = request.json or {}
+    elements = data.get('elements') or []
+    connections = data.get('connections') or []
+
+    desc_lines = []
+    for e in elements:
+        attrs = ' '.join((e.get('attributes') or [])[:8])
+        methods = ' '.join((e.get('methods') or [])[:8])
+        desc_lines.append(f"{e.get('name')}({e.get('type')}) 属性:{attrs} 方法:{methods}".strip())
+    for c in connections:
+        desc_lines.append(f"关系: {c.get('startElement')} -{c.get('type')}-> {c.get('endElement')}")
+    diagram_desc = '\n'.join(desc_lines) or '(空图)'
+
+    prompt = f"""分析下面这个 UML 类图，判断它最接近哪一种设计模式（从列表中选择）。
+{diagram_desc}
+
+可用模式：
+{DESIGN_PATTERNS_LIST}
+
+规则：结合类的职责、属性、方法、关系（继承/实现/关联/组合）判断。若没有一个模式明显匹配，pattern 返回 null。
+只输出 JSON：{{"pattern": "模式key 或 null", "reason": "一句话中文理由"}}"""
+
+    res = AIService.chat_completion([{'role': 'user', 'content': prompt}],
+                                    max_tokens=300, temperature=0.3)
+    if isinstance(res, dict) and res.get('error'):
+        return jsonify({'error': res['error']}), 500
+    content = ''
+    if isinstance(res, dict):
+        choices = res.get('choices') or []
+        if choices:
+            msg = choices[0].get('message') or {}
+            content = msg.get('content') or ''
+    parsed = _ai_parse_json_response(content) if content else {}
+    pattern_key = (parsed or {}).get('pattern') or None
+    reason = (parsed or {}).get('reason') or ''
+    return jsonify({'pattern': pattern_key, 'reason': reason, 'matched': bool(pattern_key)})
+
 if __name__ == '__main__':
     print("Loaded routes:")
     for rule in app.url_map.iter_rules():

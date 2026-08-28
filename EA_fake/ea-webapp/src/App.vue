@@ -2049,23 +2049,92 @@ const setConnCardinality = (card: string) => {
   }
 }
 
-// === 设计模式模板插入（23 种 GoF）===
+// === 设计模式模板插入（23 种 GoF）+ AI 推荐模式 ===
 const showPatternModal = ref(false)
 let patternInsertCount = 0
-const insertPattern = (key: string) => {
-  const pattern = designPatterns.find((p: any) => p.key === key)
-  if (!pattern) return
+const patternAnalyzing = ref(false)
+const patternRecommend = ref<{ pattern: string; name: string; reason: string } | null>(null)
+const showPatternResultModal = ref(false)
+const showPatternNoMatch = ref(false)
+
+const applyPatternToCanvas = (pattern: any) => {
   saveUmlHistory()
-  // 每次插入小幅偏移，避免多次插入重叠
   const offX = 40 + (patternInsertCount % 3) * 60
   const offY = 40 + Math.floor(patternInsertCount / 3) * 60
   patternInsertCount++
   const { elements: pe, connections: pc } = buildPatternElements(pattern, offX, offY)
   elements.push(...pe)
   connections.push(...pc)
-  showPatternModal.value = false
   redraw()
   updateStats()
+}
+
+const insertPattern = (key: string) => {
+  const pattern = designPatterns.find((p: any) => p.key === key)
+  if (!pattern) return
+  // 画布已有内容：不能共存 → 询问是否切换到「推荐模式」（AI 分析当前图，可覆盖重写）
+  if (elements.length > 0) {
+    if (!confirm('当前画布已有内容，是否切换到「推荐模式」？\n\n将调用 AI 分析当前图，推荐最合适的设计模式；确认后如选择覆盖，会用推荐模式重写画布。')) {
+      return
+    }
+    recommendPatternFromCanvas()
+    return
+  }
+  // 空画布：直接插入模板
+  applyPatternToCanvas(pattern)
+  showPatternModal.value = false
+}
+
+const recommendPatternFromCanvas = async () => {
+  if (elements.length === 0) {
+    showCollabToast('画布为空，请先建模或直接选择模式模板插入')
+    return
+  }
+  patternAnalyzing.value = true
+  showPatternModal.value = false
+  try {
+    const { ok, status, data } = await codeApi.recommendPattern({ elements, connections })
+    if (!ok) {
+      showCollabToast(data?.error || `分析失败: HTTP ${status}`)
+      return
+    }
+    if (!data?.matched || !data?.pattern) {
+      showPatternNoMatch.value = true
+      return
+    }
+    const p = designPatterns.find((x: any) => x.key === data.pattern)
+    patternRecommend.value = {
+      pattern: data.pattern,
+      name: p ? p.name : data.pattern,
+      reason: data.reason || ''
+    }
+    showPatternResultModal.value = true
+  } catch (e: any) {
+    showCollabToast(e?.message || '分析失败')
+  } finally {
+    patternAnalyzing.value = false
+  }
+}
+
+const overwritePattern = () => {
+  const rec = patternRecommend.value
+  if (!rec) return
+  const pattern = designPatterns.find((p: any) => p.key === rec.pattern)
+  if (!pattern) return
+  // 覆盖旧图：清空画布后用推荐模式重写
+  saveUmlHistory()
+  elements.splice(0, elements.length)
+  connections.splice(0, connections.length)
+  patternInsertCount = 0
+  const { elements: pe, connections: pc } = buildPatternElements(pattern, 40, 40)
+  elements.push(...pe)
+  connections.push(...pc)
+  selectedElement = null
+  selectedConnectionId.value = null
+  showPatternResultModal.value = false
+  redraw()
+  updateStats()
+  showCollabToast(`已用「${rec.name}」覆盖当前画布`)
 }
 
 const initCanvasEvents = () => {
@@ -5173,6 +5242,17 @@ onMounted(() => {
       <span class="modal-close" @click="showPatternModal = false">&times;</span>
       <h3 style="margin-bottom: 16px;"><i class="fas fa-layer-group" style="color:#1f5eff; margin-right:6px;"></i>设计模式模板（23 种 GoF）</h3>
       <p style="font-size:12px; color:#999; margin:0 0 14px;">点击插入对应类结构到画布，可继续编辑、标注基数、生成代码 / MySQL。</p>
+      <div style="margin-bottom: 14px; padding: 10px 12px; border: 1px solid #dbe4ff; border-radius: 10px; background: #f4f7ff;">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+          <div>
+            <strong style="font-size:13px; color:#1f5eff;"><i class="fas fa-wand-magic-sparkles"></i> AI 智能推荐</strong>
+            <div style="font-size:12px; color:#666; margin-top:2px;">分析当前 UML 图，自动推荐最合适的设计模式（可覆盖重写）</div>
+          </div>
+          <button class="btn btn-primary" style="padding:6px 14px; font-size:12px; white-space:nowrap;" @click="recommendPatternFromCanvas" :disabled="patternAnalyzing">
+            {{ patternAnalyzing ? '分析中...' : '推荐模式' }}
+          </button>
+        </div>
+      </div>
       <div v-for="cat in patternCategories" :key="cat" style="margin-bottom: 16px;">
         <h4 style="margin: 0 0 8px; color: #1f5eff;">{{ cat }}</h4>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
@@ -5187,6 +5267,40 @@ onMounted(() => {
             <span style="color:#999; font-size:11px; display:block;">{{ p.en }}</span>
           </button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 设计模式推荐结果（覆盖/取消） -->
+  <div v-if="showPatternResultModal" class="modal-overlay" @click.self="showPatternResultModal = false">
+    <div class="modal-content" style="max-width: 460px;">
+      <span class="modal-close" @click="showPatternResultModal = false">&times;</span>
+      <h3 style="margin-bottom: 16px;"><i class="fas fa-wand-magic-sparkles" style="color:#1f5eff; margin-right:6px;"></i>AI 推荐设计模式</h3>
+      <div v-if="patternRecommend" style="padding: 14px; border: 1px solid #dbe4ff; border-radius: 10px; background: #f4f7ff; margin-bottom: 16px;">
+        <div style="font-size: 18px; font-weight: 700; color: #1f5eff; margin-bottom: 6px;">{{ patternRecommend.name }}</div>
+        <div style="font-size: 13px; color: #555;">{{ patternRecommend.reason }}</div>
+      </div>
+      <p style="font-size: 13px; color: #333; margin: 0 0 16px;">是否<b>覆盖并复写</b>当前画布，生成「{{ patternRecommend?.name }}」模式的 UML 图？</p>
+      <div style="display:flex; justify-content:flex-end; gap:10px;">
+        <button class="btn btn-outline" @click="showPatternResultModal = false">取消</button>
+        <button class="btn btn-primary" @click="overwritePattern">覆盖并生成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 未找到相似模式（引导其他 AI 工具） -->
+  <div v-if="showPatternNoMatch" class="modal-overlay" @click.self="showPatternNoMatch = false">
+    <div class="modal-content" style="max-width: 440px;">
+      <span class="modal-close" @click="showPatternNoMatch = false">&times;</span>
+      <h3 style="margin-bottom: 14px;"><i class="fas fa-circle-exclamation" style="color:#d97706; margin-right:6px;"></i>未找到相似模式</h3>
+      <p style="font-size: 13px; color: #555; margin: 0 0 18px;">当前 UML 图与 23 种设计模式都不太匹配，可以试试这些 AI 工具：</p>
+      <div style="display:flex; flex-direction:column; gap:8px; margin-bottom: 16px;">
+        <button class="btn btn-outline" style="justify-content:flex-start; text-align:left;" @click="showPatternNoMatch = false; openGenerateDiagram('uml')">
+          <i class="fas fa-wand-magic-sparkles" style="color:#1f5eff;"></i> AI 从描述生成 UML 图
+        </button>
+        <button class="btn btn-outline" style="justify-content:flex-start; text-align:left;" @click="showPatternNoMatch = false; activeTab = 'ai'">
+          <i class="fas fa-robot" style="color:#1f5eff;"></i> 去 AI 助手对话（描述你的架构）
+        </button>
       </div>
     </div>
   </div>

@@ -26,6 +26,9 @@ export const aiApi = {
 
 export const codeApi = {
   generate: (body: Record<string, unknown>) => post('/api/v1/ai/code/generate', body),
+  // 分析 UML 图，推荐最接近的设计模式
+  recommendPattern: (body: { elements: unknown[]; connections: unknown[] }) =>
+    post('/api/v1/ai/pattern/recommend', body),
   reverse: (body: { code: string; language: string; target: string }) =>
     post('/api/v1/ai/code/reverse', body),
 }
