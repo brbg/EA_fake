@@ -6,6 +6,8 @@ export const collabApi = {
   listUserProjects: (userId: string) => get(`/api/v1/users/${userId}/projects`),
   // 加入某项目为 editor 协作者
   join: (projectId: string) => post(`/api/v1/project/${projectId}/join`),
+  // 按 owner 账户 id 加入其当前打开的项目（直接进当前项目）
+  joinCurrent: (ownerUserId: string) => post('/api/v1/project/join-current', { owner_user_id: ownerUserId }),
   // 列出项目协作者（owner 或成员可查）
   collaborators: (projectId: string) => get(`/api/v1/project/${projectId}/collaborators`),
   // owner 取消指定协作者

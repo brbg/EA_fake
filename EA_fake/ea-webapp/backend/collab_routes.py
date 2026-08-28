@@ -13,7 +13,7 @@ from core import (
     load_model_from_cache, save_model,
     get_knowledge, log_knowledge, build_knowledge_context,
 )
-from collab import kick_user, emit_proposal
+from collab import kick_user, emit_proposal, _collab_conns
 
 collab_routes_bp = Blueprint('collab', __name__)
 
@@ -142,6 +142,35 @@ def _apply_model_data(model, data):
         model.er_entities = data['erEntities']
     if 'erRelations' in data:
         model.er_relations = data['erRelations']
+
+
+@collab_routes_bp.route('/api/v1/project/join-current', methods=['POST'])
+def join_current_project():
+    """按 owner 账户 id 加入其当前打开的项目（不列全部项目，直接进当前项目）。"""
+    user_id = _require_user_id()
+    if user_id is None:
+        return jsonify({'error': '未登录'}), 401
+    data = request.json or {}
+    owner_id = (data.get('owner_user_id') or data.get('user_id') or '').strip()
+    if not owner_id:
+        return jsonify({'error': '请提供对方账户 ID'}), 400
+    # 从 socket 连接里找 owner 当前打开的项目（owner 打开项目即 join 房间）
+    owner_project = None
+    for sid, (pid, uid) in reversed(list(_collab_conns.items())):
+        if uid == owner_id:
+            owner_project = pid
+            break
+    if not owner_project:
+        return jsonify({'error': '该用户当前未打开任何项目'}), 404
+    project = load_projects().get(owner_project)
+    if project is None:
+        return jsonify({'error': '项目不存在'}), 404
+    if project.owner_id == user_id:
+        return jsonify({'error': '这是你自己的项目'}), 400
+    if user_id not in project.permissions:
+        project.add_member(user_id, 'editor')
+        save_project(project)
+    return jsonify({'message': '已加入协作', 'project': {'id': project.id, 'name': project.name}})
 
 
 @collab_routes_bp.route('/api/v1/project/<project_id>/proposals', methods=['GET'])

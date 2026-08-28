@@ -4131,12 +4131,6 @@ const collabExpanded = ref('')
 const joinedCollabModels = computed(() => models.value.filter(m => m.role === 'editor'))
 // 项目管理列表只显示自己拥有的项目（协作项目走右上角「我协作的项目」）
 const ownedModels = computed(() => models.value.filter(m => !m.role || m.role === 'owner'))
-// 是否已配对：加入了他人的项目，或自己打开的项目有协作者 → 隐藏「我需要协作/加入协作」
-const hasActiveCollab = computed(() => {
-  if (joinedCollabModels.value.length > 0) return true
-  if (headerCollabMembers.value && headerCollabMembers.value.members.length > 0) return true
-  return false
-})
 // 我拥有的项目（可管理协作者）
 const ownedCollabModels = computed(() => models.value.filter(m => !m.role || m.role === 'owner'))
 const joinedProjectIds = computed(() => new Set(models.value.map(m => m.id)))
@@ -4268,6 +4262,39 @@ const joinCollabProject = async (id: string) => {
     showCollabDropdown.value = false
   } catch (e: any) {
     showCollabToast(e?.message || '加入失败')
+  }
+}
+
+// 直接加入 owner 当前打开的项目（无需列项目列表）
+const joinCurrentProject = async () => {
+  const uid = collabSearchUserId.value.trim()
+  if (!uid) {
+    showCollabToast('请输入对方账户 ID', 'warning')
+    return
+  }
+  collabSearchMsg.value = ''
+  const { ok, status, data } = await collabApi.joinCurrent(uid)
+  if (!ok) {
+    collabSearchMsg.value = data?.error || `加入失败: HTTP ${status}`
+    return
+  }
+  const pid = data?.project?.id
+  const pname = data?.project?.name || '协作项目'
+  collabSearchUserId.value = ''
+  showCollabToast(`已加入「${pname}」，正在打开…`)
+  await loadModels()
+  if (pid) {
+    const model = models.value.find((m: any) => m.id === pid)
+    if (model) {
+      await openModel(model)
+    } else {
+      currentModelId.value = pid
+      currentModelName.value = pname
+      activeTab.value = 'uml'
+      await loadModelFromServer(pid)
+      joinProjectRoom()
+    }
+    showCollabDropdown.value = false
   }
 }
 
@@ -4407,35 +4434,34 @@ onMounted(() => {
           </button>
           <!-- 协作状态下拉 -->
           <div v-if="showCollabDropdown" class="header-collab-dropdown">
-            <!-- 协作中枢：不需要打开项目（已配对后隐藏「我需要协作/加入协作」） -->
-            <template v-if="!hasActiveCollab">
-              <div class="dropdown-hub-title">协作</div>
+            <!-- 协作中枢：项目为中心 -->
+            <div class="dropdown-hub-title">协作</div>
+            <div class="dropdown-hub-item" @click="showJoinInput = !showJoinInput">
+              <i class="fas fa-user-plus"></i> 加入协作
+            </div>
+            <div v-if="showJoinInput" class="hub-box">
+              <div class="dropdown-hint">输入对方账户 ID，将加入他<b>当前打开的项目</b></div>
+              <div style="display:flex; gap:6px;">
+                <input v-model="collabSearchUserId" placeholder="输入对方 6 位账户 ID" @keyup.enter="joinCurrentProject" style="flex:1; padding:8px; border:1px solid #ddd; border-radius:8px; font-size:13px;" />
+                <button class="btn btn-primary" style="padding:6px 12px; font-size:12px;" @click="joinCurrentProject">加入</button>
+              </div>
+              <div v-if="collabSearchMsg" class="dropdown-hint">{{ collabSearchMsg }}</div>
+            </div>
+
+            <!-- 我需要协作：owner + 打开项目时 -->
+            <template v-if="currentModelId && currentModelRole === 'owner'">
               <div class="dropdown-hub-item" @click="showMyId = !showMyId">
-                <i class="fas fa-qrcode"></i> 我需要协作
+                <i class="fas fa-qrcode"></i> 我需要协作（当前：{{ currentModelName }}）
               </div>
               <div v-if="showMyId" class="hub-box">
                 <div>我的账户 ID：<b style="color:#1f5eff;">{{ authUser?.id }}</b>
                   <button class="kick-btn" style="margin-left:6px;" @click="copyMyId">复制</button>
                 </div>
-                <div class="dropdown-hint">把这个 ID 发给对方，对方在「加入协作」输入即可加入你的项目。</div>
-              </div>
-              <div class="dropdown-hub-item" @click="showJoinInput = !showJoinInput">
-                <i class="fas fa-user-plus"></i> 加入协作
-              </div>
-              <div v-if="showJoinInput" class="hub-box">
-                <div style="display:flex; gap:6px;">
-                  <input v-model="collabSearchUserId" placeholder="输入对方 6 位账户 ID" @keyup.enter="searchCollabProjects" style="flex:1; padding:8px; border:1px solid #ddd; border-radius:8px; font-size:13px;" />
-                  <button class="btn btn-primary" style="padding:6px 12px; font-size:12px;" @click="searchCollabProjects">查找</button>
-                </div>
-                <div v-if="collabSearchMsg" class="dropdown-hint">{{ collabSearchMsg }}</div>
-                <div v-if="collabSearchResults.length" class="dropdown-list">
-                  <div v-for="p in collabSearchResults" :key="p.id" class="dropdown-user">
-                    <span class="user-name">{{ p.name }} <small style="color:#999;">{{ p.id }}</small></span>
-                    <button class="kick-btn" :disabled="joinedProjectIds.has(p.id)" @click="joinCollabProject(p.id)">{{ joinedProjectIds.has(p.id) ? '已加入' : '加入' }}</button>
-                  </div>
-                </div>
+                <div class="dropdown-hint">让对方在「加入协作」输入此 ID，即可加入当前项目「{{ currentModelName }}」。</div>
               </div>
             </template>
+
+            <!-- 我协作的项目（协作项目从右上角进入） -->
             <div class="dropdown-hub-item" @click="showMyCollab = !showMyCollab">
               <i class="fas fa-folder-open"></i> 我协作的项目（{{ joinedCollabModels.length }}）
             </div>
@@ -4448,6 +4474,9 @@ onMounted(() => {
               </div>
               <p v-else class="dropdown-hint">暂无，可先通过「加入协作」加入。</p>
             </div>
+
+            <!-- 无项目打开提示 -->
+            <div v-if="!currentModelId" class="dropdown-hint" style="margin-top:6px;">打开一个项目后可发起 / 管理协作。</div>
 
             <!-- 项目协作（打开项目时） -->
             <hr style="margin:10px 0; border:none; border-top:1px solid #eee;" />
