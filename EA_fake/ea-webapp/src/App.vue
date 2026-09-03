@@ -258,6 +258,16 @@ const showErEditModal = ref(false)
 const erSqlResult = ref('')
 
 const codeConfig = ref({ language: 'java', framework: 'spring', source: 'uml', outputType: 'entity' })
+// === JPA 贫血实体模式（全局开关，默认开）：图↔代码双向往返时实体类只保留数据面，save/拷贝等不进入循环 ===
+const jpaAnemic = ref(localStorage.getItem('jpaAnemic') !== '0')
+watch(jpaAnemic, (v) => localStorage.setItem('jpaAnemic', v ? '1' : '0'))
+// 命名启发识别 JPA 实体：类名以分层/工具后缀结尾的不当实体（@Entity 注解优先于它，见后端反向）
+const LAYERED_SUFFIX = ['Service', 'Controller', 'Repository', 'Mapper', 'DTO', 'VO', 'Converter', 'Helper', 'Util', 'Api', 'Client', 'Handler', 'Factory', 'Proxy']
+const isJpaEntityName = (name: string): boolean => {
+  const n = (name || '').trim()
+  if (!n || n.includes('<')) return false
+  return !LAYERED_SUFFIX.some((s) => n.endsWith(s))
+}
 const generatedCode = ref('// 选择模型源和输出类型，然后点击生成代码按钮')
 const codeGenerating = ref(false)
 
@@ -1109,7 +1119,7 @@ const reverseCode = async () => {
   reverseError.value = ''
   reversing.value = true
   try {
-    const { ok, status, data } = await codeApi.reverse({ code, language, target })
+    const { ok, status, data } = await codeApi.reverse({ code, language, target, anemic: jpaAnemic.value })
     if (!ok || data?.error) {
       reverseError.value = data?.error || `反推失败: HTTP ${status}`
       return
@@ -1131,6 +1141,8 @@ const reverseCode = async () => {
     }
     updateStats()
     showToast(`反推成功：${target === 'uml' ? 'UML 类图' : 'ER 模型'}已生成，记得点「保存」`, 'success')
+    // 无法从代码复原的内容提示（布局/别名/父类字段等）
+    if (data?.notice) showToast(data.notice, 'warning')
   } catch (e: any) {
     reverseError.value = e?.message || '反推请求失败，请检查后端服务'
   } finally {
@@ -1295,26 +1307,36 @@ const downloadCode = () => {
   URL.revokeObjectURL(url)
 }
 
-// 依据 UML 图生成全套 Spring-Data-JPA 实体（Java）：
-// 实体只做数据载体（无 save/update 业务方法）；关联 fetch=LAZY、按多重度 ManyToOne/OneToMany/OneToOne、
-// mappedBy 正确；主键 IDENTITY；javax.persistence 注解；toString 避免关联对象递归。
+// 依据 UML 图生成全套 Spring-Data-JPA 实体（Java）。
+// JPA 贫血实体模式(开关 jpaAnemic)开：只对「实体命名」类生成 @Entity 且只数据面（构造/getter/setter/防递归 toString，不含 save/拷贝）；
+// 被继承的父类生成 @MappedSuperclass；每类写 UML_META 注释(布局/关系多重度/菱形等 Java 语法无法表达的绘图信息，供反向复原)。
+// 开关关：所有 class 原样生成（不过滤、含 UML 方法存根、不写 Uml_META）。
 const generateJpaEntitiesJava = (): string => {
   const classes = elements.filter((e: any) => e.type === 'class')
   const classNames = new Set(classes.map((c: any) => c.name))
   const lc = (s: string) => (s || '').replace(/^\w/, (ch) => ch.toLowerCase())
   const isRefType = (t: string) => classNames.has((t || '').trim().replace(/^List\s*</i, '').replace(/>.*$/, '').trim())
-  // 结构化关系（association/composition/aggregation，两端均为实体类）→ JPA 关联
+  const anemic = jpaAnemic.value
+  const targets = anemic ? classes.filter((c: any) => isJpaEntityName(c.name)) : classes
+  const targetIds = new Set(targets.map((c: any) => c.id))
+  const byId = new Map<number, any>()
+  elements.forEach((e: any) => byId.set(e.id, e))
+  // 结构关系：association/composition/aggregation（两端 target）
   const rels: any[] = []
   const seen = new Set<string>()
   connections.forEach((c: any) => {
-    const a = elements.find((e: any) => e.id === c.startElement)
-    const b = elements.find((e: any) => e.id === c.endElement)
-    if (!a || !b || a.type !== 'class' || b.type !== 'class') return
+    const a = byId.get(c.startElement), b = byId.get(c.endElement)
+    if (!a || !b || !targetIds.has(a.id) || !targetIds.has(b.id)) return
     if (!['association', 'composition', 'aggregation'].includes(c.type)) return
     const key = `${a.id}-${b.id}`
     if (seen.has(key)) return
     seen.add(key)
     rels.push({ a, b, card: c.cardinality || 'oneToMany' })
+  })
+  // 被 target 类继承的父类（target 内作为 inheritance 的 end）→ @MappedSuperclass
+  const mappedSuper = new Set<number>()
+  connections.forEach((c: any) => {
+    if (c.type === 'inheritance' && targetIds.has(c.endElement)) mappedSuper.add(c.endElement)
   })
   const assocLines = new Map<number, string[]>()
   const usedField = new Map<number, Set<string>>()
@@ -1330,83 +1352,94 @@ const generateJpaEntitiesJava = (): string => {
     if (card === 'manyToMany') {
       if (!usedField.get(a.id)!.has(bListField)) {
         usedField.get(a.id)!.add(bListField)
-        assocLines.get(a.id)!.push(
-          `    @ManyToMany(fetch = FetchType.LAZY)\n` +
-          `    @JoinTable(name = "${aN}_${bN}", joinColumns = @JoinColumn(name = "${colOfA}"), inverseJoinColumns = @JoinColumn(name = "${bN}_id"))\n` +
-          `    private List<${b.name}> ${bListField} = new ArrayList<>();`)
+        assocLines.get(a.id)!.push(`    @ManyToMany(fetch = FetchType.LAZY)\n    @JoinTable(name = "${aN}_${bN}", joinColumns = @JoinColumn(name = "${colOfA}"), inverseJoinColumns = @JoinColumn(name = "${bN}_id"))\n    private List<${b.name}> ${bListField} = new ArrayList<>();`)
       }
       const aListField = `${aN}List`
       if (!usedField.get(b.id)!.has(aListField)) {
         usedField.get(b.id)!.add(aListField)
-        assocLines.get(b.id)!.push(
-          `    @ManyToMany(mappedBy = "${bListField}", fetch = FetchType.LAZY)\n` +
-          `    private List<${a.name}> ${aListField} = new ArrayList<>();`)
+        assocLines.get(b.id)!.push(`    @ManyToMany(mappedBy = "${bListField}", fetch = FetchType.LAZY)\n    private List<${a.name}> ${aListField} = new ArrayList<>();`)
       }
     } else if (card === 'oneToOne') {
-      // FK 端 = b（连线终点），a 为反向
       if (!usedField.get(b.id)!.has(aN)) {
         usedField.get(b.id)!.add(aN)
-        assocLines.get(b.id)!.push(
-          `    @OneToOne(fetch = FetchType.LAZY)\n` +
-          `    @JoinColumn(name = "${colOfA}", unique = true)\n` +
-          `    private ${a.name} ${aN};`)
+        assocLines.get(b.id)!.push(`    @OneToOne(fetch = FetchType.LAZY)\n    @JoinColumn(name = "${colOfA}", unique = true)\n    private ${a.name} ${aN};`)
       }
       if (!usedField.get(a.id)!.has(bN)) {
         usedField.get(a.id)!.add(bN)
-        assocLines.get(a.id)!.push(
-          `    @OneToOne(mappedBy = "${aN}", fetch = FetchType.LAZY)\n` +
-          `    private ${b.name} ${bN};`)
+        assocLines.get(a.id)!.push(`    @OneToOne(mappedBy = "${aN}", fetch = FetchType.LAZY)\n    private ${b.name} ${bN};`)
       }
     } else {
-      // oneToMany：多端 b 持外键 @ManyToOne，一端 a 持 @OneToMany(mappedBy)
       if (!usedField.get(b.id)!.has(aN)) {
         usedField.get(b.id)!.add(aN)
-        assocLines.get(b.id)!.push(
-          `    @ManyToOne(fetch = FetchType.LAZY)\n` +
-          `    @JoinColumn(name = "${colOfA}")\n` +
-          `    private ${a.name} ${aN};`)
+        assocLines.get(b.id)!.push(`    @ManyToOne(fetch = FetchType.LAZY)\n    @JoinColumn(name = "${colOfA}")\n    private ${a.name} ${aN};`)
       }
       if (!usedField.get(a.id)!.has(bListField)) {
         usedField.get(a.id)!.add(bListField)
-        assocLines.get(a.id)!.push(
-          `    @OneToMany(mappedBy = "${aN}", fetch = FetchType.LAZY, cascade = CascadeType.ALL, orphanRemoval = true)\n` +
-          `    private List<${b.name}> ${bListField} = new ArrayList<>();`)
+        assocLines.get(a.id)!.push(`    @OneToMany(mappedBy = "${aN}", fetch = FetchType.LAZY, cascade = CascadeType.ALL, orphanRemoval = true)\n    private List<${b.name}> ${bListField} = new ArrayList<>();`)
       }
     }
   })
+  // 每类 UML_META：布局 + 相关连线(kind/card，含继承/实现) + 由接口/父类继承过来的方法名(反向不重复渲染)
+  const metaOf = new Map<number, any>()
+  targetIds.forEach((id) => {
+    const e = byId.get(id)
+    metaOf.set(id, { x: Math.round(e?.x ?? 0), y: Math.round(e?.y ?? 0), type: e?.type || 'class', rel: [], ifaceMethods: [] })
+  })
+  connections.forEach((c: any) => {
+    const a = byId.get(c.startElement), b = byId.get(c.endElement)
+    if (!a || !b) return
+    const ca = metaOf.get(a.id), cb = metaOf.get(b.id)
+    const cardText = { oneToOne: '1..1', oneToMany: '1..*', manyToMany: '*..*' } as any
+    if (ca) ca.rel.push({ kind: c.type, from: a.name, to: b.name, card: cardText[c.cardinality] || c.cardinality || '' })
+    if (cb) cb.rel.push({ kind: c.type, from: a.name, to: b.name, card: cardText[c.cardinality] || c.cardinality || '' })
+  })
   const blocks: string[] = []
   blocks.push('package com.example.entity;\n', 'import javax.persistence.*;', 'import lombok.*;', 'import java.util.*;\n')
-  classes.forEach((c: any) => {
+  targets.forEach((c: any) => {
     const scalar: { name: string; jtype: string }[] = []
     ;(c.attributes || []).forEach((attr: string) => {
       const p = parseUmlAttr(attr)
       if (!p) return
-      if (p.name.toLowerCase() === 'id') { scalar.push({ name: 'id', jtype: mapTypeToJava(p.type) || 'Long' }); return }
       if (isRefType(p.type)) return
+      if (p.name.toLowerCase() === 'id') { scalar.push({ name: 'id', jtype: mapTypeToJava(p.type) || 'Long' }); return }
       scalar.push({ name: p.name, jtype: mapTypeToJava(p.type) })
     })
     const hasId = scalar.some((f) => f.name === 'id')
-    const assoc = assocLines.get(c.id) || []
     const pkField = hasId ? scalar.find((f) => f.name === 'id')! : { name: 'id', jtype: 'Long' }
     const others = scalar.filter((f) => f.name !== 'id')
     const body: string[] = []
-    body.push('    @Id')
-    body.push('    @GeneratedValue(strategy = GenerationType.IDENTITY)')
-    body.push(`    private ${pkField.jtype} ${pkField.name};`)
-    others.forEach((f) => body.push(`    private ${f.jtype} ${f.name};`))
-    assoc.forEach((l) => body.push(l))
-    // toString 只含标量字段，避免关联对象递归
-    const showNames = [pkField.name, ...others.slice(0, 3).map((f) => f.name)]
-    const showCalls = showNames.map((n) => `${n}=" + ${n}`).join(' + ", ')
-    body.push('', '    @Override', '    public String toString() {')
-    body.push(`        return "${c.name}{${showCalls} + "}";`)
-    body.push('    }')
-    blocks.push(
-      '@Getter', '@Setter', '@NoArgsConstructor', '@Entity',
-      `@Table(name = "${c.name.toLowerCase()}")`, `public class ${c.name} {`,
-      body.join('\n'), '}', '')
+    if (anemic) {
+      body.push('    @Id')
+      body.push('    @GeneratedValue(strategy = GenerationType.IDENTITY)')
+      body.push(`    private ${pkField.jtype} ${pkField.name};`)
+      others.forEach((f) => body.push(`    private ${f.jtype} ${f.name};`))
+      assocLines.get(c.id)?.forEach((l) => body.push(l))
+      const showNames = [pkField.name, ...others.slice(0, 3).map((f) => f.name)]
+      const showCalls = showNames.map((n) => `${n}=" + ${n}`).join(' + ", ')
+      body.push('', '    @Override', '    public String toString() {')
+      body.push(`        return "${c.name}{${showCalls} + "}";`)
+      body.push('    }')
+    } else {
+      // 关闭贫血：原样映射——UML 方法与字段全保留（方法给空体存根，字段含 id 注解）
+      body.push('    @Id')
+      body.push('    @GeneratedValue(strategy = GenerationType.IDENTITY)')
+      body.push(`    private ${pkField.jtype} ${pkField.name};`)
+      others.forEach((f) => body.push(`    private ${f.jtype} ${f.name};`))
+      assocLines.get(c.id)?.forEach((l) => body.push(l))
+      ;(c.methods || []).forEach((m: string) => {
+        const mt = pojoMethod(m)
+        body.push(`    public ${pojoRetType(mt.ret, 'java', 'void')} ${mt.name || 'method'}(${mt.params.map((p: any) => pojoParam(p, 'java')).join(', ')}) { }`)
+      })
+    }
+    const meta = metaOf.get(c.id)
+    const metaLine = anemic && meta ? ` * UML_META:${JSON.stringify(meta).replace(/\*\//g, '* /')}` : null
+    blocks.push(metaLine ? `/**\n${metaLine}\n */` : '')
+    const isSuper = mappedSuper.has(c.id)
+    blocks.push('@Getter', '@Setter', '@NoArgsConstructor', isSuper && anemic ? '@MappedSuperclass' : '@Entity')
+    if (!(isSuper && anemic)) blocks.push(`@Table(name = "${c.name.toLowerCase()}")`)
+    blocks.push(`public class ${c.name} {`, body.join('\n'), '}', '')
   })
-  return blocks.join('\n')
+  return blocks.filter((s) => s !== undefined).join('\n')
 }
 
 const generateEntityCode = (language: string, framework: string): string => {
@@ -1893,6 +1926,15 @@ const generatePojoCode = (language: string): string => {
     if (elem.type !== 'class' && elem.type !== 'interface') return
     const isIface = elem.type === 'interface'
     const eName = elem.name
+    // Uml_META：布局 + 关联（kind/card）等 Java 语法无法表达的 UML 绘图信息，供代码反向复原
+    const metaRels = connections.filter((c: any) => c.startElement === elem.id || c.endElement === elem.id).map((c: any) => {
+      const oid = c.startElement === elem.id ? c.endElement : c.startElement
+      const other = elements.find((e: any) => e.id === oid)
+      return { kind: c.type, to: other?.name || '', card: c.cardinality || '' }
+    })
+    const metaJson = JSON.stringify({ x: Math.round(elem.x || 0), y: Math.round(elem.y || 0), type: elem.type, rel: metaRels }).replace(/\*\//g, '* /')
+    const cmt = lang === 'python' ? `# UML_META:${metaJson}` : `// UML_META:${metaJson}`
+    blocks.push(cmt)
     const parent = sup.get(elem.id) || null
     const ifaces = impl.get(elem.id) || []
     const fields = (elem.attributes || []).map((a: string) => { const vis = pojoVisOf(a); const p = parseUmlAttr(a); return { vis, name: p?.name || '', type: p?.type || '' } }).filter((f: any) => f.name)
@@ -5702,7 +5744,11 @@ onMounted(() => {
     <div v-if="activeTab === 'code'" class="card tab-page">
       <h3 class="card-title">代码生成</h3>
       <p class="card-desc">从模型自动生成代码</p>
-      
+      <label style="display:inline-flex;align-items:center;gap:6px;margin:0 0 6px;font-size:13px;color:#444;cursor:pointer;">
+        <input type="checkbox" v-model="jpaAnemic" /> JPA 贫血实体模式
+        <span style="color:#999;font-weight:400;">（开=实体类只保留数据面、关联注解还原，save/拷贝方法不进图↔码循环；关=原样映射）</span>
+      </label>
+
       <div style="margin-top: 20px;">
         <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px;">
           <select 

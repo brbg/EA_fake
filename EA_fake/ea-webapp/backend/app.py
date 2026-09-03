@@ -6260,15 +6260,15 @@ def _layout_ai_er(entities_raw, relations_raw):
     return entities, relations
 
 
-def reverse_code_to_model(code, language, target):
-    """解析源代码反推出模型结构化数据。AI 未启用/调用失败返回 None。"""
+def reverse_code_to_model(code, language, target, anemic=True):
+    """解析源代码反推出模型结构化数据。AI 未启用/调用失败返回 None。anemic=JPA 贫血实体模式。"""
     if not code or not code.strip():
         return None
     if not ai_service_config.enabled:
         return None
 
     messages = [
-        {'role': 'system', 'content': code_reverse_system_prompt(target)},
+        {'role': 'system', 'content': code_reverse_system_prompt(target, anemic)},
         {'role': 'user', 'content': f'语言：{language or "auto"}\n源代码：\n{code}'}
     ]
     result = AIService.chat_completion(messages, max_tokens=4096, temperature=0.3)
@@ -6301,6 +6301,30 @@ def _uuid_elements_to_canvas(elements, relationships):
     return elements, relationships
 
 
+def _keep_meta_layout(elements_raw, relationships_raw):
+    """代码带 Uml_META 布局注释时按原始 x/y 保留（不再流式重排）。返回带 uuid 供统一转换。"""
+    import uuid as _uuid
+    name_to_id = {}
+    for e in elements_raw:
+        uid = str(_uuid.uuid4())
+        name_to_id[e.get('name')] = uid
+        e['uuid'] = uid
+        e['type'] = 'interface' if str(e.get('type', '')).lower() == 'interface' else 'class'
+        e.setdefault('width', 120)
+        e.setdefault('height', 100)
+        e.setdefault('color', '#ffffff')
+        e.setdefault('headerColor', '#1f5eff')
+    rels = []
+    for r in relationships_raw or []:
+        s = name_to_id.get(r.get('source'))
+        t = name_to_id.get(r.get('target'))
+        if s and t:
+            rels.append({'uuid': str(_uuid.uuid4()), 'type': (r.get('type') or 'association').lower(),
+                         'source': s, 'target': t, 'cardinality': r.get('cardinality') or 'oneToMany',
+                         'source_name': r.get('source'), 'target_name': r.get('target')})
+    return elements_raw, rels
+
+
 @app.route('/api/v1/ai/code/reverse', methods=['POST'])
 def ai_code_reverse_v1():
     """代码反向工程：粘贴代码 → 反推 UML 类图 / ER 模型（LLM）。"""
@@ -6308,13 +6332,14 @@ def ai_code_reverse_v1():
     code = data.get('code', '')
     language = data.get('language', 'auto')
     target = data.get('target', 'uml')
+    anemic = bool(data.get('anemic', True))
 
     if not code or not code.strip():
         return jsonify({'error': '请粘贴源代码'}), 400
     if target not in ('uml', 'er'):
         return jsonify({'error': 'target 必须是 uml 或 er'}), 400
 
-    result = reverse_code_to_model(code, language, target)
+    result = reverse_code_to_model(code, language, target, anemic)
     if result is None:
         return jsonify({'error': 'AI 服务不可用或未能解析代码，请确认已配置 API 密钥后重试'}), 422
 
@@ -6325,9 +6350,20 @@ def ai_code_reverse_v1():
             return jsonify({'error': '未能从代码中提取出类结构'}), 422
         if not isinstance(relationships_raw, list):
             relationships_raw = []
-        elements, relationships = _layout_ai_elements(elements_raw, relationships_raw, 'class')
+        has_layout = all(isinstance(e.get('x'), (int, float)) and isinstance(e.get('y'), (int, float)) for e in elements_raw)
+        if anemic and has_layout:
+            elements, relationships = _keep_meta_layout(elements_raw, relationships_raw)
+        else:
+            elements, relationships = _layout_ai_elements(elements_raw, relationships_raw, 'class')
         elements, relationships = _uuid_elements_to_canvas(elements, relationships)
-        return jsonify({'target': 'uml', 'elements': elements, 'relationships': relationships})
+        layout_lost = not (anemic and has_layout) or bool(result.get('layoutLost'))
+        notice = None
+        if layout_lost:
+            notice = '该代码不含可复原布局（UML_META），已按代码自动排布；别名/备注/排版等 UML 特有信息无法从 Java 复原。'
+        # 关系类型统一为画布小写命名（association/inheritance/realization/...）
+        for _r in relationships:
+            _r['type'] = str(_r.get('type') or 'association').lower()
+        return jsonify({'target': 'uml', 'elements': elements, 'relationships': relationships, 'notice': notice})
 
     entities_raw = result.get('entities')
     if not isinstance(entities_raw, list) or not entities_raw:

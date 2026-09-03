@@ -193,8 +193,8 @@ def document_system_prompt(doc_type, fmt='markdown'):
     return base.get(doc_type, base['architecture']) + ' 用中文撰写，条理清晰。' + fmt_rule
 
 
-def code_reverse_system_prompt(target):
-    """代码反向工程：源代码 → 结构化模型。target 为 'uml' 或 'er'。"""
+def code_reverse_system_prompt(target, anemic=True):
+    """代码反向工程：源代码 → 结构化模型。target 为 'uml' 或 'er'。anemic=JPA 贫血实体模式开关。"""
     if target == 'er':
         return (
             '你是一名资深数据库工程师。请解析下面的源代码，反推出 ER 数据模型。\n'
@@ -208,14 +208,34 @@ def code_reverse_system_prompt(target):
             '"relationships":[{"source":"源实体名","target":"目标实体名","type":"one_to_one/one_to_many/many_to_one/many_to_many"}]}\n'
             '要求：每个实体必须有主键（is_primary_key=true）；外键用 XX_ID 命名并 is_foreign_key=true。'
         )
-    return (
+    common = (
         '你是一名资深软件架构师。请解析下面的源代码，反推出 UML 类图模型。\n'
-        '从代码中的类、接口、枚举等提取结构：字段、方法、继承/实现/关联关系。'
-        '继承/实现还原为 Generalization/Realization，成员引用还原为 Association/Composition/Aggregation/Dependency。\n'
         '类名、字段名、方法名保持与代码一致，不要翻译。\n'
         '只输出一个JSON对象，不要markdown代码围栏、不要任何解释。格式：\n'
-        '{"elements":[{"type":"Class/Interface/Enum","name":"类名","description":"说明",'
+        '{"elements":[{"type":"Class/Interface","name":"类名","description":"说明",'
+        '"x":可选整数,"y":可选整数,'
         '"attributes":["- 字段名: 类型"],"methods":["+ 方法名(参数): 返回类型"]}],'
-        '"relationships":[{"source":"源类名","target":"目标类名","type":"Generalization/Realization/Association/Composition/Aggregation/Dependency"}]}\n'
-        '要求：relationship 的 source/target 必须引用 elements 里的 name。'
+        '"relationships":[{"source":"源类名","target":"目标类名",'
+        '"type":"inheritance/realization/association/composition/aggregation/dependency",'
+        '"cardinality":"oneToOne/oneToMany/manyToMany(可省略)"}],'
+        '"layoutLost":true或false(是否有元素缺布局)}\n'
+        '关系解析：implements → realization；父类/@MappedSuperclass → inheritance；'
+        '@ManyToOne/@OneToMany/@OneToOne/@JoinColumn/@JoinTable → association/composition + cardinality；成员引用 → dependency。\n'
+        '要求：relationship 的 source/target 必须引用 elements 里的 name；'
+        '无 Uml_META 的代码：禁止脑补父接口/父类(JpaRepository 等)方法、禁止凭空生成构造函数、禁止猜菱形/多重度数字；只解析本类代码中显式定义的字段与方法。\n'
     )
+    if anemic:
+        common += (
+            'JPA 贫血实体模式开启，额外规则：\n'
+            '- 带 @Entity 注解的类是 JPA 实体：只提取其**字段**为 attributes；其构造器、getter/setter、toString、'
+            '以及任何 save/update/delete/insert/remove/persist/拷贝(clone/copy/toDto) 方法**都不要**输出成 methods。\n'
+            '- 非 @Entity 的类（Service/Repository/DTO/Controller 等）：方法照常提取输出到 methods。\n'
+            '- @Entity 注解优先于命名启发（类名不以 Service 等结尾但带 @Entity 就是实体；反之亦然）。\n'
+            '- 代码里出现 `UML_META:{...}` 注释时：读取其中的 x/y 作为该元素布局、rel 的 kind/cardinality 补全连线类型与多重度、'
+            '记录在 ifaceMethods 的方法名（由接口/父类继承而来）不要重复渲染到该实现类；但字段/方法/继承一律以**真实源码**为准，'
+            '源码与元注释冲突时以源码为准，不要采信过期的元注释。\n'
+            '- 无法从代码复原 UML 特有信息（布局缺失等）时：缺布局的元素不要编造 x/y，令 layoutLost=true。\n'
+        )
+    else:
+        common += '关闭贫血过滤：@Entity 类的方法也照常全部提取；不使用 UML_META。\n'
+    return common
