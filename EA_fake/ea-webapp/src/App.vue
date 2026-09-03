@@ -1042,6 +1042,7 @@ const generateCode = async () => {
       const payload: Record<string, unknown> = { source, language, framework, outputType }
       if (source === 'uml') {
         payload.elements = elements
+        payload.connections = connections
       } else {
         payload.erEntities = erEntities
         payload.erRelations = erRelations
@@ -1070,6 +1071,8 @@ const generateCode = async () => {
       generatedCode.value = generateControllerCode(language, framework)
     } else if (outputType === 'service') {
       generatedCode.value = generateServiceCode(language, framework)
+    } else if (outputType === 'pojo') {
+      generatedCode.value = generatePojoCode(language)
     }
   } else if (source === 'er') {
     if (erEntities.length === 0) {
@@ -1747,6 +1750,134 @@ const mapTypeToCSharp = (type: string): string => {
   return mappings[type] || 'string'
 }
 
+// ============ POJO 纯类（往返保真）：完整保留 UML 属性/方法/继承/实现，生成后可反向还原 ============
+const pojoVisOf = (s: string) => s.trim().startsWith('-') ? '-' : s.trim().startsWith('#') ? '#' : '+'
+// 解析 UML 方法串："+ 方法名(参数1: 类型, 参数2): 返回类型"
+const pojoMethod = (m: string): { vis: string; name: string; params: Array<[string, string]>; ret: string } => {
+  m = (m || '').trim()
+  const vis = pojoVisOf(m)
+  let body = m.replace(/^[+\-#]/, '').trim()
+  let name = '', ps = '', ret = ''
+  const oi = body.indexOf('(')
+  if (oi >= 0) {
+    name = body.slice(0, oi).trim()
+    const ci = body.indexOf(')', oi)
+    ps = body.slice(oi + 1, ci >= 0 ? ci : body.length)
+    ret = body.slice(ci >= 0 ? ci + 1 : body.length).trim().replace(/^:/, '').trim()
+  } else name = body
+  const params = (ps || '').split(',').map((p) => {
+    const seg = p.trim(); const i = seg.indexOf(':')
+    if (i > 0) return [seg.slice(0, i).trim(), seg.slice(i + 1).trim()] as [string, string]
+    const sp = seg.split(/\s+/)
+    return (sp.length >= 2 ? [sp[0], sp.slice(1).join(' ')] : [seg, '']) as [string, string]
+  }).filter((x) => x[0])
+  return { vis, name, params, ret }
+}
+const pojoFieldType = (t: string, lang: string) => {
+  if (lang === 'java') return mapTypeToJava(t)
+  if (lang === 'typescript') return mapTypeToTypeScript(t)
+  if (lang === 'csharp') return mapTypeToCSharp(t)
+  return t // python：不强类型
+}
+const pojoRetType = (ret: string, lang: string, def: string) => pojoFieldType(ret || def, lang)
+const pojoParam = (p: [string, string], lang: string) => {
+  const [n, t] = p
+  if (lang === 'typescript') return `${n}: ${pojoFieldType(t, 'typescript')}`
+  if (lang === 'python') return n || 'arg'
+  return `${pojoFieldType(t, lang === 'java' ? 'java' : 'csharp')} ${n || 'arg'}`
+}
+const generatePojoCode = (language: string): string => {
+  const lang = language === 'python' ? 'python' : language === 'typescript' ? 'typescript' : language === 'csharp' ? 'csharp' : 'java'
+  const byId = new Map<number, any>()
+  elements.forEach((e: any) => byId.set(e.id, e))
+  const sup = new Map<number, string>(); const impl = new Map<number, string[]>(); const refs = new Map<number, string[]>()
+  connections.forEach((c: any) => {
+    const st = byId.get(c.startElement), en = byId.get(c.endElement)
+    if (!st || !en) return
+    if (c.type === 'inheritance') sup.set(st.id, en.name)
+    else if (c.type === 'realization') impl.set(st.id, [...(impl.get(st.id) || []), en.name])
+    else if (['association', 'aggregation', 'composition', 'dependency'].includes(c.type)) {
+      refs.set(st.id, [...(refs.get(st.id) || []), en.name])
+    }
+  })
+  const header = (lang === 'python') ? '' : (lang === 'typescript' ? '' : '')
+  const blocks: string[] = []
+  if (lang === 'typescript') blocks.push('// TypeScript POJO（往返保真：由 UML 类图生成，含全部属性/方法/继承）')
+  else if (lang === 'python') blocks.push('""" Python POJO（往返保真：由 UML 类图生成）"""')
+  else blocks.push(lang === 'java' ? '// Java POJO（往返保真：由 UML 类图生成，含全部属性/方法/继承）' : '// C# POJO（往返保真：由 UML 类图生成，含全部属性/方法/继承）')
+
+  elements.forEach((elem: any) => {
+    if (elem.type !== 'class' && elem.type !== 'interface') return
+    const isIface = elem.type === 'interface'
+    const eName = elem.name
+    const parent = sup.get(elem.id) || null
+    const ifaces = impl.get(elem.id) || []
+    const fields = (elem.attributes || []).map((a: string) => { const vis = pojoVisOf(a); const p = parseUmlAttr(a); return { vis, name: p?.name || '', type: p?.type || '' } }).filter((f: any) => f.name)
+    const methods = (elem.methods || []).map(pojoMethod)
+    const assocRefs = refs.get(elem.id) || []
+    const visTo = (v: string, priv: string, pub: string, prot: string) => v === '-' ? priv : v === '#' ? prot : pub
+
+    if (lang === 'java') {
+      const decl = isIface ? `public interface ${eName} {` : `public class ${eName}${parent ? ` extends ${parent}` : ''}${ifaces.length ? ` implements ${ifaces.join(', ')}` : ''} {`
+      blocks.push(decl)
+      if (!isIface) {
+        fields.forEach((f: any) => { blocks.push(`    ${visTo(f.vis, 'private', 'public', 'protected')} ${pojoFieldType(f.type || 'String', 'java')} ${f.name};`) })
+        assocRefs.forEach((r: string) => { const v = r[0].toLowerCase() + r.slice(1); blocks.push(`    private ${r} ${v};`) })
+      }
+      methods.forEach((mt: any) => {
+        const acc = isIface ? '' : `    ${visTo(mt.vis, 'private', 'public', 'protected')} `
+        const sig = `${pojoRetType(mt.ret, 'java', 'void')} ${mt.name || 'method'}(${mt.params.map((p: any) => pojoParam(p, 'java')).join(', ')})`
+        blocks.push(isIface ? `    ${sig};` : `${acc}${sig} { }`)
+      })
+      blocks.push('}')
+    } else if (lang === 'csharp') {
+      const base = [parent, ...ifaces].filter(Boolean)
+      const decl = isIface ? `public interface ${eName} {` : `public class ${eName}${base.length ? ' : ' + base.join(', ') : ''} {`
+      blocks.push(decl)
+      if (!isIface) {
+        fields.forEach((f: any) => { blocks.push(`    ${visTo(f.vis, 'private', 'public', 'protected')} ${pojoFieldType(f.type || 'string', 'csharp')} ${f.name};`) })
+        assocRefs.forEach((r: string) => { const v = r[0].toLowerCase() + r.slice(1); blocks.push(`    private ${r} ${v};`) })
+      }
+      methods.forEach((mt: any) => {
+        const acc = isIface ? '' : `    ${visTo(mt.vis, 'private', 'public', 'protected')} `
+        const sig = `${pojoRetType(mt.ret, 'csharp', 'void')} ${mt.name || 'Method'}(${mt.params.map((p: any) => pojoParam(p, 'csharp')).join(', ')})`
+        blocks.push(isIface ? `    ${sig};` : `${acc}${sig} { }`)
+      })
+      blocks.push('}')
+    } else if (lang === 'typescript') {
+      const base = [parent, ...ifaces].filter(Boolean)
+      if (isIface) {
+        blocks.push(`export interface ${eName} {`)
+        methods.forEach((mt: any) => { blocks.push(`  ${mt.name || 'method'}(${mt.params.map((p: any) => pojoParam(p, 'typescript')).join(', ')}): ${pojoRetType(mt.ret, 'typescript', 'void')};`) })
+        blocks.push('}')
+      } else {
+        blocks.push(`export class ${eName}${base.length ? ' extends ' + base[0] + (base.length > 1 ? ' implements ' + base.slice(1).join(', ') : '') : ''} {`)
+        fields.forEach((f: any) => { blocks.push(`  ${visTo(f.vis, 'private', 'public', 'protected')} ${f.name}!: ${pojoFieldType(f.type || 'string', 'typescript')}`) })
+        assocRefs.forEach((r: string) => { const v = r[0].toLowerCase() + r.slice(1); blocks.push(`  ${v}!: ${r}`) })
+        methods.forEach((mt: any) => { blocks.push(`  ${visTo(mt.vis, 'private', 'public', 'protected')} ${mt.name || 'method'}(${mt.params.map((p: any) => pojoParam(p, 'typescript')).join(', ')}): ${pojoRetType(mt.ret, 'typescript', 'void')} {}`) })
+        blocks.push('}')
+      }
+    } else {
+      // python
+      const parents = [parent, ...ifaces].filter(Boolean)
+      const marker = isIface ? '  # [UML interface]' : ''
+      blocks.push(`class ${eName}(${parents.length ? parents.join(', ') : ''}):${marker}`)
+      if (!isIface) {
+        blocks.push('    def __init__(self):')
+        if (!fields.length) blocks.push('        pass')
+        fields.forEach((f: any) => { blocks.push(`        self.${f.name} = None  # : ${pojoFieldType(f.type, 'python') || 'any'}`) })
+        assocRefs.forEach((r: string) => { const v = r[0].toLowerCase() + r.slice(1); blocks.push(`        self.${v} = None  # ${r}`) })
+      }
+      methods.forEach((mt: any) => {
+        const args = mt.params.map((p: any) => pojoParam(p, 'python'))
+        blocks.push(`    def ${mt.name || 'method'}(${['self', ...args].join(', ')}):`)
+        blocks.push(isIface ? '        raise NotImplementedError' : '        pass')
+      })
+    }
+    blocks.push('')
+  })
+  return blocks.join('\n').trim()
+}
 const initCanvas = () => {
   canvas = document.getElementById('canvas') as HTMLCanvasElement
   if (canvas) {
@@ -5505,6 +5636,7 @@ onMounted(() => {
             <option value="entity">实体类</option>
             <option v-if="codeConfig.source === 'uml'" value="controller">Controller</option>
             <option v-if="codeConfig.source === 'uml'" value="service">Service</option>
+            <option v-if="codeConfig.source === 'uml'" value="pojo">POJO 纯类（往返保真）</option>
             <option v-if="codeConfig.source === 'er'" value="sql">SQL脚本</option>
             <option value="mysql">MySQL语句</option>
           </select>

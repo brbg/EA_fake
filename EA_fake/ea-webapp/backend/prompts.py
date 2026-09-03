@@ -53,6 +53,19 @@ ER_SYSTEM_PROMPT = (
 
 def code_system_prompt(language, framework, output_type):
     """模型 → 代码。要求 LLM 返回纯代码。"""
+    if output_type == 'pojo':
+        return (
+            f'你是一名资深软件工程师。根据下面的模型描述，用{language}生成一套"纯领域类 / POJO"代码。\n'
+            '这套代码会被"代码反向工程"重新还原成原来的 UML 类图，所以必须**往返保真**。\n'
+            '要求：\n'
+            '- 不要生成分层 / 框架脚手架：不要 Controller/Service/Repository，不要 Entity/ORM 注解、不要数据库映射。\n'
+            '- 只输出纯代码本身，不要 markdown 围栏，不要任何解释文字。\n'
+            '- 必须完整保留模型里的**每一个类/接口**：全部字段（含类型与可见性）、全部方法签名（含参数与返回类型）。\n'
+            '- 有继承 / 实现关系的类必须用语言原生的 extends / implements（或等效）表达；接口用 interface/接口关键字。\n'
+            '- 关联 / 聚合 / 组合可体现为成员字段。\n'
+            '- 类名、字段名、方法名保持与模型一致，不要改名、不要翻译。\n'
+            '- 中文注释。'
+        )
     framework_name = framework or '无框架'
     return (
         f'你是一名资深软件工程师。根据下面的模型描述，用{language}（框架：{framework_name}）'

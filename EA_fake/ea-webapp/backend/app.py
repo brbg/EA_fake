@@ -6094,7 +6094,7 @@ def _strip_code_fences(content):
     return content
 
 
-def _describe_model_for_code(source, elements, er_entities, er_relations):
+def _describe_model_for_code(source, elements, er_entities, er_relations, uml_connections=None):
     """把模型结构描述成文本，供LLM生成代码。"""
     lines = []
     if source == 'er':
@@ -6113,10 +6113,18 @@ def _describe_model_for_code(source, elements, er_entities, er_relations):
             if s and t:
                 lines.append(f"- 关系: {s} {rel.get('type')} {t}")
     else:
+        id_to_name = {e.get('id'): e.get('name', '') for e in elements}
+        rel_cn = {'inheritance': '继承', 'realization': '实现', 'association': '关联',
+                  'aggregation': '聚合', 'composition': '组合', 'dependency': '依赖'}
         for e in elements:
             attrs = ', '.join(e.get('attributes') or []) or '无'
             methods = ', '.join(e.get('methods') or []) or '无'
             lines.append(f"- {e.get('type')} {e.get('name')}: 属性[{attrs}] 方法[{methods}] 描述:{e.get('description') or ''}")
+        for c in (uml_connections or []):
+            s = id_to_name.get(c.get('startElement'))
+            t = id_to_name.get(c.get('endElement'))
+            if s and t:
+                lines.append(f"- 关系: {s} {rel_cn.get(c.get('type'), c.get('type'))} {t}")
     return '\n'.join(lines)
 
 
@@ -6147,13 +6155,14 @@ def ai_code_generate_v1():
     data = request.json or {}
     source = data.get('source', 'uml')
     elements = data.get('elements') or []
+    uml_connections = data.get('connections') or []
     er_entities = data.get('erEntities') or []
     er_relations = data.get('erRelations') or []
     language = data.get('language', 'python')
     framework = data.get('framework', '')
     output_type = data.get('outputType', 'entity')
 
-    description = _describe_model_for_code(source, elements, er_entities, er_relations)
+    description = _describe_model_for_code(source, elements, er_entities, er_relations, uml_connections)
     if not description.strip():
         return jsonify({'error': '模型为空，无法生成代码'}), 400
 
