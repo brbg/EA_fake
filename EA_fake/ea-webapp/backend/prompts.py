@@ -209,9 +209,17 @@ def code_reverse_system_prompt(target, anemic=True):
             '要求：每个实体必须有主键（is_primary_key=true）；外键用 XX_ID 命名并 is_foreign_key=true。'
         )
     common = (
-        '你是一名资深软件架构师。请解析下面的源代码，反推出 UML 类图模型。\n'
-        '类名、字段名、方法名保持与代码一致，不要翻译。\n'
-        '只输出一个JSON对象，不要markdown代码围栏、不要任何解释。格式：\n'
+        '你是一名资深软件架构师。对给定的 Java 源文件做 UML 反向工程，**必须分两步解析**：\n'
+        '①语法解析：读当前文件文本，提取本文件**内定义**的每个类/接口：其成员字段、方法（保留含参数与返回类型的完整签名文本）。\n'
+        '②符号解析：解析 import 语句以及类声明里引用的类型，识别「存在但**不在本文件定义**的外部类型」'
+        '（只需从 import 全限定名 + 用法判断它存在即可，**不要臆造**该外部类的字段/方法）。\n'
+        '输出 elements 规则：\n'
+        '- 本文件内定义的类：完整输出（attributes=成员字段、methods=完整签名文本）。\n'
+        '- 被 implements 引用的外部接口：额外输出一个 type=Interface 的类框（字段/方法留空，description 写「外部类型」），并画 realization 连线（本类 → 该接口）。\n'
+        '- 被 extends/@MappedSuperclass 引用的外部父类：额外输出 type=Class 类框（空），画 inheritance 连线。\n'
+        '- 成员字段类型引用的外部类：额外输出 type=Class 类框（空），画 association 连线（字段带 @ManyToOne/@OneToMany/@OneToOne/@JoinColumn/@JoinTable 注解按其多重度给出 cardinality）。\n'
+        '- 仅出现在方法参数/返回值类型中的外部类型：**不生成类框、不生成连线**，只在方法签名文本里保留类型名。\n'
+        '只输出一个JSON对象，不要markdown代码围栏、不要解释。格式：\n'
         '{"elements":[{"type":"Class/Interface","name":"类名","description":"说明",'
         '"x":可选整数,"y":可选整数,'
         '"attributes":["- 字段名: 类型"],"methods":["+ 方法名(参数): 返回类型"]}],'
@@ -219,13 +227,8 @@ def code_reverse_system_prompt(target, anemic=True):
         '"type":"inheritance/realization/association/composition/aggregation/dependency",'
         '"cardinality":"oneToOne/oneToMany/manyToMany(可省略)"}],'
         '"layoutLost":true或false(是否有元素缺布局)}\n'
-        '类图关系只由以下三类来源生成，全部保留；其余一律不生成：\n'
-        '1) extends / @MappedSuperclass 父类 → inheritance；\n'
-        '2) implements → realization；\n'
-        '3) 类的**成员字段**类型引用其他类 → association/dependency（字段带 @ManyToOne/@OneToMany/@OneToOne/@JoinColumn/@JoinTable 注解时按其多重度给出 cardinality）。\n'
-        '除上述三类外：方法签名里的参数类型、返回值类型即使引用了其他类，**也不要**据此生成任何连线。\n'
-        '要求：relationship 的 source/target 必须引用 elements 里的 name；'
-        '无 Uml_META 的代码：禁止脑补父接口/父类(JpaRepository 等)方法、禁止凭空生成构造函数、禁止猜菱形/多重度数字；只解析本类代码中显式定义的字段与方法。\n'
+        '要求：relationship 的 source/target 必须引用 elements 里的 name；类名、字段名、方法名与代码一致不翻译。\n'
+        '无 Uml_META 的代码：禁止给外部父类/父接口凭空补方法（如 JpaRepository 方法）、禁止凭空生成构造函数、禁止猜菱形/多重度数字；只解析本文件代码中显式定义的内容。\n'
     )
     if anemic:
         common += (

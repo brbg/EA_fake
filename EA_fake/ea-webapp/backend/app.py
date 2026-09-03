@@ -6361,9 +6361,12 @@ def ai_code_reverse_v1():
         notice = None
         if external or bool(result.get('layoutLost')):
             notice = '外部源码反向生成，会展示源码全部真实方法，和旧UML绘图可能视觉不一致。'
-        # 关系类型统一为画布小写命名（association/inheritance/realization/...）
+        # 关系类型统一为画布小写命名；指向接口的 association 归正为 realization（implements）
+        id_type = {i + 1: (e.get('type') or '').lower() for i, e in enumerate(elements)}
         for _r in relationships:
             _r['type'] = str(_r.get('type') or 'association').lower()
+            if _r['type'] == 'association' and id_type.get(_r.get('endElement')) == 'interface':
+                _r['type'] = 'realization'
         return jsonify({'target': 'uml', 'elements': elements, 'relationships': relationships, 'notice': notice})
 
     entities_raw = result.get('entities')
