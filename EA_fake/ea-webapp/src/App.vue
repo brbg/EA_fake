@@ -2146,7 +2146,8 @@ const drawArrow = (x1: number, y1: number, x2: number, y2: number, type: string)
   ctx.strokeStyle = '#333'
   ctx.lineWidth = 2
   
-  if (type === 'realization' || type === 'dependency') {
+  // UML：继承/实现为实线空心三角，仅依赖(dependency)用虚线
+  if (type === 'dependency') {
     ctx.setLineDash([5, 5])
   } else {
     ctx.setLineDash([])
