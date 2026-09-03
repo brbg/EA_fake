@@ -1932,7 +1932,9 @@ const generatePojoCode = (language: string): string => {
       const other = elements.find((e: any) => e.id === oid)
       return { kind: c.type, to: other?.name || '', card: c.cardinality || '' }
     })
-    const metaJson = JSON.stringify({ x: Math.round(elem.x || 0), y: Math.round(elem.y || 0), type: elem.type, rel: metaRels }).replace(/\*\//g, '* /')
+    // methods：本类在 UML 图上实际绘制的方法名（反向按白名单只渲染这些，源码新增方法不渲染）
+    const metaMethods = (elem.methods || []).map((m: string) => pojoMethod(m).name).filter(Boolean)
+    const metaJson = JSON.stringify({ x: Math.round(elem.x || 0), y: Math.round(elem.y || 0), type: elem.type, rel: metaRels, methods: metaMethods }).replace(/\*\//g, '* /')
     const cmt = lang === 'python' ? `# UML_META:${metaJson}` : `// UML_META:${metaJson}`
     blocks.push(cmt)
     const parent = sup.get(elem.id) || null

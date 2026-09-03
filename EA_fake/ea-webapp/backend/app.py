@@ -6356,10 +6356,11 @@ def ai_code_reverse_v1():
         else:
             elements, relationships = _layout_ai_elements(elements_raw, relationships_raw, 'class')
         elements, relationships = _uuid_elements_to_canvas(elements, relationships)
-        layout_lost = not (anemic and has_layout) or bool(result.get('layoutLost'))
+        # 无 UML_META（外部源码）时：忠实渲染全部真实方法，并提示可能与旧 UML 绘图视觉不一致
+        external = not has_layout
         notice = None
-        if layout_lost:
-            notice = '该代码不含可复原布局（UML_META），已按代码自动排布；别名/备注/排版等 UML 特有信息无法从 Java 复原。'
+        if external or bool(result.get('layoutLost')):
+            notice = '外部源码反向生成，会展示源码全部真实方法，和旧UML绘图可能视觉不一致。'
         # 关系类型统一为画布小写命名（association/inheritance/realization/...）
         for _r in relationships:
             _r['type'] = str(_r.get('type') or 'association').lower()

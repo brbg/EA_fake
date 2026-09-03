@@ -231,9 +231,11 @@ def code_reverse_system_prompt(target, anemic=True):
             '以及任何 save/update/delete/insert/remove/persist/拷贝(clone/copy/toDto) 方法**都不要**输出成 methods。\n'
             '- 非 @Entity 的类（Service/Repository/DTO/Controller 等）：方法照常提取输出到 methods。\n'
             '- @Entity 注解优先于命名启发（类名不以 Service 等结尾但带 @Entity 就是实体；反之亦然）。\n'
-            '- 代码里出现 `UML_META:{...}` 注释时：读取其中的 x/y 作为该元素布局、rel 的 kind/cardinality 补全连线类型与多重度、'
-            '记录在 ifaceMethods 的方法名（由接口/父类继承而来）不要重复渲染到该实现类；但字段/方法/继承一律以**真实源码**为准，'
-            '源码与元注释冲突时以源码为准，不要采信过期的元注释。\n'
+            '- 代码出现 `UML_META:{...}` 注释（本工具导出）时：x/y=该元素布局，rel=连线(kind/cardinality)。\n'
+            '  若含 "methods":[方法名]：它是该 UML 类图上**实际绘制的方法白名单**——只渲染"源码中存在且在白名单里"的方法；'
+            '源码存在但白名单没有的方法（如后加的 save/拷贝）一律不渲染，以元注释绘图信息为准。\n'
+            '  若 UML_META **没有** methods 字段：表示贫血实体导出，该类不渲染任何方法。\n'
+            '  字段/继承以真实源码为准（源码改了以源码为准，不采信过期元注释）。\n'
             '- 无法从代码复原 UML 特有信息（布局缺失等）时：缺布局的元素不要编造 x/y，令 layoutLost=true。\n'
         )
     else:
