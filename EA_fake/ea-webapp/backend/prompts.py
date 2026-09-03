@@ -220,7 +220,9 @@ def code_reverse_system_prompt(target, anemic=True):
         '"cardinality":"oneToOne/oneToMany/manyToMany(可省略)"}],'
         '"layoutLost":true或false(是否有元素缺布局)}\n'
         '关系解析：implements → realization；父类/@MappedSuperclass → inheritance；'
-        '@ManyToOne/@OneToMany/@OneToOne/@JoinColumn/@JoinTable → association/composition + cardinality；成员引用 → dependency。\n'
+        '@ManyToOne/@OneToMany/@OneToOne/@JoinColumn/@JoinTable → association/composition + cardinality。\n'
+        '**只解析类的成员字段生成关联连线**：字段类型引用其他类 → association/dependency（若该字段有 @ManyToOne 等注解按其多重度）。'
+        '方法签名里的参数类型、返回值类型出现的类引用**不要**据此生成连线。\n'
         '要求：relationship 的 source/target 必须引用 elements 里的 name；'
         '无 Uml_META 的代码：禁止脑补父接口/父类(JpaRepository 等)方法、禁止凭空生成构造函数、禁止猜菱形/多重度数字；只解析本类代码中显式定义的字段与方法。\n'
     )
