@@ -1295,42 +1295,126 @@ const downloadCode = () => {
   URL.revokeObjectURL(url)
 }
 
+// 依据 UML 图生成全套 Spring-Data-JPA 实体（Java）：
+// 实体只做数据载体（无 save/update 业务方法）；关联 fetch=LAZY、按多重度 ManyToOne/OneToMany/OneToOne、
+// mappedBy 正确；主键 IDENTITY；javax.persistence 注解；toString 避免关联对象递归。
+const generateJpaEntitiesJava = (): string => {
+  const classes = elements.filter((e: any) => e.type === 'class')
+  const classNames = new Set(classes.map((c: any) => c.name))
+  const lc = (s: string) => (s || '').replace(/^\w/, (ch) => ch.toLowerCase())
+  const isRefType = (t: string) => classNames.has((t || '').trim().replace(/^List\s*</i, '').replace(/>.*$/, '').trim())
+  // 结构化关系（association/composition/aggregation，两端均为实体类）→ JPA 关联
+  const rels: any[] = []
+  const seen = new Set<string>()
+  connections.forEach((c: any) => {
+    const a = elements.find((e: any) => e.id === c.startElement)
+    const b = elements.find((e: any) => e.id === c.endElement)
+    if (!a || !b || a.type !== 'class' || b.type !== 'class') return
+    if (!['association', 'composition', 'aggregation'].includes(c.type)) return
+    const key = `${a.id}-${b.id}`
+    if (seen.has(key)) return
+    seen.add(key)
+    rels.push({ a, b, card: c.cardinality || 'oneToMany' })
+  })
+  const assocLines = new Map<number, string[]>()
+  const usedField = new Map<number, Set<string>>()
+  const ensure = (id: number) => {
+    if (!assocLines.has(id)) assocLines.set(id, [])
+    if (!usedField.has(id)) usedField.set(id, new Set())
+  }
+  rels.forEach(({ a, b, card }) => {
+    ensure(a.id); ensure(b.id)
+    const aN = lc(a.name), bN = lc(b.name)
+    const colOfA = `${aN}_id`
+    const bListField = `${bN}List`
+    if (card === 'manyToMany') {
+      if (!usedField.get(a.id)!.has(bListField)) {
+        usedField.get(a.id)!.add(bListField)
+        assocLines.get(a.id)!.push(
+          `    @ManyToMany(fetch = FetchType.LAZY)\n` +
+          `    @JoinTable(name = "${aN}_${bN}", joinColumns = @JoinColumn(name = "${colOfA}"), inverseJoinColumns = @JoinColumn(name = "${bN}_id"))\n` +
+          `    private List<${b.name}> ${bListField} = new ArrayList<>();`)
+      }
+      const aListField = `${aN}List`
+      if (!usedField.get(b.id)!.has(aListField)) {
+        usedField.get(b.id)!.add(aListField)
+        assocLines.get(b.id)!.push(
+          `    @ManyToMany(mappedBy = "${bListField}", fetch = FetchType.LAZY)\n` +
+          `    private List<${a.name}> ${aListField} = new ArrayList<>();`)
+      }
+    } else if (card === 'oneToOne') {
+      // FK 端 = b（连线终点），a 为反向
+      if (!usedField.get(b.id)!.has(aN)) {
+        usedField.get(b.id)!.add(aN)
+        assocLines.get(b.id)!.push(
+          `    @OneToOne(fetch = FetchType.LAZY)\n` +
+          `    @JoinColumn(name = "${colOfA}", unique = true)\n` +
+          `    private ${a.name} ${aN};`)
+      }
+      if (!usedField.get(a.id)!.has(bN)) {
+        usedField.get(a.id)!.add(bN)
+        assocLines.get(a.id)!.push(
+          `    @OneToOne(mappedBy = "${aN}", fetch = FetchType.LAZY)\n` +
+          `    private ${b.name} ${bN};`)
+      }
+    } else {
+      // oneToMany：多端 b 持外键 @ManyToOne，一端 a 持 @OneToMany(mappedBy)
+      if (!usedField.get(b.id)!.has(aN)) {
+        usedField.get(b.id)!.add(aN)
+        assocLines.get(b.id)!.push(
+          `    @ManyToOne(fetch = FetchType.LAZY)\n` +
+          `    @JoinColumn(name = "${colOfA}")\n` +
+          `    private ${a.name} ${aN};`)
+      }
+      if (!usedField.get(a.id)!.has(bListField)) {
+        usedField.get(a.id)!.add(bListField)
+        assocLines.get(a.id)!.push(
+          `    @OneToMany(mappedBy = "${aN}", fetch = FetchType.LAZY, cascade = CascadeType.ALL, orphanRemoval = true)\n` +
+          `    private List<${b.name}> ${bListField} = new ArrayList<>();`)
+      }
+    }
+  })
+  const blocks: string[] = []
+  blocks.push('package com.example.entity;\n', 'import javax.persistence.*;', 'import lombok.*;', 'import java.util.*;\n')
+  classes.forEach((c: any) => {
+    const scalar: { name: string; jtype: string }[] = []
+    ;(c.attributes || []).forEach((attr: string) => {
+      const p = parseUmlAttr(attr)
+      if (!p) return
+      if (p.name.toLowerCase() === 'id') { scalar.push({ name: 'id', jtype: mapTypeToJava(p.type) || 'Long' }); return }
+      if (isRefType(p.type)) return
+      scalar.push({ name: p.name, jtype: mapTypeToJava(p.type) })
+    })
+    const hasId = scalar.some((f) => f.name === 'id')
+    const assoc = assocLines.get(c.id) || []
+    const pkField = hasId ? scalar.find((f) => f.name === 'id')! : { name: 'id', jtype: 'Long' }
+    const others = scalar.filter((f) => f.name !== 'id')
+    const body: string[] = []
+    body.push('    @Id')
+    body.push('    @GeneratedValue(strategy = GenerationType.IDENTITY)')
+    body.push(`    private ${pkField.jtype} ${pkField.name};`)
+    others.forEach((f) => body.push(`    private ${f.jtype} ${f.name};`))
+    assoc.forEach((l) => body.push(l))
+    // toString 只含标量字段，避免关联对象递归
+    const showNames = [pkField.name, ...others.slice(0, 3).map((f) => f.name)]
+    const showCalls = showNames.map((n) => `${n}=" + ${n}`).join(' + ", ')
+    body.push('', '    @Override', '    public String toString() {')
+    body.push(`        return "${c.name}{${showCalls} + "}";`)
+    body.push('    }')
+    blocks.push(
+      '@Getter', '@Setter', '@NoArgsConstructor', '@Entity',
+      `@Table(name = "${c.name.toLowerCase()}")`, `public class ${c.name} {`,
+      body.join('\n'), '}', '')
+  })
+  return blocks.join('\n')
+}
+
 const generateEntityCode = (language: string, framework: string): string => {
   let code = ''
   
   if (language === 'java') {
-    code = 'package com.example.entity;\n\n'
-    if (framework === 'spring') {
-      code += 'import jakarta.persistence.*;\nimport lombok.Data;\n\n'
-    }
-    
-    elements.forEach((elem: any) => {
-      if (elem.type === 'class') {
-        code += `@Entity\n@Table(name = "${elem.name.toLowerCase()}")\n`
-        code += '@Data\n'
-        code += `public class ${elem.name} {\n`
-        
-        const attrs = elem.attributes || []
-        if (attrs.length === 0) {
-          code += '    @Id\n    @GeneratedValue(strategy = GenerationType.IDENTITY)\n    private Long id;\n'
-        } else {
-          attrs.forEach((attr: string) => {
-            const parts = attr.split(':')
-            const fieldName = parts[0].trim().replace(/[+-]/g, '').trim()
-            const fieldType = parts[1]?.trim() || 'String'
-            
-            if (fieldName.toLowerCase() === 'id') {
-              code += '    @Id\n    @GeneratedValue(strategy = GenerationType.IDENTITY)\n'
-            }
-            
-            const javaType = mapTypeToJava(fieldType)
-            code += `    private ${javaType} ${fieldName};\n`
-          })
-        }
-        
-        code += '}\n\n'
-      }
-    })
+    // 按 UML 图生成全套 Spring-Data-JPA 实体（javax.persistence、IDENTITY、关联 LAZY/mappedBy、防递归 toString）
+    code = generateJpaEntitiesJava()
   } else if (language === 'python') {
     if (framework === 'django') {
       code += 'from django.db import models\n\n\n'
@@ -1800,7 +1884,6 @@ const generatePojoCode = (language: string): string => {
       refs.set(st.id, [...(refs.get(st.id) || []), en.name])
     }
   })
-  const header = (lang === 'python') ? '' : (lang === 'typescript' ? '' : '')
   const blocks: string[] = []
   if (lang === 'typescript') blocks.push('// TypeScript POJO（往返保真：由 UML 类图生成，含全部属性/方法/继承）')
   else if (lang === 'python') blocks.push('""" Python POJO（往返保真：由 UML 类图生成）"""')

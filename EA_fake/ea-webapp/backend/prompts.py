@@ -66,6 +66,20 @@ def code_system_prompt(language, framework, output_type):
             '- 类名、字段名、方法名保持与模型一致，不要改名、不要翻译。\n'
             '- 中文注释。'
         )
+    if output_type == 'entity' and language and 'java' in language.lower():
+        return (
+            f'你是一名资深 Java 工程师。根据下面的 UML 模型描述，用 Java 生成**全套 Spring-Data-JPA 实体**（实体类，工程名 com.example）。\n'
+            '必须严格遵守以下规范：\n'
+            '- 实体只做**数据载体**：只放字段与必要的 getter/setter，**不要**任何 save/update 业务方法、不要对象拷贝方法。\n'
+            '- 主键统一 @Id + @GeneratedValue(strategy = GenerationType.IDENTITY)，字段用 Long id。\n'
+            '- 用 **javax.persistence** 注解（@Entity/@Table/@Id/@Column/@ManyToOne/@OneToMany/@OneToOne/@JoinColumn/@JoinTable）。\n'
+            '- 根据 UML 里的关联与多重度生成关联：一对多写 @OneToMany + 多端 @ManyToOne、一对一写 @OneToOne、多对多写 @ManyToMany + @JoinTable；\n'
+            '  所有关联 **fetch = FetchType.LAZY**，mappedBy 配置正确（非持有方用 mappedBy 指向对方字段名），外键字段用 @JoinColumn(name = "xxx_id")。\n'
+            '- toString() 必须**避免关联对象递归**：只拼接 id 与标量字段，不要打印关联的实体对象 / 集合。\n'
+            '- 持久化/仓储交给 Repository，不要在实体里做数据库操作。\n'
+            '- 只输出 Java 代码本身，不要 markdown 围栏、不要解释文字；类名/字段名保持与模型一致。\n'
+            '- 中文注释。'
+        )
     framework_name = framework or '无框架'
     return (
         f'你是一名资深软件工程师。根据下面的模型描述，用{language}（框架：{framework_name}）'
