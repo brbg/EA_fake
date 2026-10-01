@@ -42,15 +42,28 @@ if [ -r /etc/os-release ]; then
     esac
 fi
 
-# ---------------------------------------------------------------- 1 解压
-step "1/7 解压到 $APP_DIR"
-if [ -d "$APP_DIR" ]; then
-    BAK="$APP_DIR.bak-$(date +%s)"
-    mv "$APP_DIR" "$BAK"
-    warn "已存在旧目录，备份到 $BAK"
+# ---------------------------------------------------------------- 1 就位代码
+# 两种来源都支持：
+#   (a) 给了部署包 → 解压到 /opt（旧目录先备份）
+#   (b) 没给包、但代码已经在 /opt/ea-webapp（例如 git clone 后拷进来）→ 直接用
+step "1/7 代码就位（$APP_DIR）"
+if [ -f "$TARBALL" ]; then
+    if [ -d "$APP_DIR" ]; then
+        BAK="$APP_DIR.bak-$(date +%s)"
+        mv "$APP_DIR" "$BAK"
+        warn "已存在旧目录，备份到 $BAK"
+    fi
+    tar xzf "$TARBALL" -C /opt
+    ok "已从 $TARBALL 解压"
+elif [ -f "$APP_DIR/backend/app.py" ]; then
+    ok "代码已在 $APP_DIR（跳过解压，按 git 拉取模式继续）"
+else
+    die "既没找到部署包 $TARBALL，$APP_DIR 里也没有代码。
+        git 模式请先执行：
+          git clone --depth 1 <仓库地址> /tmp/ea-src
+          sudo cp -r /tmp/ea-src/EA_fake/ea-webapp $APP_DIR"
 fi
-tar xzf "$TARBALL" -C /opt
-[ -f "$APP_DIR/backend/app.py" ] || die "解压后结构不对，确认包里有 backend/app.py"
+[ -f "$APP_DIR/backend/app.py" ] || die "代码结构不对，找不到 backend/app.py"
 [ -f "$APP_DIR/dist/index.html" ] || die "包里缺 dist/index.html（前端构建产物），后端没法伺服页面"
 ok "$(find "$APP_DIR" -type f | wc -l) 个文件"
 ok "dist/ 已就位 → 服务器不需要装 Node"
