@@ -14,7 +14,11 @@ import bcrypt
 import db
 from constants import ELEMENT_TYPES, RELATIONSHIP_TYPES, ELEMENT_COLORS, get_default_color
 from models import Project, SimpleModel, Requirement, TestCase, Defect, Task
-from prompts import uml_system_prompt, ER_SYSTEM_PROMPT, code_system_prompt, VALIDATE_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT, ELEMENT_ANALYSIS_SYSTEM_PROMPT, code_reverse_system_prompt, edit_model_system_prompt, document_system_prompt
+from prompts import uml_system_prompt, ER_SYSTEM_PROMPT, code_system_prompt, VALIDATE_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT, ELEMENT_ANALYSIS_SYSTEM_PROMPT, code_reverse_system_prompt, edit_model_system_prompt, document_system_prompt, ruoyi_annotate_system_prompt
+import ruoyi_gen
+import code_lint
+import ai_quality
+from urllib.parse import quote
 from flask import Flask, request, jsonify, send_from_directory, render_template, session, stream_with_context, Response
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room, leave_room
@@ -31,6 +35,7 @@ from core import (
     er_views_cache, data_dictionary_cache, versions_cache, branches_cache, reviews_cache,
     _require_admin, _find_user_by_id, _delete_project_data,
     _ai_parse_json_response, _can_access_model,
+    extract_completion, chat_json,
     get_knowledge, log_knowledge, build_knowledge_context,
 )
 
@@ -41,7 +46,8 @@ from dev_routes import dev_bp
 app.register_blueprint(dev_bp)
 from admin_routes import admin_bp
 app.register_blueprint(admin_bp)
-from er_routes import er_bp, _ai_generate_er_data, extract_entities_from_requirements
+from er_routes import (er_bp, _ai_generate_er_data, extract_entities_from_requirements,
+                       check_normal_forms, check_indexes, check_data_types, check_naming_conventions)
 app.register_blueprint(er_bp)
 from collab_routes import collab_routes_bp
 app.register_blueprint(collab_routes_bp)
@@ -314,7 +320,7 @@ def ai_health_check(model, project_id=''):
 要求：问题要具体（结合类/关系/分层/数据表，如"某类直接依赖多个具体实现，应抽象接口"）；至少 1 条、最多 5 条；只依据给定内容，不要编造。"""
 
     res = AIService.chat_completion([{'role': 'user', 'content': prompt}],
-                                    max_tokens=500, temperature=0.3)
+                                    max_tokens=1500, temperature=0.3)
     if isinstance(res, dict) and res.get('error'):
         return None
     content = ''
@@ -335,6 +341,12 @@ def ai_health_check(model, project_id=''):
         'suggestions': [str(x) for x in (parsed.get('suggestions') or [])[:5]],
         'summary': str(parsed.get('summary') or ''),
     }
+    # 跨图命名不一致（确定性检查）：高置信的变形在物化时已自动对齐，
+    # 真正不同的名字只在这里提示，让用户自己决定要不要统一
+    for line in ai_quality.cross_map_report_lines(model):
+        if line not in result['issues']:
+            result['issues'].append(line)
+    result['issues'] = result['issues'][:8]
     # 记录到知识库
     if project_id:
         top = result['issues'][0] if result['issues'] else result['summary']
@@ -405,7 +417,11 @@ def perform_health_check(model, project):
             issues.append(f'{unnamed_count} 个未命名元素')
             suggestions.append('建议为所有元素添加有意义的名称')
             score -= min(unnamed_count * 3, 15)
-    
+
+        # 跨图命名不一致（确定性检查，不需要 AI）——放在规则版里，
+        # 这样没配 API 密钥的演示环境也能看到这部分提示
+        issues += ai_quality.cross_map_report_lines(model)
+
     return {
         'score': max(0, score),
         'issues': issues,
@@ -4895,8 +4911,11 @@ def _ai_review_archimate_semantics(model):
     return _ai_review_architecture_semantics(proj)
 
 
-def review_archimate_model(model):
-    """对模型里的 ArchiMate 架构做结构 + 语义评审，返回与 validate_uml_model 同构的结果。"""
+def review_archimate_model(model, use_ai=True):
+    """对模型里的 ArchiMate 架构做结构 + 语义评审，返回与 validate_uml_model 同构的结果。
+
+    `use_ai=False` 时只做确定性结构规则——质量打分器与离线测试必须走这条路。
+    """
     errors = []
     warnings = []
     suggestions = []
@@ -4970,7 +4989,7 @@ def review_archimate_model(model):
         })
 
     # 语义级 AI 评审（叠加在结构规则之上，AI 未启用时跳过）
-    ai_analysis = _ai_review_archimate_semantics(model)
+    ai_analysis = _ai_review_archimate_semantics(model) if use_ai else None
     if ai_analysis:
         for issue in ai_analysis.get('issues', []):
             if not isinstance(issue, dict) or not issue.get('message'):
@@ -6173,6 +6192,142 @@ def ai_code_generate_v1():
     return jsonify({'code': code})
 
 
+# === 若依 RuoYi-Vue3 整套模块生成 ===
+# 代码骨架由 backend/ruoyi_gen.py + ruoyi_templates.py **确定性**生成（不调 LLM，零截断风险）；
+# LLM 只用来补表/字段的中文注释与列标签（ER 模型里没有任何中文），失败则整体按内置词表降级。
+
+def _ai_annotate_ruoyi(batches):
+    """调 LLM 给表/字段补中文标注。返回 (annotation|None, reason|None)。
+
+    reason 非空表示「全部或部分批次失败」：annotation 为 None 时前端显示完整降级，
+    非 None 时表示部分成功（受影响的表已在 merge_annotation 里按内置词表降级并告警）。
+
+    分批判注（每批 ≤8 表 / ≤120 字段），max_tokens 随批量浮动并检查 finish_reason——
+    固定 max_tokens 会把大 JSON 截成半截，这正是 _ai_generate_code 的老坑。
+    """
+    if not ai_service_config.enabled:
+        return None, 'disabled'
+
+    merged_tables, merged_fields = {}, {}
+    reasons = []
+    for batch in batches:
+        user_text = ruoyi_gen.build_annotate_user_text(batch)
+        # 单字段 JSON 条目约 30 token，留 80% 余量给中文膨胀与模型啰嗦
+        field_count = sum(len(t['columns']) for t in batch)
+        max_tokens = min(8000, 400 + 55 * field_count)
+        messages = [
+            {'role': 'system', 'content': ruoyi_annotate_system_prompt()},
+            {'role': 'user', 'content': user_text},
+        ]
+        try:
+            result = AIService.chat_completion(messages, max_tokens=max_tokens, temperature=0.1)
+        except Exception as e:  # noqa: BLE001
+            reasons.append(f'error:{e}')
+            continue
+        if not isinstance(result, dict) or 'error' in result:
+            reasons.append('error:' + str((result or {}).get('error', '调用失败')))
+            continue
+        try:
+            choice = result['choices'][0]
+            if choice.get('finish_reason') == 'length':
+                reasons.append('truncated')
+                continue
+            content = choice['message']['content']
+        except (KeyError, IndexError, TypeError):
+            reasons.append('invalid_json')
+            continue
+        parsed = _ai_parse_json_response(content)
+        if not isinstance(parsed, dict):
+            reasons.append('invalid_json')
+            continue
+        if isinstance(parsed.get('tables'), dict):
+            merged_tables.update(parsed['tables'])
+        if isinstance(parsed.get('fields'), dict):
+            for tname, cols in parsed['fields'].items():
+                if isinstance(cols, dict):
+                    merged_fields.setdefault(tname, {}).update(cols)
+
+    if not merged_tables and not merged_fields:
+        return None, reasons[0] if reasons else 'invalid_json'
+    return {'tables': merged_tables, 'fields': merged_fields}, (reasons[0] if reasons else None)
+
+
+@app.route('/api/v1/ai/code/ruoyi/generate', methods=['POST'])
+def ruoyi_code_generate_v1():
+    """ER 模型 → 整套若依 RuoYi-Vue3 模块（多文件）。返回 {files, meta}。"""
+    if not _require_user_id():
+        return jsonify({'error': '未登录'}), 401
+
+    data = request.json or {}
+    er_entities = data.get('erEntities') or []
+    er_relations = data.get('erRelations') or []
+    raw_cfg = data.get('config') or {}
+    if not er_entities:
+        return jsonify({'error': 'ER 模型为空，请先画出实体再生成若依模块'}), 400
+
+    cfg, err = ruoyi_gen.normalize_config(raw_cfg)
+    if err:
+        return jsonify({'error': err}), 400
+
+    # 先建一次 schema 用于切批（AI 只做标注，骨架不调 LLM）；标注结果交给 generate 内部逐字段合并
+    annotation, reason = None, 'disabled'
+    if raw_cfg.get('useAI', True):
+        probe = ruoyi_gen.build_module_schema(er_entities, er_relations, cfg)
+        annotation, reason = _ai_annotate_ruoyi(ruoyi_gen.build_annotate_batches(probe['tables']))
+
+    result = ruoyi_gen.generate_ruoyi_module(er_entities, er_relations, cfg, annotation=annotation)
+    meta = result['meta']
+    meta['aiUsed'] = bool(annotation)
+    meta['aiFallback'] = None if annotation else reason
+    if annotation and reason:
+        meta['warnings'].append(f'AI 标注部分批次失败（{reason}），受影响字段已按内置词表降级')
+
+    # 产物结构自检（确定性、不调 LLM）。刻意放在路由层而非 generate_ruoyi_module 内部：
+    # 后者是纯函数，测试直接调它并故意构造降级输出（中文表名/未知类型/复合主键），
+    # 在纯函数里改 warnings 会破坏既有断言。自检只收集告警，永不让生成失败。
+    lint_problems, lint_checked = code_lint.lint_generated_files(result['files'])
+    meta['lint'] = {'checkedFiles': lint_checked, 'problems': lint_problems, 'passed': not lint_problems}
+    if lint_problems:
+        head = ' / '.join(lint_problems[:3])
+        more = f' …等 {len(lint_problems)} 项' if len(lint_problems) > 3 else ''
+        meta['warnings'].append(f'产物自检发现 {len(lint_problems)} 个问题：{head}{more}')
+    return jsonify(result)
+
+
+@app.route('/api/v1/ai/code/ruoyi/download', methods=['POST'])
+def ruoyi_code_download_v1():
+    """把前端预览到的多文件打成 zip 下载（吃回传的 files，保证「下载的 == 预览的」）。"""
+    if not _require_user_id():
+        return jsonify({'error': '未登录'}), 401
+
+    data = request.json or {}
+    files = data.get('files') or []
+    zip_name = str(data.get('zipName') or '').strip()
+    if not files:
+        return jsonify({'error': '没有可下载的文件'}), 400
+
+    raw, err = ruoyi_gen.build_zip(files)
+    if err:
+        code = 413 if '过大' in err or '过多' in err else 400
+        return jsonify({'error': err}), code
+
+    # filename 必须纯 ASCII（旧客户端会乱码/截断），中文名走 RFC 5987 的 filename*
+    ascii_name = ruoyi_gen.ascii_zip_name(zip_name)
+    headers = {
+        'Content-Type': 'application/zip',
+        'Content-Length': str(len(raw)),
+        'Cache-Control': 'no-store',
+    }
+    if zip_name and not zip_name.isascii():
+        headers['Content-Disposition'] = (
+            f'attachment; filename="{ascii_name}"; '
+            f"filename*=UTF-8''{quote(zip_name)}"
+        )
+    else:
+        headers['Content-Disposition'] = f'attachment; filename="{ascii_name}"'
+    return Response(raw, status=200, headers=headers, mimetype='application/zip')
+
+
 # === 代码反向工程 ===
 
 def _normalize_er_rel_type(rtype):
@@ -6185,11 +6340,13 @@ def _normalize_er_rel_type(rtype):
     }.get(rtype, 'oneToMany')
 
 
-def _layout_ai_er(entities_raw, relations_raw):
+def _layout_ai_er(entities_raw, relations_raw, report=None):
     """把 LLM 返回的 ER 实体/关系布局成前端画布结构（分配 id/坐标/宽高，字段映射）。"""
     name_to_id = {}
     entities = []
-    x, y = 100, 100
+    # 流式布局：宽度固定 150，逐行排布避免重叠（画布逻辑宽 1150）
+    LX, LY, GAP_X, GAP_Y = 60, 60, 40, 40
+    cur_x, cur_y, row_h = LX, LY, 0
     for i, item in enumerate(entities_raw):
         if not isinstance(item, dict) or not item.get('name'):
             continue
@@ -6205,21 +6362,26 @@ def _layout_ai_er(entities_raw, relations_raw):
                     continue
                 fields.append({
                     'name': str(a['name']),
-                    'type': str(a.get('data_type') or a.get('type') or 'string').upper(),
+                    'type': ai_quality.normalize_er_field_type(a.get('data_type') or a.get('type'), report),
                     'isPrimary': bool(a.get('is_primary_key', False)),
                     'isForeign': bool(a.get('is_foreign_key', False))
                 })
         if not fields:
             fields = [{'name': 'id', 'type': 'INT', 'isPrimary': True, 'isForeign': False}]
+        dh = max(80, 30 + 20 * len(fields) + 10)  # 与前端 drawErEntity 的渲染高度一致
+        if cur_x + 150 > 1150 - 40:
+            cur_x, cur_y, row_h = LX, cur_y + row_h + GAP_Y, 0
         entities.append({
             'id': eid,
             'name': name,
-            'x': x + (i % 3) * 210,
-            'y': y + (i // 3) * 160,
+            'x': cur_x,
+            'y': cur_y,
             'width': 150,
-            'displayHeight': max(80, 40 + 18 * len(fields)),
+            'displayHeight': dh,
             'fields': fields
         })
+        cur_x += 150 + GAP_X
+        row_h = max(row_h, dh)
         name_to_id[name] = eid
 
     relations = []
@@ -6406,8 +6568,15 @@ def ai_generate_diagram_v1(project_id):
         if not elements_raw:
             return jsonify({'error': 'AI 服务不可用或未能解析描述，请确认已配置 API 密钥后重试'}), 422
         elements, relationships = _uuid_elements_to_canvas(elements_raw, relationships_raw)
+        # 校验-修复一轮，但**不落盘**——本路由的约定是「前端画上后走保存」，
+        # 所以用临时对象承载，只把修完的结果回给前端
+        probe = SimpleModel('_probe')
+        probe.elements, probe.relationships = elements, relationships
+        repair = _auto_repair_once(probe, project_id)
+        elements, relationships = probe.elements, probe.relationships
         log_knowledge(project_id, '生成图', f"根据「{text[:40]}」生成 UML {len(elements)} 个元素")
-        return jsonify({'target': 'uml', 'elements': elements, 'relationships': relationships})
+        return jsonify({'target': 'uml', 'elements': elements, 'relationships': relationships,
+                        'quality': repair})
 
     # ER：LLM 原始数据 → 画布布局（关系类型已归一化 camelCase）
     ai_data = _ai_generate_er_data(build_knowledge_context(project_id) + text)
@@ -6421,8 +6590,13 @@ def ai_generate_diagram_v1(project_id):
     if not isinstance(entities_raw, list) or not entities_raw:
         return jsonify({'error': '未能从描述中提取出实体，请补充更明确的业务信息'}), 422
     entities, relations = _layout_ai_er(entities_raw, relations_raw)
+    probe = SimpleModel('_probe')
+    probe.er_entities, probe.er_relations = entities, relations
+    repair = _auto_repair_once(probe, project_id)
+    entities, relations = probe.er_entities, probe.er_relations
     log_knowledge(project_id, '生成图', f"根据「{text[:40]}」生成 ER {len(entities)} 张表")
-    return jsonify({'target': 'er', 'entities': entities, 'relationships': relations})
+    return jsonify({'target': 'er', 'entities': entities, 'relationships': relations,
+                    'quality': repair})
 
 
 # === 对话式编辑 ===
@@ -6468,29 +6642,40 @@ def _describe_er_for_edit(erEntities, erRelations):
 
 def _ai_edit_model(kind, description, instruction, project_id=''):
     """调用 LLM 生成增量编辑操作列表。AI 未启用/失败返回 None。注入项目知识库上下文并记录。"""
+    ops, _reason = _ai_edit_model_verbose(kind, description, instruction, project_id)
+    return ops
+
+
+def _ai_edit_model_verbose(kind, description, instruction, project_id=''):
+    """同 `_ai_edit_model`，但把失败原因一并返回 `(ops|None, reason)`。
+
+    修复循环靠 reason 区分「模型没给操作」和「操作被截断」——后者值得重试。
+    """
     if not ai_service_config.enabled:
-        return None
+        return None, 'disabled'
     messages = [
         {'role': 'system', 'content': edit_model_system_prompt(kind)},
         {'role': 'user', 'content': f'{build_knowledge_context(project_id)}当前模型：\n{description}\n\n用户指令：{instruction}'}
     ]
-    result = AIService.chat_completion(messages, max_tokens=2000, temperature=0.3, use_reasoning=True)
-    if not isinstance(result, dict) or 'error' in result:
-        return None
-    try:
-        content = result['choices'][0]['message']['content']
-    except (KeyError, IndexError, TypeError):
-        return None
-    data = _ai_parse_json_response(content)
-    if not isinstance(data, dict) or not isinstance(data.get('operations'), list):
-        return None
+    data, reason = chat_json(messages, max_tokens=2000, temperature=0.3, use_reasoning=True)
+    if data is None:
+        return None, reason
+    if not isinstance(data.get('operations'), list):
+        return None, 'no_operations'
     if project_id:
         log_knowledge(project_id, '编辑模型', f"按指令「{instruction[:40]}」执行 {len(data['operations'])} 个编辑操作")
-    return data['operations']
+    return data['operations'], ''
 
 
-def _apply_uml_edits(elements, connections, ops):
-    """把操作列表应用到当前 UML 模型（按类名解析 id），返回新元素/连接。"""
+def _apply_uml_edits(elements, connections, ops, report=None):
+    """把操作列表应用到当前 UML 模型（按类名解析 id），返回新元素/连接。
+
+    `report` 传 `ai_quality.EditReport` 时记录「哪几步真生效、哪几步被丢弃及原因」。
+    计数语义：`applied` 只算**真正改动了模型**的 op；指向不存在元素的删除之类的
+    「合法但无效果」操作算丢弃——用户说了要改而实际没改，正是要暴露的差额。
+    """
+    if report is not None:
+        report.begin('uml')
     elements = [dict(e) for e in elements]
     connections = [dict(c) for c in connections]
     name_to_id = {}
@@ -6503,11 +6688,15 @@ def _apply_uml_edits(elements, connections, ops):
 
     for op in ops:
         if not isinstance(op, dict):
+            if report is not None:
+                report.skip(op, 'bad_op')
             continue
         o = str(op.get('op') or '').strip()
         if o == 'add_element':
             name = str(op.get('name') or '').strip()
             if not name or name in name_to_id:
+                if report is not None:
+                    report.skip(op, 'empty_name' if not name else 'duplicate_name', name)
                 continue
             eid = next_id
             next_id += 1
@@ -6521,51 +6710,94 @@ def _apply_uml_edits(elements, connections, ops):
                 elem['description'] = str(op['description'])
             name_to_id[name] = eid
             new_elements.append(elem)
+            if report is not None:
+                report.ok()
         elif o == 'update_element':
             name = str(op.get('name') or '').strip()
             eid = name_to_id.get(name)
             if eid is None:
+                if report is not None:
+                    report.skip(op, 'unknown_element', name)
                 continue
             target = next((e for e in new_elements if e.get('id') == eid), None)
             if not target:
+                if report is not None:
+                    report.skip(op, 'unknown_element', name)
                 continue
+            changed = False
             if isinstance(op.get('attributes'), list):
                 target['attributes'] = [str(a) for a in op['attributes']]
+                changed = True
             if isinstance(op.get('methods'), list):
                 target['methods'] = [str(m) for m in op['methods']]
+                changed = True
             if op.get('description'):
                 target['description'] = str(op['description'])
+                changed = True
+            # 没给任何可改字段 = 什么也没发生，不该算「生效」
+            if report is not None:
+                if changed:
+                    report.ok()
+                else:
+                    report.skip(op, 'no_changes', name)
         elif o == 'delete_element':
             name = str(op.get('name') or '').strip()
             eid = name_to_id.get(name)
             if eid is None:
+                if report is not None:
+                    report.skip(op, 'unknown_element', name)
                 continue
             new_elements = [e for e in new_elements if e.get('id') != eid]
             new_connections = [c for c in new_connections
                                if c.get('startElement') != eid and c.get('endElement') != eid]
             name_to_id.pop(name, None)
+            if report is not None:
+                report.ok()
         elif o == 'add_relationship':
             s = name_to_id.get(str(op.get('source') or '').strip())
             t = name_to_id.get(str(op.get('target') or '').strip())
             if s is None or t is None or s == t:
+                if report is not None:
+                    report.skip(op, 'unresolved_endpoint' if s != t else 'self_loop',
+                                f"{op.get('source')} → {op.get('target')}")
                 continue
             rtype = str(op.get('type') or 'Association').strip()
             if rtype not in RELATIONSHIP_TYPES:
                 rtype = 'Association'
             new_connections.append({'id': next_id, 'type': rtype, 'startElement': s, 'endElement': t})
             next_id += 1
+            if report is not None:
+                report.ok()
         elif o == 'delete_relationship':
             s = name_to_id.get(str(op.get('source') or '').strip())
             t = name_to_id.get(str(op.get('target') or '').strip())
+            before = len(new_connections)
             new_connections = [c for c in new_connections
                                if not (c.get('startElement') == s and c.get('endElement') == t)]
+            if report is not None:
+                if len(new_connections) < before:
+                    report.ok()
+                else:
+                    report.skip(op, 'no_such_relationship', f"{op.get('source')} → {op.get('target')}")
+        else:
+            if report is not None:
+                report.skip(op, 'unknown_op', o)
 
     return new_elements, new_connections
 
 
-def _apply_er_edits(erEntities, erRelations, ops):
-    """把操作列表应用到当前 ER 模型（按实体名解析 id），返回新实体/关系。"""
-    erEntities = [dict(e) for e in erEntities]
+def _apply_er_edits(erEntities, erRelations, ops, report=None):
+    """把操作列表应用到当前 ER 模型（按实体名解析 id），返回新实体/关系。
+
+    `report` 传 `ai_quality.EditReport` 时记录生效/丢弃明细，语义同 `_apply_uml_edits`。
+
+    注意 fields 必须**深一层**拷贝：浅拷贝时 `e['fields']` 与入参共享同一个 list，
+    而 `add_field` 走的是 `target['fields'].append(...)`，会把调用方的模型原地改掉
+    ——那样「报告说 0 步生效、模型其实已经被改」就成了可能。
+    """
+    if report is not None:
+        report.begin('er')
+    erEntities = [dict(e, fields=[dict(f) for f in (e.get('fields') or [])]) for e in erEntities]
     erRelations = [dict(r) for r in erRelations]
     name_to_id = {}
     for e in erEntities:
@@ -6577,18 +6809,22 @@ def _apply_er_edits(erEntities, erRelations, ops):
 
     for op in ops:
         if not isinstance(op, dict):
+            if report is not None:
+                report.skip(op, 'bad_op')
             continue
         o = str(op.get('op') or '').strip()
         if o == 'add_entity':
             name = str(op.get('name') or '').strip()
             if not name or name in name_to_id:
+                if report is not None:
+                    report.skip(op, 'empty_name' if not name else 'duplicate_name', name)
                 continue
             eid = next_id
             next_id += 1
             fields = []
             for f in op.get('fields') or []:
                 if isinstance(f, dict) and f.get('name'):
-                    fields.append({'name': str(f['name']), 'type': str(f.get('type') or 'string').upper(),
+                    fields.append({'name': str(f['name']), 'type': ai_quality.normalize_er_field_type(f.get('type')),
                                    'isPrimary': bool(f.get('isPrimary', False)),
                                    'isForeign': bool(f.get('isForeign', False))})
             if not fields:
@@ -6596,50 +6832,87 @@ def _apply_er_edits(erEntities, erRelations, ops):
             new_entities.append({'id': eid, 'name': name, 'x': 100, 'y': 100 + len(new_entities) * 40,
                                  'width': 150, 'displayHeight': max(80, 40 + 18 * len(fields)), 'fields': fields})
             name_to_id[name] = eid
+            if report is not None:
+                report.ok()
         elif o == 'delete_entity':
             name = str(op.get('name') or '').strip()
             eid = name_to_id.get(name)
             if eid is None:
+                if report is not None:
+                    report.skip(op, 'unknown_entity', name)
                 continue
             new_entities = [e for e in new_entities if e.get('id') != eid]
             new_relations = [r for r in new_relations
                              if r.get('startEntity') != eid and r.get('endEntity') != eid]
             name_to_id.pop(name, None)
+            if report is not None:
+                report.ok()
         elif o == 'add_field':
-            eid = name_to_id.get(str(op.get('entity') or '').strip())
+            ename = str(op.get('entity') or '').strip()
+            eid = name_to_id.get(ename)
             if eid is None:
+                if report is not None:
+                    report.skip(op, 'unknown_entity', ename)
                 continue
             target = next((e for e in new_entities if e.get('id') == eid), None)
             f = op.get('field')
-            if target and isinstance(f, dict) and f.get('name'):
-                target['fields'].append({'name': str(f['name']), 'type': str(f.get('type') or 'string').upper(),
-                                         'isPrimary': bool(f.get('isPrimary', False)),
-                                         'isForeign': bool(f.get('isForeign', False))})
-                target['displayHeight'] = max(80, 40 + 18 * len(target['fields']))
+            if not target or not isinstance(f, dict) or not f.get('name'):
+                if report is not None:
+                    report.skip(op, 'bad_field_payload', ename)
+                continue
+            target['fields'].append({'name': str(f['name']), 'type': ai_quality.normalize_er_field_type(f.get('type')),
+                                     'isPrimary': bool(f.get('isPrimary', False)),
+                                     'isForeign': bool(f.get('isForeign', False))})
+            target['displayHeight'] = max(80, 40 + 18 * len(target['fields']))
+            if report is not None:
+                report.ok()
         elif o == 'delete_field':
-            eid = name_to_id.get(str(op.get('entity') or '').strip())
+            ename = str(op.get('entity') or '').strip()
+            eid = name_to_id.get(ename)
             fname = str(op.get('field_name') or '').strip()
             if eid is None:
+                if report is not None:
+                    report.skip(op, 'unknown_entity', ename)
                 continue
             target = next((e for e in new_entities if e.get('id') == eid), None)
+            before = len(target['fields']) if target else 0
             if target:
                 target['fields'] = [f for f in target['fields'] if f.get('name') != fname]
                 target['displayHeight'] = max(80, 40 + 18 * len(target['fields']))
+            if report is not None:
+                if target and len(target['fields']) < before:
+                    report.ok()
+                else:
+                    report.skip(op, 'no_such_field', f'{ename}.{fname}')
         elif o == 'add_relation':
             s = name_to_id.get(str(op.get('source') or '').strip())
             t = name_to_id.get(str(op.get('target') or '').strip())
             if s is None or t is None or s == t:
+                if report is not None:
+                    report.skip(op, 'unresolved_endpoint' if s != t else 'self_loop',
+                                f"{op.get('source')} → {op.get('target')}")
                 continue
             rtype = str(op.get('type') or 'one_to_many').strip()
             if rtype not in ('one_to_one', 'one_to_many', 'many_to_one', 'many_to_many'):
                 rtype = 'one_to_many'
             new_relations.append({'id': next_id, 'type': _normalize_er_rel_type(rtype), 'startEntity': s, 'endEntity': t})
             next_id += 1
+            if report is not None:
+                report.ok()
         elif o == 'delete_relation':
             s = name_to_id.get(str(op.get('source') or '').strip())
             t = name_to_id.get(str(op.get('target') or '').strip())
+            before = len(new_relations)
             new_relations = [r for r in new_relations
                              if not (r.get('startEntity') == s and r.get('endEntity') == t)]
+            if report is not None:
+                if len(new_relations) < before:
+                    report.ok()
+                else:
+                    report.skip(op, 'no_such_relationship', f"{op.get('source')} → {op.get('target')}")
+        else:
+            if report is not None:
+                report.skip(op, 'unknown_op', o)
 
     return new_entities, new_relations
 
@@ -6665,8 +6938,13 @@ def _describe_archimate_for_edit(archimateElements, archimateConnections):
     return '\n'.join(lines) or '（空模型）'
 
 
-def _apply_archimate_edits(archimateElements, archimateConnections, ops):
-    """把操作列表应用到当前 ArchiMate 模型（按元素名解析 id），返回新元素/连接。"""
+def _apply_archimate_edits(archimateElements, archimateConnections, ops, report=None):
+    """把操作列表应用到当前 ArchiMate 模型（按元素名解析 id），返回新元素/连接。
+
+    `report` 传 `ai_quality.EditReport` 时记录生效/丢弃明细，语义同 `_apply_uml_edits`。
+    """
+    if report is not None:
+        report.begin('archimate')
     archimateElements = [dict(e) for e in archimateElements]
     archimateConnections = [dict(c) for c in archimateConnections]
     name_to_id = {}
@@ -6679,11 +6957,15 @@ def _apply_archimate_edits(archimateElements, archimateConnections, ops):
 
     for op in ops:
         if not isinstance(op, dict):
+            if report is not None:
+                report.skip(op, 'bad_op')
             continue
         o = str(op.get('op') or '').strip()
         if o == 'add_element':
             name = str(op.get('name') or '').strip()
             if not name or name in name_to_id:
+                if report is not None:
+                    report.skip(op, 'empty_name' if not name else 'duplicate_name', name)
                 continue
             etype = str(op.get('type') or 'service').strip().lower()
             if etype not in ARCHIMATE_ELEMENT_TYPES:
@@ -6698,48 +6980,98 @@ def _apply_archimate_edits(archimateElements, archimateConnections, ops):
                                  'width': 120, 'height': 80,
                                  'color': '#ffffff', 'headerColor': '#667eea'})
             name_to_id[name] = eid
+            if report is not None:
+                report.ok()
         elif o == 'update_element':
             name = str(op.get('name') or '').strip()
             eid = name_to_id.get(name)
             if eid is None:
+                if report is not None:
+                    report.skip(op, 'unknown_element', name)
                 continue
             target = next((e for e in new_elements if e.get('id') == eid), None)
             if not target:
+                if report is not None:
+                    report.skip(op, 'unknown_element', name)
                 continue
+            changed = False
             new_name = str(op.get('new_name') or '').strip()
             if new_name:
                 name_to_id.pop(name, None)
                 target['name'] = new_name
                 name_to_id[new_name] = eid
+                changed = True
             layer = str(op.get('layer') or '').strip()
             if layer in ARCHIMATE_LAYERS:
                 target['layer'] = layer
+                changed = True
+            if report is not None:
+                if changed:
+                    report.ok()
+                else:
+                    report.skip(op, 'no_changes', name)
         elif o == 'delete_element':
             name = str(op.get('name') or '').strip()
             eid = name_to_id.get(name)
             if eid is None:
+                if report is not None:
+                    report.skip(op, 'unknown_element', name)
                 continue
             new_elements = [e for e in new_elements if e.get('id') != eid]
             new_connections = [c for c in new_connections
                                if c.get('startElement') != eid and c.get('endElement') != eid]
             name_to_id.pop(name, None)
+            if report is not None:
+                report.ok()
         elif o == 'add_relationship':
             s = name_to_id.get(str(op.get('source') or '').strip())
             t = name_to_id.get(str(op.get('target') or '').strip())
             if s is None or t is None or s == t:
+                if report is not None:
+                    report.skip(op, 'unresolved_endpoint' if s != t else 'self_loop',
+                                f"{op.get('source')} → {op.get('target')}")
                 continue
             rtype = str(op.get('type') or 'association').strip().lower()
             if rtype not in ARCHIMATE_REL_TYPES:
                 rtype = 'association'
             new_connections.append({'id': next_id, 'type': rtype, 'startElement': s, 'endElement': t})
             next_id += 1
+            if report is not None:
+                report.ok()
         elif o == 'delete_relationship':
             s = name_to_id.get(str(op.get('source') or '').strip())
             t = name_to_id.get(str(op.get('target') or '').strip())
+            before = len(new_connections)
             new_connections = [c for c in new_connections
                                if not (c.get('startElement') == s and c.get('endElement') == t)]
+            if report is not None:
+                if len(new_connections) < before:
+                    report.ok()
+                else:
+                    report.skip(op, 'no_such_relationship', f"{op.get('source')} → {op.get('target')}")
+        else:
+            if report is not None:
+                report.skip(op, 'unknown_op', o)
 
     return new_elements, new_connections
+
+
+def _edit_counts(ops, report):
+    """编辑结果计数。
+
+    `applied_ops` 保留旧键名（前端已在读），但值改成**真实生效数**——以前是
+    `len(ops)`，即「LLM 声称要改几步就报几步」，被丢弃的也算成功，用户会以为改上了。
+    现在把「声称 vs 生效」的差额一并暴露。
+
+    注意：这个函数必须定义在 `@app.route` 之前，否则装饰器会挂到它头上，
+    Flask 会把 URL 路由到这个辅助函数（实测过，报的是「unexpected keyword argument 'model_id'」）。
+    """
+    return {
+        'applied_ops': report.applied,
+        'claimed_ops': len(ops or []),
+        'discarded': report.discarded,
+        'discarded_count': len(report.discarded),
+    }
 
 
 @app.route('/api/v1/project/<model_id>/ai/edit-model', methods=['POST'])
@@ -6772,8 +7104,10 @@ def ai_edit_model_v1(model_id):
         ops = _ai_edit_model('uml', description, instruction, project_id=model_id)
         if ops is None:
             return jsonify({'error': 'AI 服务不可用或未能解析指令，请确认已配置 API 密钥后重试'}), 422
-        new_elements, new_connections = _apply_uml_edits(elements, connections, ops)
-        return jsonify({'kind': 'uml', 'elements': new_elements, 'connections': new_connections, 'applied_ops': len(ops)})
+        report = ai_quality.EditReport()
+        new_elements, new_connections = _apply_uml_edits(elements, connections, ops, report)
+        return jsonify({'kind': 'uml', 'elements': new_elements, 'connections': new_connections,
+                        **_edit_counts(ops, report)})
 
     if kind == 'archimate':
         archElements = data.get('archimateElements') or []
@@ -6784,9 +7118,10 @@ def ai_edit_model_v1(model_id):
         ops = _ai_edit_model('archimate', description, instruction, project_id=model_id)
         if ops is None:
             return jsonify({'error': 'AI 服务不可用或未能解析指令，请确认已配置 API 密钥后重试'}), 422
-        new_elements, new_connections = _apply_archimate_edits(archElements, archConnections, ops)
+        report = ai_quality.EditReport()
+        new_elements, new_connections = _apply_archimate_edits(archElements, archConnections, ops, report)
         return jsonify({'kind': 'archimate', 'archimateElements': new_elements,
-                        'archimateConnections': new_connections, 'applied_ops': len(ops)})
+                        'archimateConnections': new_connections, **_edit_counts(ops, report)})
 
     erEntities = data.get('erEntities') or []
     erRelations = data.get('erRelations') or []
@@ -6796,8 +7131,10 @@ def ai_edit_model_v1(model_id):
     ops = _ai_edit_model('er', description, instruction, project_id=model_id)
     if ops is None:
         return jsonify({'error': 'AI 服务不可用或未能解析指令，请确认已配置 API 密钥后重试'}), 422
-    new_entities, new_relations = _apply_er_edits(erEntities, erRelations, ops)
-    return jsonify({'kind': 'er', 'erEntities': new_entities, 'erRelations': new_relations, 'applied_ops': len(ops)})
+    report = ai_quality.EditReport()
+    new_entities, new_relations = _apply_er_edits(erEntities, erRelations, ops, report)
+    return jsonify({'kind': 'er', 'erEntities': new_entities, 'erRelations': new_relations,
+                    **_edit_counts(ops, report)})
 
 
 # === 项目专属记忆库 ===
@@ -14293,6 +14630,806 @@ def ai_recommend_pattern():
             log_knowledge(project_id, '模式推荐', '未找到与当前图匹配的设计模式')
     return jsonify({'pattern': pattern_key, 'reason': reason, 'matched': bool(pattern_key)})
 
+
+# ===================== AI 智能体：一键企业架构设计（Agent MVP） =====================
+from prompts import ARCHITECT_GENERATE_SYSTEM_PROMPT
+AGENT_STEPS = [('create_project', '新建项目'), ('gen_uml', '生成 UML 类图'),
+               ('gen_archimate', '生成 ArchiMate'), ('gen_er', '生成 ER 数据模型'),
+               ('auto_repair', '自动校验修复'),
+               ('save_version', '保存基线快照'), ('health', '健康度检查'),
+               ('apply_optimization', '应用 AI 优化'), ('done', '完成')]
+ARCH_HEAD = {'business': '#3498db', 'application': '#2ecc71', 'technology': '#e67e22'}
+ARCH_BODY = {'business': '#ecf0f1', 'application': '#e8f8f5', 'technology': '#fef5e7'}
+
+
+def _layout_ai_archimate(elements_raw, rels_raw, report=None):
+    """ArchiMate 原始数据 → 前端画布结构（三层横排，id 数字）。"""
+    layer_y = {'business': 40, 'application': 300, 'technology': 560}
+    per = {'business': 0, 'application': 0, 'technology': 0}
+    elems, by_name, eid = [], {}, 1
+    for it in elements_raw:
+        if not isinstance(it, dict) or not it.get('name'):
+            continue
+        name = str(it['name']).strip()
+        # 同名去重：以前是 by_name[name] = eid 直接覆盖，于是引用该名字的关系
+        # 全被指到最后一个同名元素上，第一个变成「悬空无人引用」的孤立元素。
+        # 照搬兄弟布局器的现成守卫：保留首次出现。
+        if not name or name in by_name:
+            if report is not None and name:
+                report.append(f'ArchiMate 元素「{name}」重复出现，已保留第一个')
+            continue
+        layer = str(it.get('layer') or 'business').lower()
+        if layer not in ARCH_HEAD:
+            if report is not None:
+                report.append(f'未知 ArchiMate 层次「{it.get("layer")}」，已按 business 处理')
+            layer = 'business'
+        etype = str(it.get('type') or 'service').lower()
+        if etype not in ARCHIMATE_ELEMENT_TYPES:
+            if report is not None:
+                report.append(f'未知 ArchiMate 元素类型「{it.get("type")}」，已按 service 处理')
+            etype = 'service'
+        el = {'id': eid, 'type': etype, 'name': name, 'layer': layer,
+              'x': 80 + per[layer] * 230, 'y': layer_y[layer], 'width': 160, 'height': 70,
+              'color': ARCH_BODY[layer], 'headerColor': ARCH_HEAD[layer]}
+        elems.append(el)
+        by_name[name] = eid
+        per[layer] += 1
+        eid += 1
+    conns = []
+    for r in rels_raw:
+        if not isinstance(r, dict):
+            continue
+        s = by_name.get(str(r.get('source') or '').strip())
+        t = by_name.get(str(r.get('target') or '').strip())
+        if not s or not t or s == t:
+            if report is not None:
+                report.append(f'ArchiMate 关系 {r.get("source")} → {r.get("target")} 端点无法解析或自环，已丢弃')
+            continue
+        rt = str(r.get('type') or 'association').lower()
+        if rt not in ARCHIMATE_REL_TYPES:
+            if report is not None:
+                report.append(f'未知 ArchiMate 关系类型「{r.get("type")}」，已按 association 处理')
+            rt = 'association'
+        conns.append({'id': eid, 'type': rt, 'startElement': s, 'endElement': t})
+        eid += 1
+    return elems, conns
+
+
+_GEN_REASON_TEXT = {
+    'truncated': '模型输出被截断（内容超出 max_tokens）',
+    'invalid_json': '模型返回的不是合法 JSON',
+    'empty': '模型返回空内容',
+    'no_uml': '模型输出缺少 UML 段',
+    'disabled': 'AI 服务未启用',
+    'no_choices': '模型没有返回候选结果',
+    'no_content': '模型没有返回正文',
+    'invalid_response': '模型返回结构异常',
+    'invalid_choice': '模型返回结构异常',
+}
+
+
+def _gen_reason_text(reason):
+    """把 `core.chat_json` 的 reason 翻成人能读的一句话。"""
+    if not reason:
+        return '未知原因'
+    if reason.startswith('error:'):
+        return f'调用失败：{reason[6:][:120]}'
+    return _GEN_REASON_TEXT.get(reason, reason)
+
+
+def _agent_generate_canonical(text, temperature=0.3):
+    """一次 LLM 调用生成「项目级三套图 canonical」。
+
+    返回 `(data|None, reason)`。reason 见 `core.chat_json`——把「截断」单独暴露出来，
+    好让 best-of-N 知道该重采样（截断的候选不是「答得差」而是「话没说完」）。
+    """
+    if not ai_service_config.enabled:
+        return None, 'disabled'
+    messages = [
+        {'role': 'system', 'content': ARCHITECT_GENERATE_SYSTEM_PROMPT},
+        {'role': 'user', 'content': text}
+    ]
+    data, reason = chat_json(messages, max_tokens=8192, temperature=temperature)
+    if data is None:
+        return None, reason
+    if not isinstance(data.get('uml'), dict):
+        return None, 'no_uml'
+    data.setdefault('archimate', {})
+    data.setdefault('er', {})
+    return data, ''
+
+
+def _generate_canonical_best_of_n(text, samples=None):
+    """低温度采 N 次 canonical，用**确定性校验器**给候选打分，取最好的那个。
+
+    打分只吃 issue 列表 + 结构统计量（`_quality_issues_for_model` 走 `use_ai=False`），
+    所以「择优」这一步不产生额外 LLM 调用、结果可复现。花的是采样的钱，
+    换来的是把长尾烂输出挡在门外。
+
+    顺序：给所有**原始**候选打分 → 择优 → （由调用方）物化 → （由调用方）修复。
+    修复要花 LLM 调用，只该修赢家。
+
+    返回 `(canonical | None, meta)`。meta 里带每次采样的分数，供步骤详情展示。
+    """
+    n = ai_quality.sample_count_from(samples, default=3)
+    candidates, reasons = [], []
+    for i in range(n):
+        # 第 1 次沿用原温度，保证单次行为和以前一致；后续采样调高一点让候选真的有差异
+        cand, reason = _agent_generate_canonical(text, temperature=0.3 if i == 0 else 0.55)
+        if cand is None:
+            reasons.append(reason)
+            if i == 0:
+                break     # 第一次就失败 → 立刻走既有降级，不再空耗
+            continue
+        probe = SimpleModel('_candidate')
+        try:
+            _apply_canonical_to_model(probe, cand)
+        except Exception:
+            reasons.append('materialize_failed')
+            continue
+        stats = ai_quality.model_structure_stats(probe)
+        score, detail = ai_quality.candidate_score(_quality_issues_for_model(probe), stats)
+        candidates.append({
+            'index': i, 'score': score, 'detail': detail, 'payload': cand,
+            'element_count': sum(stats['counts'].values()),
+            'relation_count': (len(probe.relationships) + len(probe.archimate_connections)
+                               + len(probe.er_relations)),
+        })
+        if score == 100.0:
+            break     # 第一个就干净，没必要再采
+
+    best, report = ai_quality.pick_best(candidates)
+    report['tried'] = len(candidates)
+    report['requested'] = n
+    report['failure_reasons'] = reasons
+    return (best['payload'] if best else None), report
+
+
+def _align_cross_graph_names(model, report=None):
+    """跨图命名对齐：把**高置信的确定性变形**统一到 UML 名，真正不同的只报告。
+
+    高置信 = 同一命名约定内的变形（去表名前缀、同义词、单复数/分隔符差异）；
+    跨命名约定的 `Order` ↔ `orders` 视为设计使然，既不改也不报（改了会污染
+    若依生成的表名与 DDL）。中文名一律不自动改。
+
+    `report` 传调用方的字符串列表时记录改动；**绝不往 counts 里塞东西**——
+    `_run_architect_agent` 有 `any(v[0] > 0 for v in counts.values())` 按下标消费。
+    """
+    diff = ai_quality.cross_map_diff(model)
+    if diff['renames']:
+        done = ai_quality.apply_cross_map_renames(model, diff['renames'])
+        if done and report is not None:
+            head = '、'.join(f"{r['from']} → {r['to']}" for r in diff['renames'][:3])
+            report.append(f'跨图命名已统一 {done} 项：{head}' + (' 等' if done > 3 else ''))
+    return diff['reports']
+
+
+def _apply_canonical_to_model(model, canonical, report=None):
+    """把三套 canonical 写进 SimpleModel 六字段（画布可直接渲染）。返回计数字典。
+
+    `report` 传 list 时收集「哪些 LLM 产出被改写/丢弃了」，供上层展示与记录。
+    注意**绝不能**往 counts 里塞非二元组的值：`_run_architect_agent` 里有
+    `any(v[0] > 0 for v in counts.values())`，按下标消费。
+    """
+    counts = {}
+    uml = canonical.get('uml') or {}
+    arch = canonical.get('archimate') or {}
+    er = canonical.get('er') or {}
+    if isinstance(uml.get('elements'), list):
+        raw_e, raw_r = _layout_ai_elements(uml.get('elements'), uml.get('relationships') or [],
+                                           'class', report)
+        e_, r_ = _uuid_elements_to_canvas(raw_e, raw_r)
+        model.elements, model.relationships = e_, r_
+        counts['uml'] = [len(e_), len(r_)]
+    if isinstance(arch.get('elements'), list):
+        a_e, a_c = _layout_ai_archimate(arch.get('elements'), arch.get('relationships') or [], report)
+        model.archimate_elements, model.archimate_connections = a_e, a_c
+        counts['archimate'] = [len(a_e), len(a_c)]
+    if isinstance(er.get('entities'), list):
+        ent_, rel_ = _layout_ai_er(er.get('entities'), er.get('relationships') or [], report)
+        model.er_entities, model.er_relations = ent_, rel_
+        counts['er'] = [len(ent_), len(rel_)]
+    # 三图都物化完了，此时对齐命名最合适（ER 已是 fields 而非 canonical 的 attributes）
+    _align_cross_graph_names(model, report)
+    return counts
+
+
+def _agent_apply_fallback(model, text, report=None):
+    """canonical 生成失败时的降级：三套图各自独立生成（UML/ER 自带关键词回退，ArchiMate 有 mock）。"""
+    from uml_ai import generate_archimate_from_prompt
+    counts = {}
+    try:
+        ue, ur = generate_uml_from_prompt(text, 'class')
+        e_, r_ = _uuid_elements_to_canvas(ue, ur)
+        model.elements, model.relationships = e_, r_
+        counts['uml'] = [len(e_), len(r_)]
+    except Exception:
+        counts['uml'] = [0, 0]
+    try:
+        d = _ai_generate_er_data(text)
+        if isinstance(d, dict) and isinstance(d.get('entities'), list):
+            ent_, rel_ = _layout_ai_er(d['entities'], d.get('relationships') or [], report)
+            model.er_entities, model.er_relations = ent_, rel_
+            counts['er'] = [len(ent_), len(rel_)]
+        else:
+            counts['er'] = [0, 0]
+    except Exception:
+        counts['er'] = [0, 0]
+    try:
+        ae, ar = generate_archimate_from_prompt(text)
+        a_e, a_c = _layout_ai_archimate(ae, ar, report)
+        model.archimate_elements, model.archimate_connections = a_e, a_c
+        counts['archimate'] = [len(a_e), len(a_c)]
+    except Exception:
+        counts['archimate'] = [0, 0]
+    _align_cross_graph_names(model, report)
+    return counts
+
+
+def _apply_edits_for_kind(model, model_id, kind, instruction, report=None):
+    """对单张图走一遍「描述 → LLM 出 ops → 应用」。
+
+    返回 `(真实生效步数, 模型提出的步数)`；AI 未启用/失败/没给出 ops 时返回 None。
+    三张图的公共体抽在这里，`_optimize_model_from_health` 与 `_auto_repair_once`
+    共用同一条链路——两处各写一份的话，日后改一处漏一处。
+    """
+    try:
+        if kind == 'uml':
+            ops = _ai_edit_model('uml', _describe_uml_for_edit(model.elements, model.relationships),
+                                 instruction, model_id)
+            if not ops:
+                return None
+            model.elements, model.relationships = _apply_uml_edits(
+                model.elements, model.relationships, ops, report)
+        elif kind == 'er':
+            ops = _ai_edit_model('er', _describe_er_for_edit(model.er_entities, model.er_relations),
+                                 instruction, model_id)
+            if not ops:
+                return None
+            model.er_entities, model.er_relations = _apply_er_edits(
+                model.er_entities, model.er_relations, ops, report)
+        elif kind == 'archimate':
+            ops = _ai_edit_model('archimate',
+                                 _describe_archimate_for_edit(model.archimate_elements,
+                                                              model.archimate_connections),
+                                 instruction, model_id)
+            if not ops:
+                return None
+            model.archimate_elements, model.archimate_connections = _apply_archimate_edits(
+                model.archimate_elements, model.archimate_connections, ops, report)
+        else:
+            return None
+    except Exception:
+        return None
+    effective = report.applied_for(kind) if report is not None else len(ops)
+    return effective, len(ops)
+
+
+def _quality_issues_for_model(model):
+    """三套图的结构校验归一成统一 issue 列表。**不调 LLM。**
+
+    UML / ArchiMate 必须走 `use_ai=False`：这两个校验器内部本来就会做语义评审
+    （`_ai_validate_semantics` / `_ai_review_archimate_semantics`），在修复循环里
+    再叠一层不可复现的 LLM 评审，既慢又会让「问题数」每次都不一样。
+    """
+    issues = list(ai_quality.normalize_uml_issues(validate_uml_model(model, use_ai=False), 'uml'))
+    issues += ai_quality.normalize_uml_issues(review_archimate_model(model, use_ai=False), 'archimate')
+    view = ai_quality.er_view_shim(model.er_entities, model.er_relations)
+    er_raw = []
+    for check in (check_normal_forms, check_indexes, check_data_types, check_naming_conventions):
+        try:
+            er_raw += check(view)
+        except Exception:
+            pass     # 单个检查器出错不该让整轮校验失效
+    issues += ai_quality.normalize_er_issues(er_raw)
+    return issues
+
+
+def _auto_repair_once(model, model_id):
+    """自动跑一轮「校验 → 把错误按图回喂模型 → 重校验」。
+
+    这是补上最缺的那一环：以前校验器只把问题**报给用户看**，从不回喂给模型，
+    于是同一个错误每次生成都会重犯。只跑一轮是刻意的——修复要花 LLM 调用，
+    N 轮的成本是线性增长，而绝大多数结构错误一轮就能收敛。
+
+    按 kind 分组回喂：不把 UML 的问题发给 ER / ArchiMate。健康度那条链路
+    （`_optimize_model_from_health`）是三图共用一条指令，因为那里的问题源是
+    全局健康度；这里是类型化结构错误，分组既省两次调用也免了误改。
+    """
+    if not ai_service_config.enabled:
+        return {'skipped': True, 'reason': 'AI 未启用'}
+    # 滤掉「画布为空」：ops 按名字寻址，空画布无从下手；它该由生成步骤填充。
+    # 不过滤的话，一个只有 ER 的模型会被判定成「有问题」并白花一次 LLM 调用。
+    before = ai_quality.repairable_issues(_quality_issues_for_model(model))
+    if not before:
+        return {'skipped': True, 'reason': '结构校验无问题', 'before': 0, 'after': 0}
+
+    report = ai_quality.EditReport()
+    applied, claimed = {}, 0
+    for kind, issues in ai_quality.group_by_kind(before).items():
+        instruction = ai_quality.issues_to_instruction(issues)
+        if not instruction:
+            continue
+        res = _apply_edits_for_kind(model, model_id, kind, instruction, report)
+        if res is None:
+            continue
+        applied[kind], claimed_k = res
+        claimed += claimed_k
+
+    after = ai_quality.repairable_issues(_quality_issues_for_model(model))
+    return {
+        'skipped': False,
+        'before': len(before),
+        'after': len(after),
+        'applied': applied,
+        'claimed': claimed,
+        'discarded': report.discarded,
+        'summary': f'自动修复：结构问题 {len(before)} → {len(after)}',
+    }
+
+
+def _optimize_model_from_health(model, model_id, issues, suggestions):
+    """依据健康度问题/建议，对三套图各打最小补丁（复用对话式编辑工具链）。"""
+    ins = list(issues or []) + list(suggestions or [])
+    if not ins:
+        return {'applied': {}, 'skipped': True, 'summary': '健康度无待修正项'}
+    instruction = '请针对以下健康度问题与建议，对模型做最小必要修正（未提及的一律不动）：\n' + '\n'.join('- ' + str(x) for x in ins[:12])[:800]
+    report = ai_quality.EditReport()
+    applied, claimed = {}, 0
+    for kind in ('uml', 'er', 'archimate'):
+        res = _apply_edits_for_kind(model, model_id, kind, instruction, report)
+        if res is None:
+            continue
+        applied[kind], claimed_k = res
+        claimed += claimed_k
+    # skipped 的判据是「有没有真的改动」，而不是「模型有没有提出」——
+    # 全被丢弃时应当照实说「未自动改动」
+    skipped = not any(applied.values())
+    return {'applied': applied, 'claimed': claimed, 'skipped': skipped,
+            'discarded': report.discarded,
+            'summary': ('已自动应用优化补丁' if not skipped else '未自动改动（可手动采纳下方建议）')}
+
+
+def _run_architect_agent(text, user_id, apply_optimization=True, best_of_n=None):
+    """Agent 编排（生成器）：逐步 yield 事件；结尾 yield done(含完整结果)。"""
+    if not ai_service_config.enabled:
+        yield {'type': 'fatal', 'error': 'AI 服务未启用，请先配置 API 密钥后再试'}
+        return
+    model_id = str(uuid.uuid4())[:8]
+    action_log = []
+    fallback_name = '架构设计_' + model_id
+
+    def _y(step, status, detail=None):
+        title = dict(AGENT_STEPS).get(step, step)
+        action_log.append({'step': step, 'title': title, 'status': status, 'ok': status == 'ok', 'detail': detail})
+        return {'type': 'step', 'step': step, 'status': status, 'title': title, 'detail': detail}
+
+    model = None
+    project_name = ''
+    try:
+        yield {'type': 'step', 'step': 'create_project', 'status': 'running', 'title': '新建项目', 'detail': None}
+        m = SimpleModel(fallback_name)
+        m.owner_id = user_id
+        save_model(model_id, m)
+        project = Project(fallback_name, '', user_id)
+        project.id = model_id
+        project.model_id = model_id
+        save_project(project)
+        model = load_model_from_cache(model_id)
+        yield {'type': 'project', 'project_id': model_id, 'project_name': fallback_name}
+        yield _y('create_project', 'ok', {'project_id': model_id})
+
+        yield {'type': 'step', 'step': 'gen_uml', 'status': 'running', 'title': 'AI 生成 UML / ArchiMate / ER 架构', 'detail': None}
+        canonical, gen_meta = _generate_canonical_best_of_n(text, best_of_n)
+        gen_reason = (gen_meta.get('failure_reasons') or [''])[0]
+        # 布局器把「LLM 产出里被改写/丢弃的东西」记到这里：非法类型回落、重名去重、
+        # 悬空关系丢弃等。以前这些都无声无息（`capitalize()` 直接放行），
+        # 现在既能显示在步骤详情里，也能落到项目知识库。
+        layout_report = []
+        if canonical is None:
+            # 降级：三套图各自独立生成（UML/ER 自带关键词回退，ArchiMate 有 mock），避免一次性大 JSON 失败整单失败
+            # gen_reason 说明为什么降级——截断（truncated）和模型答错（invalid_json）该有不同的处置
+            counts = _agent_apply_fallback(model, text, layout_report)
+            any_ok = any(v[0] > 0 for v in counts.values())
+            if not any_ok:
+                why = _gen_reason_text(gen_reason)
+                yield _y('gen_uml', 'error', {'error': f'AI 生成失败（{why}），请重试'})
+                yield _y('gen_archimate', 'error', {'error': f'AI 生成失败（{why}），请重试'})
+                yield _y('gen_er', 'error', {'error': f'AI 生成失败（{why}），请重试'})
+            else:
+                save_model(model_id, model)
+                yield _y('gen_uml', 'ok', {'elements': counts.get('uml', [0, 0])[0], 'relationships': counts.get('uml', [0, 0])[1], 'fallback': True, 'reason': gen_reason})
+                yield _y('gen_archimate', 'ok', {'elements': counts.get('archimate', [0, 0])[0], 'connections': counts.get('archimate', [0, 0])[1], 'fallback': True, 'reason': gen_reason})
+                yield _y('gen_er', 'ok', {'entities': counts.get('er', [0, 0])[0], 'relations': counts.get('er', [0, 0])[1], 'fallback': True, 'reason': gen_reason})
+        else:
+            project_name = str(canonical.get('project_name') or fallback_name)
+            m.name = project_name
+            project.name = project_name
+            save_project(project)
+            counts = _apply_canonical_to_model(model, canonical, layout_report)
+            save_model(model_id, model)
+            yield _y('gen_uml', 'ok', {'elements': counts.get('uml', [0, 0])[0],
+                                       'relationships': counts.get('uml', [0, 0])[1],
+                                       'sample': gen_meta,
+                                       'warnings': layout_report[:5]})
+            yield _y('gen_archimate', 'ok', {'elements': counts.get('archimate', [0, 0])[0], 'connections': counts.get('archimate', [0, 0])[1]})
+            yield _y('gen_er', 'ok', {'entities': counts.get('er', [0, 0])[0], 'relations': counts.get('er', [0, 0])[1]})
+
+        if layout_report:
+            log_knowledge(model_id, '生成架构',
+                          f'共 {len(layout_report)} 处模型产出被修正：' + '；'.join(layout_report[:3]))
+
+        # 生成后立刻自动修一轮：把结构校验检出的问题回喂模型，而不是只报给用户看
+        yield {'type': 'step', 'step': 'auto_repair', 'status': 'running', 'title': '自动校验修复', 'detail': None}
+        repair = None
+        try:
+            repair = _auto_repair_once(model, model_id)
+            if not repair.get('skipped'):
+                save_model(model_id, model)
+            yield _y('auto_repair', 'ok', repair)
+        except Exception as ex:
+            yield _y('auto_repair', 'error', {'error': str(ex)})
+
+        yield {'type': 'step', 'step': 'save_version', 'status': 'running', 'title': '保存基线快照', 'detail': None}
+        try:
+            if hasattr(model, 'save_version'):
+                model.save_version('Agent基线')
+                save_model(model_id, model)
+            yield _y('save_version', 'ok', {})
+        except Exception as ex:
+            yield _y('save_version', 'error', {'error': str(ex)})
+
+        yield {'type': 'step', 'step': 'health', 'status': 'running', 'title': '健康度检查', 'detail': None}
+        health = None
+        try:
+            health = ai_health_check(model, model_id)
+            if health is None:
+                health = perform_health_check(model, project)
+            yield _y('health', 'ok', {'score': health.get('score')})
+        except Exception as ex:
+            yield _y('health', 'error', {'error': str(ex)})
+
+        yield {'type': 'step', 'step': 'apply_optimization', 'status': 'running', 'title': '应用 AI 优化', 'detail': None}
+        optimization = {'applied': {}, 'skipped': True, 'summary': '未执行'}
+        if apply_optimization and health and (health.get('issues') or health.get('suggestions')):
+            optimization = _optimize_model_from_health(model, model_id, health.get('issues'), health.get('suggestions'))
+            save_model(model_id, model)
+            if hasattr(model, 'save_version'):
+                try:
+                    model.save_version('AI优化')
+                    save_model(model_id, model)
+                except Exception:
+                    pass
+            yield _y('apply_optimization', 'ok', {'applied': optimization.get('applied'), 'skipped': optimization.get('skipped')})
+        else:
+            yield _y('apply_optimization', 'ok', {'skipped': True, 'reason': '健康度良好或无待修正建议'})
+
+        lines = []
+        if project_name:
+            lines.append('已完成项目「' + project_name + '」的企业架构设计：')
+        um = counts.get('uml', [0, 0]); am = counts.get('archimate', [0, 0]); er = counts.get('er', [0, 0])
+        lines.append('- UML 类图 ' + str(um[0]) + ' 类 / ' + str(um[1]) + ' 关系')
+        lines.append('- ArchiMate ' + str(am[0]) + ' 元素 / ' + str(am[1]) + ' 连线')
+        lines.append('- ER 数据模型 ' + str(er[0]) + ' 表 / ' + str(er[1]) + ' 关系')
+        if (gen_meta.get('tried') or 0) > 1:
+            lines.append(f"- 已从 {gen_meta['tried']} 个候选中择优（评分 "
+                         f"{gen_meta.get('best_score')}，各次 {gen_meta.get('scores')}）")
+        if repair and not repair.get('skipped'):
+            fixed = sum(v for v in (repair.get('applied') or {}).values())
+            lines.append(f"- {repair.get('summary')}（实际修复 {fixed} 步）")
+        if health:
+            lines.append('- 健康度评分：**' + str(health.get('score')) + '**' + (('（' + str(health.get('summary', '')) + '）') if health.get('summary') else ''))
+        if health and (health.get('suggestions') or health.get('issues')):
+            if not optimization.get('skipped'):
+                # 以前这里是 str(applied)，会把 {'uml': 3} 这种裸 dict 打给用户看
+                by_kind = optimization.get('applied') or {}
+                detail = '、'.join(f'{k} {v} 步' for k, v in by_kind.items() if v)
+                claimed = optimization.get('claimed') or 0
+                lines.append(f'- 已按健康度建议自动应用优化补丁：{detail or "0 步"}'
+                             + (f'（模型共提出 {claimed} 步）' if claimed else ''))
+            else:
+                lines.append('- 健康度建议如下（本次未自动改动，可手动采纳）：')
+                for s in (health.get('suggestions') or [])[:5]:
+                    lines.append('  - ' + str(s))
+        lines.append('')
+        lines.append('可在下方「打开项目」查看三套图，或「删除」丢弃本次生成。')
+        chat_summary = '\n'.join(lines)
+
+        result = {'project_id': model_id, 'project_name': project_name or fallback_name,
+                  'generated': {'uml': {'elements': um[0], 'relationships': um[1]},
+                                'archimate': {'elements': am[0], 'connections': am[1]},
+                                'er': {'entities': er[0], 'relations': er[1]}},
+                  'health': health, 'optimization': optimization, 'action_log': action_log, 'chat_summary': chat_summary}
+        yield {'type': 'done', 'result': result}
+    except Exception as ex:
+        yield {'type': 'fatal', 'error': 'Agent 执行失败：' + str(ex), 'project_id': model_id}
+
+
+@app.route('/api/v1/ai/agent/architect', methods=['POST'])
+def ai_agent_architect():
+    """一键企业架构设计（同步）：body {text, apply_optimization}。返回完整结果。"""
+    session_id = request.headers.get('X-Session-Id')
+    user_id = sessions_cache.get(session_id, {}).get('user_id') if session_id else None
+    if user_id is None:
+        return jsonify({'error': '未登录'}), 401
+    data = request.json or {}
+    text = (data.get('text') or '').strip()
+    if not text:
+        return jsonify({'error': '请提供业务描述'}), 400
+    apply_opt = bool(data.get('apply_optimization', True))
+    result = None
+    for ev in _run_architect_agent(text, user_id, apply_opt, data.get('best_of_n')):
+        if ev.get('type') == 'done':
+            result = ev['result']
+        elif ev.get('type') == 'fatal':
+            return jsonify({'error': ev.get('error')}), 422
+    if result is None:
+        return jsonify({'error': 'Agent 未产出结果'}), 500
+    return jsonify(result)
+
+
+@app.route('/api/v1/ai/agent/architect/stream', methods=['POST'])
+def ai_agent_architect_stream():
+    """一键企业架构设计（SSE）：逐步推送行动步骤事件。"""
+    session_id = request.headers.get('X-Session-Id')
+    user_id = sessions_cache.get(session_id, {}).get('user_id') if session_id else None
+    if user_id is None:
+        return jsonify({'error': '未登录'}), 401
+    data = request.json or {}
+    text = (data.get('text') or '').strip()
+    if not text:
+        return jsonify({'error': '请提供业务描述'}), 400
+    apply_opt = bool(data.get('apply_optimization', True))
+    best_of_n = data.get('best_of_n')
+
+    def gen():
+        for ev in _run_architect_agent(text, user_id, apply_opt, best_of_n):
+            yield 'data: ' + json.dumps(ev, ensure_ascii=False) + '\n\n'
+        yield 'data: [DONE]\n\n'
+
+    return Response(stream_with_context(gen()), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+# ===================== Phase2：智能体工具调用循环（作用于当前项目） =====================
+AGENT_CTX_CHARS = 512 * 1024  # 每个项目的智能体历史对话：保存与注入上限（约 512K 字符）
+
+
+def _agent_history_get(project_id):
+    """取某项目的智能体历史对话（[{role, content, ts}]）。"""
+    if not project_id:
+        return []
+    h = db.get('agent_chat:' + project_id, [])
+    return h if isinstance(h, list) else []
+
+
+def _agent_history_save(project_id, msgs):
+    """保存历史对话：从最新往前保留，累计不超过上限（超出丢弃最旧的）。"""
+    if not project_id:
+        return
+    total = 0
+    keep = []
+    for m in reversed(msgs):
+        ln = len(str(m.get('content') or ''))
+        if keep and total + ln > AGENT_CTX_CHARS:
+            break
+        total += ln
+        keep.append(m)
+    keep.reverse()
+    db.set('agent_chat:' + project_id, keep)
+
+
+def _agent_history_append(project_id, role, content):
+    if not project_id or not content:
+        return
+    h = _agent_history_get(project_id)
+    h.append({'role': role, 'content': str(content), 'ts': datetime.datetime.now().isoformat()})
+    _agent_history_save(project_id, h)
+
+
+def _agent_tool_executors(project_id, user_id):
+    """构造工具执行器（复用现有 AI/模型能力）。{name: fn(args) -> (ok, summary, data)}
+    项目可被 create_project 动态绑定（state['pid']），因此无需前端预先打开项目。"""
+    state = {'pid': project_id or ''}
+
+    def _load():
+        return load_model_from_cache(state['pid']) if state['pid'] else None
+
+    def f_create(args):
+        name = str(args.get('name') or '').strip() or ('架构设计_' + str(uuid.uuid4())[:6])
+        mid = str(uuid.uuid4())[:8]
+        m = SimpleModel(name)
+        m.owner_id = user_id
+        save_model(mid, m)
+        pr = Project(name, '', user_id)
+        pr.id = mid
+        pr.model_id = mid
+        save_project(pr)
+        state['pid'] = mid
+        return True, f'已新建项目「{name}」', {'project_id': mid, 'project_name': name}
+
+    def f_generate(args):
+        desc = str(args.get('description') or '').strip()
+        if not desc:
+            return False, '缺少 description', None
+        # 未绑定项目时自动新建（智能体可自主新建项目，无需用户先打开）
+        if not state['pid']:
+            f_create({'name': desc[:12]})
+        m = _load()
+        if m is None:
+            return False, '项目不存在', None
+        canonical, gen_reason = _agent_generate_canonical(desc)
+        layout_report = []
+        counts = (_apply_canonical_to_model(m, canonical, layout_report) if canonical
+                  else _agent_apply_fallback(m, desc, layout_report))
+        # 与一键生成同一条链：生成后自动修一轮再落盘
+        repair = _auto_repair_once(m, state['pid'])
+        save_model(state['pid'], m)
+        um, am, er = counts.get('uml', [0, 0]), counts.get('archimate', [0, 0]), counts.get('er', [0, 0])
+        info = {'project_id': state['pid'], 'project_name': getattr(m, 'name', ''),
+                'fallback': not canonical, 'reason': gen_reason, 'layout_report': layout_report[:5],
+                'repair': repair}
+        summary = f'已生成：UML {um[0]}类/{um[1]}关系、ArchiMate {am[0]}元素、ER {er[0]}表'
+        if not canonical:
+            summary += f'（降级生成：{_gen_reason_text(gen_reason)}）'
+        if not repair.get('skipped'):
+            fixed = sum(v for v in (repair.get('applied') or {}).values())
+            summary += f"；{repair.get('summary')}（实际修复 {fixed} 步）"
+        return True, summary, info
+
+    def f_edit(args):
+        if not state['pid']:
+            return False, '当前未绑定项目，请先新建或打开一个项目', None
+        kind = str(args.get('kind') or 'uml').strip().lower()
+        ins = str(args.get('instruction') or '').strip()
+        if kind not in ('uml', 'archimate', 'er'):
+            kind = 'uml'
+        if not ins:
+            return False, '缺少 instruction', None
+        m = _load()
+        if m is None:
+            return False, '项目不存在', None
+        report = ai_quality.EditReport()
+        if kind == 'uml':
+            ops = _ai_edit_model('uml', _describe_uml_for_edit(m.elements, m.relationships), ins, state['pid'])
+            if not ops:
+                return False, '未生成编辑操作', None
+            m.elements, m.relationships = _apply_uml_edits(m.elements, m.relationships, ops, report)
+        elif kind == 'archimate':
+            ops = _ai_edit_model('archimate', _describe_archimate_for_edit(m.archimate_elements, m.archimate_connections), ins, state['pid'])
+            if not ops:
+                return False, '未生成编辑操作', None
+            m.archimate_elements, m.archimate_connections = _apply_archimate_edits(m.archimate_elements, m.archimate_connections, ops, report)
+        else:
+            ops = _ai_edit_model('er', _describe_er_for_edit(m.er_entities, m.er_relations), ins, state['pid'])
+            if not ops:
+                return False, '未生成编辑操作', None
+            m.er_entities, m.er_relations = _apply_er_edits(m.er_entities, m.er_relations, ops, report)
+        save_model(state['pid'], m)
+        # 「生效 X / 提出 Y」：以前只报提出数，被丢弃的那些用户永远看不见
+        if report.discarded:
+            summary = f'已对 {kind} {report.summary_text()}（模型共提出 {len(ops)} 步）'
+        else:
+            summary = f'已对 {kind} 应用 {report.applied} 步修改'
+        return True, summary, {'applied': report.applied, 'claimed': len(ops),
+                               'discarded': report.discarded[:10], 'project_id': state['pid'],
+                               'project_name': getattr(m, 'name', '')}
+
+    def f_health(args):
+        if not state['pid']:
+            return False, '当前未绑定项目，请先新建或打开一个项目', None
+        m = _load()
+        if m is None:
+            return False, '项目不存在', None
+        h = ai_health_check(m, state['pid'])
+        if h is None:
+            return False, '健康度分析失败', None
+        return True, f"健康度 {h.get('score')}（问题 {len(h.get('issues') or [])} 条）", h
+
+    def f_optimize(args):
+        if not state['pid']:
+            return False, '当前未绑定项目，请先新建或打开一个项目', None
+        m = _load()
+        if m is None:
+            return False, '项目不存在', None
+        h = ai_health_check(m, state['pid'])
+        if not h:
+            return False, '健康度分析失败', None
+        r = _optimize_model_from_health(m, state['pid'], h.get('issues'), h.get('suggestions'))
+        save_model(state['pid'], m)
+        return True, f"优化结果：{r.get('applied')}（{r.get('summary')}）", {'applied': r.get('applied'), 'project_id': state['pid'], 'project_name': getattr(m, 'name', '')}
+
+    return {'create_project': f_create, 'generate_architecture': f_generate, 'edit_model': f_edit,
+            'get_health': f_health, 'optimize_from_health': f_optimize}
+
+
+@app.route('/api/v1/ai/agent/run', methods=['POST'])
+def ai_agent_run():
+    """智能体工具调用循环（SSE）：body {message|messages, project_id, memories}。
+    会载入该项目的**历史对话**（≤512K 字符）作为上下文，并在结束后把本轮问答落库。"""
+    session_id = request.headers.get('X-Session-Id')
+    user_id = sessions_cache.get(session_id, {}).get('user_id') if session_id else None
+    if user_id is None:
+        return jsonify({'error': '未登录'}), 401
+    data = request.json or {}
+    project_id = (data.get('project_id') or '').strip()
+    message = (data.get('message') or '').strip()
+    raw_msgs = data.get('messages') or []
+    sys_prompt = ('你是企业架构智能体，可以用工具生成/修改/体检三套模型（UML 类图、ArchiMate、ER）。\n'
+                  '判断规则：用户要「设计/搭建/生成一套新架构」而**当前未绑定项目**时，先调用 create_project 新建（会自动绑定为当前项目），再 generate_architecture；'
+                  '若已有绑定项目、用户要「改/加/删/优化」，直接在当前项目上操作，不要重复新建项目。\n'
+                  '需要动手时**直接调用工具**，不要只在文字里描述；完成后用简短中文总结做了什么、下一步可做什么。')
+    if not project_id:
+        sys_prompt += '\n（当前未绑定项目：如需生成架构，可自行 create_project 新建。）'
+    mems = data.get('memories') or []
+    if isinstance(mems, list) and mems:
+        block = '\n'.join('- ' + str(x) for x in mems[:20])
+        sys_prompt += '\n\n【项目专属记忆】（用户长期记录的约束或偏好，涉及时应优先遵循）：\n' + block
+    # system + 该项目历史对话（≤512K）+ 本轮用户消息
+    msgs = [{'role': 'system', 'content': sys_prompt}]
+    if project_id:
+        for m in _agent_history_get(project_id):
+            if m.get('role') in ('user', 'assistant') and m.get('content'):
+                msgs.append({'role': m['role'], 'content': str(m['content'])})
+    if message:
+        msgs.append({'role': 'user', 'content': message})
+    else:  # 兼容旧调用：直接传 messages
+        for m in raw_msgs[-50:]:
+            if isinstance(m, dict) and m.get('role') in ('user', 'assistant') and m.get('content'):
+                msgs.append({'role': m['role'], 'content': str(m['content'])})
+    executors = _agent_tool_executors(project_id, user_id)
+
+    from agent import run_tool_agent
+
+    def gen():
+        final_text = ''
+        for ev in run_tool_agent(msgs, executors):
+            if ev.get('type') == 'final':
+                final_text = ev.get('content') or ''
+            yield 'data: ' + json.dumps(ev, ensure_ascii=False) + '\n\n'
+        # 落库本轮对话，供下次点击该项目时恢复历史
+        if project_id and message:
+            _agent_history_append(project_id, 'user', message)
+            if final_text:
+                _agent_history_append(project_id, 'assistant', final_text)
+        yield 'data: [DONE]\n\n'
+
+    return Response(stream_with_context(gen()), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+@app.route('/api/v1/ai/agent/history', methods=['GET'])
+def ai_agent_history():
+    """取某项目的智能体历史对话（点击项目时恢复用）。"""
+    session_id = request.headers.get('X-Session-Id')
+    user_id = sessions_cache.get(session_id, {}).get('user_id') if session_id else None
+    if user_id is None:
+        return jsonify({'error': '未登录'}), 401
+    project_id = (request.args.get('project_id') or '').strip()
+    if not project_id:
+        return jsonify({'messages': []})
+    model = load_model_from_cache(project_id)
+    if not _can_access_model(model, user_id, project_id):
+        return jsonify({'error': '无权限'}), 403
+    return jsonify({'messages': _agent_history_get(project_id)})
+
+
+@app.route('/api/v1/ai/agent/history', methods=['DELETE'])
+def ai_agent_history_clear():
+    """清空某项目的智能体历史对话。"""
+    session_id = request.headers.get('X-Session-Id')
+    user_id = sessions_cache.get(session_id, {}).get('user_id') if session_id else None
+    if user_id is None:
+        return jsonify({'error': '未登录'}), 401
+    project_id = (request.args.get('project_id') or '').strip()
+    if not project_id:
+        return jsonify({'ok': True})
+    model = load_model_from_cache(project_id)
+    if not _can_access_model(model, user_id, project_id):
+        return jsonify({'error': '无权限'}), 403
+    db.set('agent_chat:' + project_id, [])
+    return jsonify({'ok': True})
+
 if __name__ == '__main__':
     print("Loaded routes:")
     for rule in app.url_map.iter_rules():
@@ -14304,3 +15441,4 @@ if __name__ == '__main__':
     port = int(os.getenv('PORT', '8080'))
     socketio.run(app, host='0.0.0.0', port=port, debug=False, use_reloader=False,
                  allow_unsafe_werkzeug=True)
+

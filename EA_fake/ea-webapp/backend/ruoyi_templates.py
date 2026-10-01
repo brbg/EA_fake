@@ -1,0 +1,1184 @@
+"""若依 RuoYi-Vue3 代码模板（纯字符串渲染，无 IO、无业务逻辑）。
+
+模板逐字对齐官方 `yangzongzhuan/RuoYi-Vue` 的 `ruoyi-generator/src/main/resources/vm/*`
+与 `yangzongzhuan/RuoYi-Vue3` 的真实页面。已核实的几个**易错点**（改动前务必先看）：
+
+- Mapper 接口是**裸接口**（无 extends），6 个方法名都带类名前缀：
+  select{X}ById / select{X}List / insert{X} / update{X} / delete{X}ById / delete{X}ByIds。
+  （`extends BaseMapper` + `selectById/updateById/deleteBatchIds` 是 **RuoYi-Vue-Plus** 的写法，经典版用了编译不过）
+- Mapper.xml **含完整 CRUD**（insert 用 <trim> 动态列、update 用 <trim prefix="SET">、
+  delete{X}ByIds 用 <foreach collection="array">），不是「只写 select 交给 BaseMapper」。
+- controller 的 export 用 `jakarta.servlet.http.HttpServletResponse`（3.9.x / Spring Boot 3），
+  3.8.x 是 `javax.servlet.http.HttpServletResponse`。
+- 前端页面 `<script setup name="{ClassName}">` 的 name 必须有（tags-view/keep-alive 依赖）；
+  依赖 unplugin-auto-import，ref/useDict/parseTime 都不 import；图标是字符串（icon="Plus"），
+  不是 FontAwesome 的 class。
+"""
+
+# ---------------------------------------------------------------- 小工具
+
+BACKEND_ROOT = 'backend/ruoyi-{module}'
+
+
+def _attr_name(field):
+    """Java bean 访问器名：第 2 个字符是大写时按原样（uName → getuName），否则首字母大写。"""
+    if len(field) > 2 and field[1].isupper():
+        return field
+    return field[:1].upper() + field[1:]
+
+
+def _getter(field):
+    return f'get{_attr_name(field)}'
+
+
+def _setter(field):
+    return f'set{_attr_name(field)}'
+
+
+def _comment(doc_lines, indent):
+    """JavaDoc 块。"""
+    pad = ' ' * indent
+    out = [f'{pad}/**']
+    for line in doc_lines:
+        out.append(f'{pad} * {line}'.rstrip())
+    out.append(f'{pad} */')
+    return '\n'.join(out)
+
+
+def _java_file(pkg, imports, body, doc=None):
+    lines = [f'package {pkg};', '']
+    if imports:
+        lines += [f'import {i};' for i in imports]
+        lines.append('')
+    if doc:
+        lines.append(doc)
+    lines.append(body)
+    return '\n'.join(lines).rstrip() + '\n'
+
+
+def _business_columns(table):
+    return [c for c in table['columns'] if not c['is_super']]
+
+
+def _dict_types(table):
+    seen = []
+    for c in table['columns']:
+        if c['dict_type'] and c['dict_type'] not in seen:
+            seen.append(c['dict_type'])
+    return seen
+
+
+def _table_field(table):
+    return table['business_name']
+
+
+# ---------------------------------------------------------------- Java: domain
+
+def render_domain(table, cfg):
+    columns = table['columns']
+    imports = []
+    if any(c['java_type'] == 'Date' for c in columns):
+        imports.append('java.util.Date')
+    if any(c['java_type'] == 'BigDecimal' for c in columns):
+        imports.append('java.math.BigDecimal')
+    if any(c['java_type'] == 'Date' and c['base'] == 'DATE' for c in columns):
+        imports.append('com.fasterxml.jackson.annotation.JsonFormat')
+    imports += [
+        'org.apache.commons.lang3.builder.ToStringBuilder',
+        'org.apache.commons.lang3.builder.ToStringStyle',
+        'com.ruoyi.common.annotation.Excel',
+        'com.ruoyi.common.core.domain.BaseEntity',
+    ]
+
+    body = [f'public class {table["class_name"]} extends BaseEntity', '{']
+    body.append('    private static final long serialVersionUID = 1L;')
+    for c in columns:
+        body.append('')
+        body.append(f'    /** {c["comment"]} */')
+        if c['list']:
+            if c['dict_type']:
+                body.append(f'    @Excel(name = "{c["comment"]}", readConverterExp = "{c["read_converter"]}")')
+            elif c['java_type'] == 'Date':
+                pattern = 'yyyy-MM-dd' if c['base'] == 'DATE' else 'yyyy-MM-dd HH:mm:ss'
+                if c['base'] == 'DATE':
+                    body.append('    @JsonFormat(pattern = "yyyy-MM-dd")')
+                body.append(f'    @Excel(name = "{c["comment"]}", width = 30, dateFormat = "{pattern}")')
+            else:
+                body.append(f'    @Excel(name = "{c["comment"]}")')
+        body.append(f'    private {c["java_type"]} {c["java_field"]};')
+
+    for c in columns:
+        body.append('')
+        body.append(f'    public void {_setter(c["java_field"])}({c["java_type"]} {c["java_field"]}) ')
+        body.append('    {')
+        body.append(f'        this.{c["java_field"]} = {c["java_field"]};')
+        body.append('    }')
+        body.append('')
+        body.append(f'    public {c["java_type"]} {_getter(c["java_field"])}() ')
+        body.append('    {')
+        body.append(f'        return {c["java_field"]};')
+        body.append('    }')
+
+    body.append('')
+    body.append('    @Override')
+    body.append('    public String toString() {')
+    body.append('        return new ToStringBuilder(this, ToStringStyle.MULTI_LINE_STYLE)')
+    for c in columns:
+        body.append(f'            .append("{c["java_field"]}", {_getter(c["java_field"])}())')
+    body.append('            .toString();')
+    body.append('    }')
+    body.append('}')
+
+    doc = _comment([f'{table["comment"]}对象 {table["table_name"]}', '', f'@author {cfg.author}', f'@date {_today()}'], 0)
+    return _java_file(table['package_name'] + '.domain', imports, '\n'.join(body), doc)
+
+
+# ---------------------------------------------------------------- Java: mapper
+
+def render_mapper_java(table, cfg):
+    cls = table['class_name']
+    var = table['business_name']
+    pk_type = table['pk']['java_type'] if table['pk'] else 'Long'
+    pk_field = table['pk_field']
+    pk_cap = table['pk_cap']
+
+    body = [
+        f'public interface {cls}Mapper ',
+        '{',
+        '    /**',
+        f'     * 查询{table["comment"]}',
+        '     * ',
+        f'     * @param {pk_field} {table["comment"]}主键',
+        f'     * @return {table["comment"]}',
+        '     */',
+        f'    public {cls} select{cls}By{pk_cap}({pk_type} {pk_field});',
+        '',
+        '    /**',
+        f'     * 查询{table["comment"]}列表',
+        '     * ',
+        f'     * @param {var} {table["comment"]}',
+        f'     * @return {table["comment"]}集合',
+        '     */',
+        f'    public List<{cls}> select{cls}List({cls} {var});',
+        '',
+        '    /**',
+        f'     * 新增{table["comment"]}',
+        '     * ',
+        f'     * @param {var} {table["comment"]}',
+        '     * @return 结果',
+        '     */',
+        f'    public int insert{cls}({cls} {var});',
+        '',
+        '    /**',
+        f'     * 修改{table["comment"]}',
+        '     * ',
+        f'     * @param {var} {table["comment"]}',
+        '     * @return 结果',
+        '     */',
+        f'    public int update{cls}({cls} {var});',
+        '',
+        '    /**',
+        f'     * 删除{table["comment"]}',
+        '     * ',
+        f'     * @param {pk_field} {table["comment"]}主键',
+        '     * @return 结果',
+        '     */',
+        f'    public int delete{cls}By{pk_cap}({pk_type} {pk_field});',
+        '',
+        '    /**',
+        f'     * 批量删除{table["comment"]}',
+        '     * ',
+        f'     * @param {pk_field}s 需要删除的数据主键集合',
+        '     * @return 结果',
+        '     */',
+        f'    public int delete{cls}By{pk_cap}s({pk_type}[] {pk_field}s);',
+        '}',
+    ]
+    imports = ['java.util.List', f'{table["package_name"]}.domain.{cls}']
+    doc = _comment([f'{table["comment"]}Mapper接口', '', f'@author {cfg.author}', f'@date {_today()}'], 0)
+    return _java_file(table['package_name'] + '.mapper', imports, '\n'.join(body), doc)
+
+
+# ---------------------------------------------------------------- Java: service
+
+def _service_methods(table, suffix=';'):
+    cls = table['class_name']
+    var = table['business_name']
+    pk_type = table['pk']['java_type'] if table['pk'] else 'Long'
+    pk_field = table['pk_field']
+    pk_cap = table['pk_cap']
+    return [
+        f'    public {cls} select{cls}By{pk_cap}({pk_type} {pk_field}){suffix}',
+        '',
+        f'    public List<{cls}> select{cls}List({cls} {var}){suffix}',
+        '',
+        f'    public int insert{cls}({cls} {var}){suffix}',
+        '',
+        f'    public int update{cls}({cls} {var}){suffix}',
+        '',
+        f'    public int delete{cls}By{pk_cap}({pk_type} {pk_field}){suffix}',
+        '',
+        f'    public int delete{cls}By{pk_cap}s({pk_type}[] {pk_field}s){suffix}',
+    ]
+
+
+def render_service_interface(table, cfg):
+    cls = table['class_name']
+    body = [f'public interface I{cls}Service ', '{'] + _service_methods(table) + ['}']
+    imports = ['java.util.List', f'{table["package_name"]}.domain.{cls}']
+    doc = _comment([f'{table["comment"]}Service接口', '', f'@author {cfg.author}', f'@date {_today()}'], 0)
+    return _java_file(table['package_name'] + '.service', imports, '\n'.join(body), doc)
+
+
+def render_service_impl(table, cfg):
+    cls = table['class_name']
+    var = table['business_name']
+    pk_type = table['pk']['java_type'] if table['pk'] else 'Long'
+    pk_field = table['pk_field']
+    pk_cap = table['pk_cap']
+
+    body = [
+        '@Service',
+        f'public class {cls}ServiceImpl implements I{cls}Service ',
+        '{',
+        '    @Autowired',
+        f'    private {cls}Mapper {var}Mapper;',
+        '',
+        '    /**',
+        f'     * 查询{table["comment"]}',
+        '     * ',
+        f'     * @param {pk_field} {table["comment"]}主键',
+        f'     * @return {table["comment"]}',
+        '     */',
+        '    @Override',
+        f'    public {cls} select{cls}By{pk_cap}({pk_type} {pk_field})',
+        '    {',
+        f'        return {var}Mapper.select{cls}By{pk_cap}({pk_field});',
+        '    }',
+        '',
+        '    /**',
+        f'     * 查询{table["comment"]}列表',
+        '     * ',
+        f'     * @param {var} {table["comment"]}',
+        f'     * @return {table["comment"]}',
+        '     */',
+        '    @Override',
+        f'    public List<{cls}> select{cls}List({cls} {var})',
+        '    {',
+        f'        return {var}Mapper.select{cls}List({var});',
+        '    }',
+        '',
+        '    /**',
+        f'     * 新增{table["comment"]}',
+        '     * ',
+        f'     * @param {var} {table["comment"]}',
+        '     * @return 结果',
+        '     */',
+        '    @Override',
+        f'    public int insert{cls}({cls} {var})',
+        '    {',
+    ]
+    if table['has_create_time']:
+        body.append(f'        {var}.setCreateTime(DateUtils.getNowDate());')
+    body += [
+        f'        return {var}Mapper.insert{cls}({var});',
+        '    }',
+        '',
+        '    /**',
+        f'     * 修改{table["comment"]}',
+        '     * ',
+        f'     * @param {var} {table["comment"]}',
+        '     * @return 结果',
+        '     */',
+        '    @Override',
+        f'    public int update{cls}({cls} {var})',
+        '    {',
+    ]
+    if table['has_update_time']:
+        body.append(f'        {var}.setUpdateTime(DateUtils.getNowDate());')
+    body += [
+        f'        return {var}Mapper.update{cls}({var});',
+        '    }',
+        '',
+        '    /**',
+        f'     * 批量删除{table["comment"]}',
+        '     * ',
+        f'     * @param {pk_field}s 需要删除的{table["comment"]}主键',
+        '     * @return 结果',
+        '     */',
+        '    @Override',
+        f'    public int delete{cls}By{pk_cap}s({pk_type}[] {pk_field}s)',
+        '    {',
+        f'        return {var}Mapper.delete{cls}By{pk_cap}s({pk_field}s);',
+        '    }',
+        '',
+        '    /**',
+        f'     * 删除{table["comment"]}信息',
+        '     * ',
+        f'     * @param {pk_field} {table["comment"]}主键',
+        '     * @return 结果',
+        '     */',
+        '    @Override',
+        f'    public int delete{cls}By{pk_cap}({pk_type} {pk_field})',
+        '    {',
+        f'        return {var}Mapper.delete{cls}By{pk_cap}({pk_field});',
+        '    }',
+        '}',
+    ]
+
+    imports = ['java.util.List', 'org.springframework.beans.factory.annotation.Autowired', 'org.springframework.stereotype.Service']
+    if table['has_create_time'] or table['has_update_time']:
+        imports.append('com.ruoyi.common.utils.DateUtils')
+    imports += [
+        f'{table["package_name"]}.domain.{cls}',
+        f'{table["package_name"]}.mapper.{cls}Mapper',
+        f'{table["package_name"]}.service.I{cls}Service',
+    ]
+    doc = _comment([f'{table["comment"]}Service业务层处理', '', f'@author {cfg.author}', f'@date {_today()}'], 0)
+    return _java_file(table['package_name'] + '.service.impl', imports, '\n'.join(body), doc)
+
+
+# ---------------------------------------------------------------- Java: controller
+
+def render_controller(table, cfg):
+    cls = table['class_name']
+    var = table['business_name']
+    pk_type = table['pk']['java_type'] if table['pk'] else 'Long'
+    pk_field = table['pk_field']
+    perm = table['permission_prefix']
+    func = table['comment']
+    servlet_pkg = 'jakarta' if cfg.servlet_api == 'jakarta' else 'javax'
+
+    body = [
+        '@RestController',
+        f'@RequestMapping("/{table["module_name"]}/{var}")',
+        f'public class {cls}Controller extends BaseController',
+        '{',
+        '    @Autowired',
+        f'    private I{cls}Service {var}Service;',
+        '',
+        '    /**',
+        f'     * 查询{func}列表',
+        '     */',
+        f'    @PreAuthorize("@ss.hasPermi(\'{perm}:list\')")',
+        '    @GetMapping("/list")',
+        f'    public TableDataInfo list({cls} {var})',
+        '    {',
+        '        startPage();',
+        f'        List<{cls}> list = {var}Service.select{cls}List({var});',
+        '        return getDataTable(list);',
+        '    }',
+        '',
+        '    /**',
+        f'     * 导出{func}列表',
+        '     */',
+        f'    @PreAuthorize("@ss.hasPermi(\'{perm}:export\')")',
+        f'    @Log(title = "{func}", businessType = BusinessType.EXPORT)',
+        '    @PostMapping("/export")',
+        f'    public void export(HttpServletResponse response, {cls} {var})',
+        '    {',
+        f'        List<{cls}> list = {var}Service.select{cls}List({var});',
+        f'        ExcelUtil<{cls}> util = new ExcelUtil<{cls}>({cls}.class);',
+        f'        util.exportExcel(response, list, "{func}数据");',
+        '    }',
+        '',
+        '    /**',
+        f'     * 获取{func}详细信息',
+        '     */',
+        f'    @PreAuthorize("@ss.hasPermi(\'{perm}:query\')")',
+        f'    @GetMapping(value = "/{{{pk_field}}}")',
+        f'    public AjaxResult getInfo(@PathVariable("{pk_field}") {pk_type} {pk_field})',
+        '    {',
+        f'        return success({var}Service.select{cls}By{table["pk_cap"]}({pk_field}));',
+        '    }',
+        '',
+        '    /**',
+        f'     * 新增{func}',
+        '     */',
+        f'    @PreAuthorize("@ss.hasPermi(\'{perm}:add\')")',
+        f'    @Log(title = "{func}", businessType = BusinessType.INSERT)',
+        '    @PostMapping',
+        f'    public AjaxResult add(@Validated @RequestBody {cls} {var})',
+        '    {',
+        f'        return toAjax({var}Service.insert{cls}({var}));',
+        '    }',
+        '',
+        '    /**',
+        f'     * 修改{func}',
+        '     */',
+        f'    @PreAuthorize("@ss.hasPermi(\'{perm}:edit\')")',
+        f'    @Log(title = "{func}", businessType = BusinessType.UPDATE)',
+        '    @PutMapping',
+        f'    public AjaxResult edit(@Validated @RequestBody {cls} {var})',
+        '    {',
+        f'        return toAjax({var}Service.update{cls}({var}));',
+        '    }',
+        '',
+        '    /**',
+        f'     * 删除{func}',
+        '     */',
+        f'    @PreAuthorize("@ss.hasPermi(\'{perm}:remove\')")',
+        f'    @Log(title = "{func}", businessType = BusinessType.DELETE)',
+        f'    @DeleteMapping("/{{{pk_field}s}}")',
+        f'    public AjaxResult remove(@PathVariable {pk_type}[] {pk_field}s)',
+        '    {',
+        f'        return toAjax({var}Service.delete{cls}By{table["pk_cap"]}s({pk_field}s));',
+        '    }',
+        '}',
+    ]
+
+    imports = ['java.util.List', f'{servlet_pkg}.servlet.http.HttpServletResponse']
+    imports += [
+        'org.springframework.security.access.prepost.PreAuthorize',
+        'org.springframework.beans.factory.annotation.Autowired',
+        'org.springframework.validation.annotation.Validated',
+        'org.springframework.web.bind.annotation.DeleteMapping',
+        'org.springframework.web.bind.annotation.GetMapping',
+        'org.springframework.web.bind.annotation.PathVariable',
+        'org.springframework.web.bind.annotation.PostMapping',
+        'org.springframework.web.bind.annotation.PutMapping',
+        'org.springframework.web.bind.annotation.RequestBody',
+        'org.springframework.web.bind.annotation.RequestMapping',
+        'org.springframework.web.bind.annotation.RestController',
+        'com.ruoyi.common.annotation.Log',
+        'com.ruoyi.common.core.controller.BaseController',
+        'com.ruoyi.common.core.domain.AjaxResult',
+        'com.ruoyi.common.core.page.TableDataInfo',
+        'com.ruoyi.common.enums.BusinessType',
+        'com.ruoyi.common.utils.poi.ExcelUtil',
+        f'{table["package_name"]}.domain.{cls}',
+        f'{table["package_name"]}.service.I{cls}Service',
+    ]
+    doc = _comment([f'{func}Controller', '', f'@author {cfg.author}', f'@date {_today()}'], 0)
+    return _java_file(table['package_name'] + '.controller', imports, '\n'.join(body), doc)
+
+
+# ---------------------------------------------------------------- MyBatis XML
+
+def render_mapper_xml(table, cfg):
+    cls = table['class_name']
+    var = table['business_name']
+    pk_field = table['pk_field']
+    pk_cap = table['pk_cap']
+    columns = table['columns']
+    col_names = ', '.join(c['column_name'] for c in columns)
+    pk_col = table['pk']['column_name'] if table['pk'] else 'id'
+    increment = bool(table['pk'] and table['pk']['increment'])
+
+    # 动态 where：一份按 query_type 分派（对齐官方 mapper.xml.vm）
+    wheres = []
+    for c in columns:
+        if not c['query']:
+            continue
+        f, col, jt = c['java_field'], c['column_name'], c['java_type']
+        str_extra = f' and {f}.trim() != \'\'' if jt == 'String' else ''
+        qt = c['query_type']
+        if qt == 'LIKE':
+            cond = f"and {col} like concat('%', #{{{f}}}, '%')"
+        elif qt == 'BETWEEN':
+            attr = _attr_name(f)
+            cond = (f'and {col} between #{{params.begin{attr}}} and #{{params.end{attr}}}')
+            wheres.append(
+                f'            <if test="params.begin{attr} != null and params.begin{attr} != \'\' '
+                f'and params.end{attr} != null and params.end{attr} != \'\'"> {cond}</if>'
+            )
+            continue
+        elif qt == 'EQ':
+            cond = f'and {col} = #{{{f}}}'
+        elif qt == 'NE':
+            cond = f'and {col} != #{{{f}}}'
+        elif qt in ('GT', 'GTE', 'LT', 'LTE'):
+            op = {'GT': '&gt;', 'GTE': '&gt;=', 'LT': '&lt;', 'LTE': '&lt;='}[qt]
+            cond = f'and {col} {op} #{{{f}}}'
+        else:
+            cond = f'and {col} = #{{{f}}}'
+        wheres.append(f'            <if test="{f} != null{str_extra}"> {cond}</if>')
+
+    insert_cols, insert_vals = [], []
+    for c in columns:
+        if c['is_pk'] and increment:
+            continue
+        extra = f" and {c['java_field']} != ''" if c['java_type'] == 'String' and c['required'] else ''
+        insert_cols.append(f'            <if test="{c["java_field"]} != null{extra}">{c["column_name"]},</if>')
+        insert_vals.append(f'            <if test="{c["java_field"]} != null{extra}">#{{{c["java_field"]}}},</if>')
+
+    update_sets = []
+    for c in columns:
+        if c['is_pk']:
+            continue
+        extra = f" and {c['java_field']} != ''" if c['java_type'] == 'String' and c['required'] else ''
+        update_sets.append(f'            <if test="{c["java_field"]} != null{extra}">{c["column_name"]} = #{{{c["java_field"]}}},</if>')
+
+    insert_attrs = f' parameterType="{cls}"'
+    if increment:
+        insert_attrs += f' useGeneratedKeys="true" keyProperty="{pk_field}"'
+
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8" ?>',
+        '<!DOCTYPE mapper',
+        'PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"',
+        '"http://mybatis.org/dtd/mybatis-3-mapper.dtd">',
+        f'<mapper namespace="{table["package_name"]}.mapper.{cls}Mapper">',
+        '    ',
+        f'    <resultMap type="{cls}" id="{cls}Result">',
+    ]
+    for c in columns:
+        lines.append(f'        <result property="{c["java_field"]}"    column="{c["column_name"]}"    />')
+    lines += [
+        '    </resultMap>',
+        '        ',
+        f'    <sql id="select{cls}Vo">',
+        f'        select {col_names} from {table["table_name"]}',
+        '    </sql>',
+        '        ',
+        f'    <select id="select{cls}List" parameterType="{cls}" resultMap="{cls}Result">',
+        f'        <include refid="select{cls}Vo"/>',
+        '        <where>  ',
+    ]
+    lines += wheres
+    lines += [
+        '        </where>',
+        '    </select>',
+        '    ',
+        f'    <select id="select{cls}By{pk_cap}" parameterType="{table["pk"]["java_type"] if table["pk"] else "Long"}" resultMap="{cls}Result">',
+        f'        <include refid="select{cls}Vo"/>',
+        f'        where {pk_col} = #{{{pk_field}}}',
+        '    </select>',
+        '    ',
+        f'    <insert id="insert{cls}"{insert_attrs}>',
+        f'        insert into {table["table_name"]}',
+        '        <trim prefix="(" suffix=")" suffixOverrides=",">',
+    ]
+    lines += insert_cols
+    lines += [
+        '         </trim>',
+        '        <trim prefix="values (" suffix=")" suffixOverrides=",">',
+    ]
+    lines += insert_vals
+    lines += [
+        '         </trim>',
+        '    </insert>',
+        '',
+        f'    <update id="update{cls}" parameterType="{cls}">',
+        f'        update {table["table_name"]}',
+        '        <trim prefix="SET" suffixOverrides=",">',
+    ]
+    lines += update_sets
+    lines += [
+        '        </trim>',
+        f'        where {pk_col} = #{{{pk_field}}}',
+        '    </update>',
+        '',
+        f'    <delete id="delete{cls}By{pk_cap}" parameterType="{table["pk"]["java_type"] if table["pk"] else "Long"}">',
+        f'        delete from {table["table_name"]} where {pk_col} = #{{{pk_field}}}',
+        '    </delete>',
+        '',
+        f'    <delete id="delete{cls}By{pk_cap}s" parameterType="String">',
+        f'        delete from {table["table_name"]} where {pk_col} in ',
+        f'        <foreach item="{pk_field}" collection="array" open="(" separator="," close=")">',
+        f'            #{{{pk_field}}}',
+        '        </foreach>',
+        '    </delete>',
+        '    ',
+        '</mapper>',
+    ]
+    return '\n'.join(lines).rstrip() + '\n'
+
+
+# ---------------------------------------------------------------- SQL
+
+def render_table_sql(table, cfg, join_tables=None):
+    columns = table['columns']
+    width = max([len(c['column_name']) for c in columns] + [12]) + 2
+    lines = [
+        '-- ----------------------------',
+        f'-- {table["comment"]}',
+        '-- ----------------------------',
+        f'drop table if exists {table["table_name"]};',
+        f'create table {table["table_name"]} (',
+    ]
+    for c in columns:
+        name = c['column_name'].ljust(width)
+        typ = c['sql_type'].ljust(14)
+        # 主键 / 必填 加 not null；审计列给默认值；TEXT/JSON 在 MySQL 下不给 default
+        if c['is_pk']:
+            tail = 'not null auto_increment' if c['increment'] else 'not null'
+        elif c['required']:
+            tail = 'not null'
+        elif c['is_super'] and c['column_name'] in ('create_by', 'update_by'):
+            tail = "default ''"
+        elif c['base'] in ('TEXT', 'LONGTEXT', 'MEDIUMTEXT', 'TINYTEXT', 'JSON', 'BLOB', 'LONGBLOB'):
+            tail = ''
+        else:
+            tail = 'default null'
+        pad = (' ' * max(1, 28 - len(tail)))
+        comment = f"comment '{c['comment']}'"
+        lines.append(f'  {name}{typ}{tail}{pad}{comment},')
+    pk_col = table['pk']['column_name'] if table['pk'] else 'id'
+    pks = table.get('pk_columns') or [pk_col]
+    lines.append(f'  primary key ({", ".join(pks)})')
+    lines.append(f') engine=innodb auto_increment=1 comment = \'{table["comment"]}\';')
+
+    for jt in join_tables or []:
+        w = max(len(jt['left_column']), len(jt['right_column'])) + 2
+        lines += [
+            '',
+            '-- ----------------------------',
+            f'-- {jt["comment"]}',
+            '-- ----------------------------',
+            f'drop table if exists {jt["table_name"]};',
+            f'create table {jt["table_name"]} (',
+            f'  {jt["left_column"].ljust(w)}bigint(20)    not null  comment \'关联主键\',',
+            f'  {jt["right_column"].ljust(w)}bigint(20)    not null  comment \'关联主键\',',
+            f'  primary key ({jt["left_column"]}, {jt["right_column"]})',
+            f') engine=innodb comment = \'{jt["comment"]}\';',
+        ]
+
+    parent = cfg.parent_menu_id
+    func = table['comment']
+    perm = table['permission_prefix']
+    biz = table['business_name']
+    mod = table['module_name']
+    menu_cols = ('menu_name, parent_id, order_num, path, component, is_frame, is_cache, '
+                 'menu_type, visible, status, perms, icon, create_by, create_time, update_by, update_time, remark')
+
+    def menu_row(name, parent_expr, order_num, path, component, menu_type, perms, remark):
+        return (f"insert into sys_menu ({menu_cols})\n"
+                f"values('{name}', {parent_expr}, '{order_num}', '{path}', '{component}', 1, 0, "
+                f"'{menu_type}', '0', '0', '{perms}', '#', 'admin', sysdate(), '', null, '{remark}');")
+
+    lines += [
+        '',
+        '-- ----------------------------',
+        '-- 菜单 SQL',
+        '-- ----------------------------',
+        menu_row(func, f"'{parent}'", 1, biz, f'{mod}/{biz}/index', 'C', f'{perm}:list', f'{func}菜单'),
+        '',
+        '-- 按钮父菜单ID',
+        'SELECT @parentId := LAST_INSERT_ID();',
+        '',
+        '-- 按钮 SQL',
+        menu_row(f'{func}查询', '@parentId', 1, '#', '', 'F', f'{perm}:query', ''),
+        menu_row(f'{func}新增', '@parentId', 2, '#', '', 'F', f'{perm}:add', ''),
+        menu_row(f'{func}修改', '@parentId', 3, '#', '', 'F', f'{perm}:edit', ''),
+        menu_row(f'{func}删除', '@parentId', 4, '#', '', 'F', f'{perm}:remove', ''),
+        menu_row(f'{func}导出', '@parentId', 5, '#', '', 'F', f'{perm}:export', ''),
+    ]
+    return '\n'.join(lines) + '\n'
+
+
+# ---------------------------------------------------------------- 前端 api
+
+def render_api(table, cfg):
+    cls = table['class_name']
+    var = table['business_name']
+    url = f'/{table["module_name"]}/{var}'
+    pk_field = table['pk_field']
+    ts = cfg.frontend_ts
+    q = ': any' if ts else ''
+    head = "import request from '@/utils/request'\n\n" if ts else "import request from '@/utils/request'\n\n"
+    body = [
+        f'// 查询{cls}列表',
+        f'export function list{cls}(query{q}) {{',
+        '  return request({',
+        f"    url: '{url}/list',",
+        "    method: 'get',",
+        '    params: query',
+        '  })',
+        '}',
+        '',
+        f'// 查询{cls}详细',
+        f'export function get{cls}({pk_field}{": number | string" if ts else ""}) {{',
+        '  return request({',
+        f"    url: '{url}/' + {pk_field},",
+        "    method: 'get'",
+        '  })',
+        '}',
+        '',
+        f'// 新增{cls}',
+        f'export function add{cls}(data{q}) {{',
+        '  return request({',
+        f"    url: '{url}',",
+        "    method: 'post',",
+        '    data: data',
+        '  })',
+        '}',
+        '',
+        f'// 修改{cls}',
+        f'export function update{cls}(data{q}) {{',
+        '  return request({',
+        f"    url: '{url}',",
+        "    method: 'put',",
+        '    data: data',
+        '  })',
+        '}',
+        '',
+        f'// 删除{cls}',
+        f'export function del{cls}({pk_field}{": number | string | (number | string)[]" if ts else ""}) {{',
+        '  return request({',
+        f"    url: '{url}/' + {pk_field},",
+        "    method: 'delete'",
+        '  })',
+        '}',
+    ]
+    return head + '\n'.join(body) + '\n'
+
+
+# ---------------------------------------------------------------- 前端页面
+
+def _query_form_item(c):
+    """查询表单控件。"""
+    f, label = c['java_field'], c['comment']
+    if c['dict_type']:
+        return [
+            f'      <el-form-item label="{label}" prop="{f}">',
+            f'        <el-select v-model="queryParams.{f}" placeholder="请选择{label}" clearable style="width: 200px">',
+            f'          <el-option',
+            f'            v-for="dict in {c["dict_type"]}"',
+            '            :key="dict.value"',
+            '            :label="dict.label"',
+            '            :value="dict.value"',
+            '          />',
+            '        </el-select>',
+            '      </el-form-item>',
+        ]
+    if c['query_type'] == 'BETWEEN':
+        return [
+            f'      <el-form-item label="{label}">',
+            f'        <el-date-picker',
+            f'          v-model="daterange{_attr_name(f)}"',
+            '          style="width: 240px"',
+            '          value-format="YYYY-MM-DD"',
+            '          type="daterange"',
+            '          range-separator="-"',
+            '          start-placeholder="开始日期"',
+            '          end-placeholder="结束日期"',
+            '        ></el-date-picker>',
+            '      </el-form-item>',
+        ]
+    return [
+        f'      <el-form-item label="{label}" prop="{f}">',
+        f'        <el-input',
+        f'          v-model="queryParams.{f}"',
+        f'          placeholder="请输入{label}"',
+        '          clearable',
+        '          style="width: 200px"',
+        '          @keyup.enter="handleQuery"',
+        '        />',
+        '      </el-form-item>',
+    ]
+
+
+def _table_column(c):
+    f, label = c['java_field'], c['comment']
+    if c['dict_type']:
+        if c['html_type'] == 'checkbox':
+            return [
+                f'      <el-table-column label="{label}" align="center" prop="{f}">',
+                '        <template #default="scope">',
+                f'          <dict-tag :options="{c["dict_type"]}" :value="scope.row.{f} ? scope.row.{f}.split(\',\') : []" />',
+                '        </template>',
+                '      </el-table-column>',
+            ]
+        return [
+            f'      <el-table-column label="{label}" align="center" prop="{f}">',
+            '        <template #default="scope">',
+            f'          <dict-tag :options="{c["dict_type"]}" :value="scope.row.{f}" />',
+            '        </template>',
+            '      </el-table-column>',
+        ]
+    if c['java_type'] == 'Date':
+        return [
+            f'      <el-table-column label="{label}" align="center" prop="{f}" width="180">',
+            '        <template #default="scope">',
+            f'          <span>{{{{ parseTime(scope.row.{f}) }}}}</span>',
+            '        </template>',
+            '      </el-table-column>',
+        ]
+    return [f'      <el-table-column label="{label}" align="center" prop="{f}" />']
+
+
+def _form_item(c):
+    f, label = c['java_field'], c['comment']
+    if c['html_type'] == 'radio' and c['dict_type']:
+        return [
+            f'        <el-form-item label="{label}" prop="{f}">',
+            f'          <el-radio-group v-model="form.{f}">',
+            f'            <el-radio v-for="dict in {c["dict_type"]}" :key="dict.value" :value="dict.value">{{{{ dict.label }}}}</el-radio>',
+            '          </el-radio-group>',
+            '        </el-form-item>',
+        ]
+    if c['html_type'] == 'select' and c['dict_type']:
+        return [
+            f'        <el-form-item label="{label}" prop="{f}">',
+            f'          <el-select v-model="form.{f}" placeholder="请选择{label}">',
+            f'            <el-option',
+            f'              v-for="dict in {c["dict_type"]}"',
+            '              :key="dict.value"',
+            '              :label="dict.label"',
+            '              :value="dict.value"',
+            '            ></el-option>',
+            '          </el-select>',
+            '        </el-form-item>',
+        ]
+    if c['html_type'] == 'datetime':
+        return [
+            f'        <el-form-item label="{label}" prop="{f}">',
+            f'          <el-date-picker clearable',
+            f'            v-model="form.{f}"',
+            f'            type="date"',
+            f'            value-format="YYYY-MM-DD"',
+            f'            placeholder="请选择{label}">',
+            '          </el-date-picker>',
+            '        </el-form-item>',
+        ]
+    if c['html_type'] == 'textarea':
+        return [
+            f'        <el-form-item label="{label}" prop="{f}">',
+            f'          <el-input v-model="form.{f}" type="textarea" placeholder="请输入{label}" />',
+            '        </el-form-item>',
+        ]
+    return [
+        f'        <el-form-item label="{label}" prop="{f}">',
+        f'          <el-input v-model="form.{f}" placeholder="请输入{label}" />',
+        '        </el-form-item>',
+    ]
+
+
+def render_index_vue(table, cfg):
+    cls = table['class_name']
+    var = table['business_name']
+    var_list = f'{var}List'
+    dict_types = _dict_types(table)
+    query_cols = [c for c in table['columns'] if c['query']]
+    list_cols = [c for c in table['columns'] if c['list']]
+    edit_cols = [c for c in _business_columns(table) if c['java_field'] != table['pk_field']]
+    required_cols = [c for c in edit_cols if c['required']]
+    pk_field = table['pk_field']
+    perm = table['permission_prefix']
+    between_cols = [c for c in query_cols if c['query_type'] == 'BETWEEN']
+    ts = cfg.frontend_ts
+
+    L = []
+    A = L.append
+    A('<template>')
+    A('  <div class="app-container">')
+    if query_cols:
+        A('    <el-form :model="queryParams" ref="queryRef" :inline="true" v-show="showSearch" label-width="88px">')
+        for c in query_cols:
+            L.extend(_query_form_item(c))
+        A('      <el-form-item>')
+        A('        <el-button type="primary" icon="Search" @click="handleQuery">搜索</el-button>')
+        A('        <el-button icon="Refresh" @click="resetQuery">重置</el-button>')
+        A('      </el-form-item>')
+        A('    </el-form>')
+        A('')
+    A('    <el-row :gutter="10" class="mb8">')
+    A('      <el-col :span="1.5">')
+    A(f'        <el-button type="primary" plain icon="Plus" @click="handleAdd" v-hasPermi="[\'{perm}:add\']">新增</el-button>')
+    A('      </el-col>')
+    A('      <el-col :span="1.5">')
+    A(f'        <el-button type="success" plain icon="Edit" :disabled="single" @click="handleUpdate" v-hasPermi="[\'{perm}:edit\']">修改</el-button>')
+    A('      </el-col>')
+    A('      <el-col :span="1.5">')
+    A(f'        <el-button type="danger" plain icon="Delete" :disabled="multiple" @click="handleDelete" v-hasPermi="[\'{perm}:remove\']">删除</el-button>')
+    A('      </el-col>')
+    A('      <el-col :span="1.5">')
+    A(f'        <el-button type="warning" plain icon="Download" @click="handleExport" v-hasPermi="[\'{perm}:export\']">导出</el-button>')
+    A('      </el-col>')
+    A('      <right-toolbar v-model:showSearch="showSearch" @queryTable="getList"></right-toolbar>')
+    A('    </el-row>')
+    A('')
+    A(f'    <el-table v-loading="loading" :data="{var_list}" @selection-change="handleSelectionChange">')
+    A('      <el-table-column type="selection" width="55" align="center" />')
+    for c in list_cols:
+        L.extend(_table_column(c))
+    A('      <el-table-column label="操作" align="center" width="180" class-name="small-padding fixed-width">')
+    A('        <template #default="scope">')
+    A(f'          <el-button link type="primary" icon="Edit" @click="handleUpdate(scope.row)" v-hasPermi="[\'{perm}:edit\']">修改</el-button>')
+    A(f'          <el-button link type="primary" icon="Delete" @click="handleDelete(scope.row)" v-hasPermi="[\'{perm}:remove\']">删除</el-button>')
+    A('        </template>')
+    A('      </el-table-column>')
+    A('    </el-table>')
+    A('')
+    A('    <pagination')
+    A('      v-show="total>0"')
+    A('      :total="total"')
+    A('      v-model:page="queryParams.pageNum"')
+    A('      v-model:limit="queryParams.pageSize"')
+    A('      @pagination="getList"')
+    A('    />')
+    A('')
+    A('    <!-- 添加或修改对话框 -->')
+    A('    <el-dialog :title="title" v-model="open" width="500px" append-to-body>')
+    A(f'      <el-form ref="{var}Ref" :model="form" :rules="rules" label-width="100px">')
+    for c in edit_cols:
+        L.extend(_form_item(c))
+    A('      </el-form>')
+    A('      <template #footer>')
+    A('        <div class="dialog-footer">')
+    A('          <el-button type="primary" @click="submitForm">确 定</el-button>')
+    A('          <el-button @click="cancel">取 消</el-button>')
+    A('        </div>')
+    A('      </template>')
+    A('    </el-dialog>')
+    A('  </div>')
+    A('</template>')
+    A('')
+    A(f'<script setup name="{cls}"{" lang=\"ts\"" if ts else ""}>')
+    A(f'import {{ list{cls}, get{cls}, del{cls}, add{cls}, update{cls} }} from "@/api/{table["module_name"]}/{var}"')
+    A('')
+    A('const { proxy } = getCurrentInstance()')
+    if dict_types:
+        names = ', '.join(f'"{d}"' for d in dict_types)
+        A(f'const {{ {", ".join(dict_types)} }} = useDict({names})')
+    A('')
+    A(f'const {var_list} = ref<any[]>([])' if ts else f'const {var_list} = ref([])')
+    A('const open = ref(false)')
+    A('const loading = ref(true)')
+    A('const showSearch = ref(true)')
+    A('const ids = ref<any[]>([])' if ts else 'const ids = ref([])')
+    A('const single = ref(true)')
+    A('const multiple = ref(true)')
+    A('const total = ref(0)')
+    A('const title = ref("")')
+    for c in between_cols:
+        A(f'const daterange{_attr_name(c["java_field"])} = ref([])')
+    A('')
+    A('const data = reactive({')
+    A('  form: {},')
+    A('  queryParams: {')
+    A('    pageNum: 1,')
+    A('    pageSize: 10,')
+    for c in query_cols:
+        A(f'    {c["java_field"]}: undefined,')
+    A('  },')
+    A('  rules: {')
+    for c in required_cols:
+        A(f'    {c["java_field"]}: [{{ required: true, message: "{c["comment"]}不能为空", trigger: "{_trigger(c)}" }}],')
+    A('  }')
+    A('})')
+    A('')
+    A('const { queryParams, form, rules } = toRefs(data)')
+    A('')
+    A(f'/** 查询{cls}列表 */')
+    A('function getList() {')
+    A('  loading.value = true')
+    A(f'  list{cls}(queryParams.value).then(response => {{')
+    A(f'    {var_list}.value = response.rows')
+    A('    total.value = response.total')
+    A('    loading.value = false')
+    A('  })')
+    A('}')
+    A('')
+    A('/** 取消按钮 */')
+    A('function cancel() {')
+    A('  open.value = false')
+    A('  reset()')
+    A('}')
+    A('')
+    A('/** 表单重置 */')
+    A('function reset() {')
+    A('  form.value = {')
+    for c in _business_columns(table):
+        A(f'    {c["java_field"]}: undefined,')
+    A('  }')
+    A(f'  proxy.resetForm("{var}Ref")')
+    A('}')
+    A('')
+    A('/** 搜索按钮操作 */')
+    A('function handleQuery() {')
+    A('  queryParams.value.pageNum = 1')
+    for c in between_cols:
+        A(f'  proxy.addDateRange(queryParams.value, daterange{_attr_name(c["java_field"])}.value, "{_attr_name(c["java_field"])}")')
+    A('  getList()')
+    A('}')
+    A('')
+    A('/** 重置按钮操作 */')
+    A('function resetQuery() {')
+    A('  proxy.resetForm("queryRef")')
+    A('  handleQuery()')
+    A('}')
+    A('')
+    A('/** 多选框选中数据 */')
+    A('function handleSelectionChange(selection) {')
+    A(f'  ids.value = selection.map(item => item.{pk_field})')
+    A('  single.value = selection.length != 1')
+    A('  multiple.value = !selection.length')
+    A('}')
+    A('')
+    A('/** 新增按钮操作 */')
+    A('function handleAdd() {')
+    A('  reset()')
+    A('  open.value = true')
+    A(f'  title.value = "添加{cls}"')
+    A('}')
+    A('')
+    A('/** 修改按钮操作 */')
+    A('function handleUpdate(row) {')
+    A('  reset()')
+    A(f'  const {pk_field} = row.{pk_field} || ids.value')
+    A(f'  get{cls}({pk_field}).then(response => {{')
+    A('    form.value = response.data')
+    A('    open.value = true')
+    A(f'    title.value = "修改{cls}"')
+    A('  })')
+    A('}')
+    A('')
+    A('/** 提交按钮 */')
+    A('function submitForm() {')
+    A(f'  proxy.$refs["{var}Ref"].validate(valid => {{')
+    A('    if (valid) {')
+    A('      if (form.value.' + pk_field + ') {')
+    A(f'        update{cls}(form.value).then(response => {{')
+    A('          proxy.$modal.msgSuccess("修改成功")')
+    A('          open.value = false')
+    A('          getList()')
+    A('        })')
+    A('      } else {')
+    A(f'        add{cls}(form.value).then(response => {{')
+    A('          proxy.$modal.msgSuccess("新增成功")')
+    A('          open.value = false')
+    A('          getList()')
+    A('        })')
+    A('      }')
+    A('    }')
+    A('  })')
+    A('}')
+    A('')
+    A('/** 删除按钮操作 */')
+    A('function handleDelete(row) {')
+    A('  const _' + pk_field + 's = row.' + pk_field + ' || ids.value')
+    A(f'  proxy.$modal.confirm(\'是否确认删除编号为"\' + _{pk_field}s + \'"的数据项？\').then(function() {{')
+    A(f'    return del{cls}(_{pk_field}s)')
+    A('  }).then(() => {')
+    A('    getList()')
+    A('    proxy.$modal.msgSuccess("删除成功")')
+    A('  }).catch(() => {})')
+    A('}')
+    A('')
+    A('/** 导出按钮操作 */')
+    A('function handleExport() {')
+    A('  proxy.download(')
+    A(f'    "{table["module_name"]}/{var}/export",')
+    A('    {')
+    A('      ...queryParams.value')
+    A('    },')
+    A(f'    `{var}_${{new Date().getTime()}}.xlsx`')
+    A('  )')
+    A('}')
+    A('')
+    A('getList()')
+    A('</script>')
+    return '\n'.join(L) + '\n'
+
+
+def _trigger(c):
+    return 'change' if c['dict_type'] or c['html_type'] in ('datetime', 'radio', 'select') else 'blur'
+
+
+# ---------------------------------------------------------------- README
+
+def render_readme(schema, cfg):
+    tables = schema['tables']
+    root = BACKEND_ROOT.format(module=cfg.module_name)
+    lines = [
+        '# 若依 RuoYi-Vue3 模块代码',
+        '',
+        f'由 EA 平台从 ER 模型生成，共 **{len(tables)} 张表**、{len(schema["join_tables"])} 张中间表。',
+        '代码骨架为确定性模板生成（对齐若依官方 Velocity 模板），中文注释/列标签由 AI 或内置词表补齐。',
+        '',
+        '## 目录怎么放',
+        '',
+        '| 本包内的路径 | 放到若依工程 |',
+        '|---|---|',
+        f'| `{root}/src/main/java/...` | 后端 Maven 模块 `{root}` 的 `src/main/java/...` |',
+        f'| `{root}/src/main/resources/mapper/{cfg.module_name}/` | 同上模块的 `src/main/resources/mapper/{cfg.module_name}/` |',
+        '| `frontend/src/api/...` | RuoYi-Vue3 前端工程的 `src/api/...` |',
+        '| `frontend/src/views/...` | RuoYi-Vue3 前端工程的 `src/views/...` |',
+        '| `sql/*.sql` | 直接在业务库里执行（建表 + 菜单）|',
+        '',
+        '## 生成信息',
+        '',
+        f'- 包名：`{cfg.package_name}`',
+        f'- 模块名：`{cfg.module_name}`　业务名：按表推导（见下表）',
+        f'- 作者：{cfg.author}　父菜单 ID：{cfg.parent_menu_id}',
+        f'- Servlet API：`{cfg.servlet_api}`（若依 3.8.x 为 `javax`，3.9.x/Spring Boot 3 为 `jakarta`）',
+        f'- 前端产物：`.{cfg.frontend_ext}`' + ('（`<script setup lang="ts">`）' if cfg.frontend_ts else ''),
+        '',
+        '| 表 | 类名 | 目录/权限前缀 | 表注释 |',
+        '|---|---|---|---|',
+    ]
+    for t in tables:
+        lines.append(f'| {t["table_name"]} | {t["class_name"]} | {t["module_name"]}/{t["business_name"]}　`{t["permission_prefix"]}` | {t["comment"]} |')
+
+    if schema['join_tables']:
+        lines += ['', '多对多中间表（只生成 DDL，不生成 Java/前端）：' + '、'.join(f'`{j["table_name"]}`' for j in schema['join_tables'])]
+
+    lines += [
+        '',
+        '## 落地步骤',
+        '',
+        '1. 执行 `sql/*.sql`（建表 + 写入菜单）。',
+        f'2. 后端：把 `{root}/src` 合并进目标模块，确认该模块已被 `ruoyi-admin` 依赖、且 Mapper 扫描路径覆盖 `{cfg.package_name}.mapper`。',
+        '3. 前端：把 `frontend/src/api`、`frontend/src/views` 合并进 RuoYi-Vue3 工程。',
+        f'4. 重新登录（或清一次菜单缓存）即可在左侧菜单看到；菜单默认挂在父 ID `{cfg.parent_menu_id}` 下。',
+        '5. 启动后到「系统管理 → 菜单管理」给角色勾上新菜单的权限，否则按钮不显示（`v-hasPermi` 生效）。',
+        '',
+        '## 需要人工确认的地方',
+        '',
+        '- **导出功能**依赖 `ExcelUtil`，其 import 包名随若依版本不同（`jakarta` / `javax`），不对就改一行 import。',
+        '- 若依代码生成器**不生成 M:N 关联导航**；多对多只给了中间表 DDL，两端按普通 CRUD 处理。',
+        '- 关联关系按若依的**平铺外键**惯例处理，未自动改表结构；需要外键列请在 ER 图里补上再生成一次。',
+        '- `@Excel` 的字典选项文本取自若依内置字典；若你的库里改过字典项，导出的 Excel 中文可能与页面不一致（无害）。',
+        '- 本模板对齐**经典 RuoYi-Vue**（`com.ruoyi.*`、`@ss.hasPermi`、MyBatis）。RuoYi-Vue-Plus（`org.dromara.*`、`@SaCheckPermission`、MyBatis-Plus）不适用。',
+    ]
+    if schema['warnings']:
+        lines += ['', '## 生成告警', '']
+        lines += [f'- {w}' for w in schema['warnings']]
+    return '\n'.join(lines) + '\n'
+
+
+# ---------------------------------------------------------------- 组装
+
+def render_module_files(schema, cfg):
+    """schema → 文件列表 [{path, name, group, language, content}]。"""
+    files = []
+    root = BACKEND_ROOT.format(module=cfg.module_name)
+
+    def add(path, content, group, language):
+        files.append({
+            'path': path,
+            'name': path.rsplit('/', 1)[-1],
+            'group': group,
+            'language': language,
+            'content': content,
+        })
+
+    for t in schema['tables']:
+        cls, var, mod = t['class_name'], t['business_name'], t['module_name']
+        base = f'{root}/src/main/java/{cfg.package_path}'
+        add(f'{base}/domain/{cls}.java', render_domain(t, cfg), 'backend', 'java')
+        add(f'{base}/mapper/{cls}Mapper.java', render_mapper_java(t, cfg), 'backend', 'java')
+        add(f'{root}/src/main/resources/mapper/{mod}/{cls}Mapper.xml', render_mapper_xml(t, cfg), 'backend', 'xml')
+        add(f'{base}/service/I{cls}Service.java', render_service_interface(t, cfg), 'backend', 'java')
+        add(f'{base}/service/impl/{cls}ServiceImpl.java', render_service_impl(t, cfg), 'backend', 'java')
+        add(f'{base}/controller/{cls}Controller.java', render_controller(t, cfg), 'backend', 'java')
+        add(f'frontend/src/api/{mod}/{var}.{cfg.frontend_ext}', render_api(t, cfg), 'frontend', cfg.frontend_ext)
+        add(f'frontend/src/views/{mod}/{var}/index.vue', render_index_vue(t, cfg), 'frontend', 'vue')
+
+    # 每张表的 SQL 单独成文件；中间表 DDL 挂在它左表（名字在前的那张）的 SQL 里
+    joins = schema['join_tables']
+    for t in schema['tables']:
+        mine = [j for j in joins if j['left_table'] == t['table_name']]
+        add(f'sql/{t["table_name"]}.sql', render_table_sql(t, cfg, mine), 'sql', 'sql')
+
+    if not schema['tables']:
+        return []   # 空模型不产出任何文件（调用方按 meta.warnings 提示）
+    add('README.md', render_readme(schema, cfg), 'docs', 'md')
+    return files
+
+
+def _today():
+    import datetime
+    return datetime.date.today().isoformat()

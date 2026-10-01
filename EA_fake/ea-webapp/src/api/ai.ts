@@ -1,5 +1,5 @@
 // AI API（校验/评审/分析/对话编辑/生成图/文档/记忆/代码生成/反向工程）
-import { get, post, del } from '../utils/request'
+import { get, post, del, postBlob } from '../utils/request'
 
 export const projectUrl = (projectId: string, path: string) =>
   `/api/v1/project/${projectId}${path}`
@@ -26,6 +26,10 @@ export const aiApi = {
 
 export const codeApi = {
   generate: (body: Record<string, unknown>) => post('/api/v1/ai/code/generate', body),
+  // 若依 RuoYi-Vue3 整套模块：一次产出 domain/mapper/xml/service/controller/前端/SQL 多文件
+  generateRuoYi: (body: Record<string, unknown>) => post('/api/v1/ai/code/ruoyi/generate', body),
+  generateRuoYiZip: (body: Record<string, unknown>) =>
+    postBlob('/api/v1/ai/code/ruoyi/download', body, 'ruoyi-module.zip'),
   // 分析 UML 图，推荐最接近的设计模式
   recommendPattern: (body: { elements: unknown[]; connections: unknown[] }) =>
     post('/api/v1/ai/pattern/recommend', body),

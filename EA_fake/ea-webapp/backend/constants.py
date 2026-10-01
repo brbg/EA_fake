@@ -11,7 +11,9 @@ ELEMENT_TYPES = {
     'technology': ['Node', 'Device', 'SystemSoftware', 'TechnologyService', 'TechnologyInterface',
                    'TechnologyProcess', 'TechnologyFunction', 'TechnologyInteraction',
                    'TechnologyEvent', 'Artifact', 'DataStore', 'Network'],
-    'uml': ['Class', 'Interface', 'UseCase', 'Actor', 'Package', 'Component',
+    # Enum 必须在内：edit_model_system_prompt('uml') 把它列为合法类型，
+    # 漏掉会让下面的闭合白名单把合法的 Enum 降级成 Class
+    'uml': ['Class', 'Interface', 'Enum', 'UseCase', 'Actor', 'Package', 'Component',
             'Node', 'Artifact', 'Activity', 'State', 'Sequence', 'Communication']
 }
 

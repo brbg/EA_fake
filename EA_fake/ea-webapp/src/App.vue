@@ -2,6 +2,7 @@
 import { ref, onMounted, nextTick, watch, computed } from 'vue'
 import { io } from 'socket.io-client'
 import AIAssistant from './AIAssistant.vue'
+import RuoYiModulePreview from './components/RuoYiModulePreview.vue'
 import LoginView from './LoginView.vue'
 import type { ProjectContext } from './projectContext'
 import { getAIConfig } from './aiService'
@@ -75,14 +76,19 @@ const onAuthenticated = (user: { username: string; email: string; role?: string;
   }
 }
 
-const logout = async () => {
+// 退出账号 / 切换账号共用同一套清理，差别只在提示语（切换账号后落到登录页换号登录）
+const doLogout = async (switching = false) => {
   // 有协作（协作模式 / 加入了他人的项目 / 自己项目有协作者）→ 先提醒
   const hasActiveCollab = collabEnabled.value || joinedCollabModels.value.length > 0 || hasOwnedCollab.value
   if (hasActiveCollab) {
     const isOwner = currentModelRole.value === 'owner' || hasOwnedCollab.value
-    const msg = isOwner
-      ? '当前存在协作，退出账号会结束协作并踢出所有协作者，确定退出吗？'
-      : '处于协作状态，退出账号将退出所有已加入的协作，确定退出吗？'
+    const msg = switching
+      ? (isOwner
+        ? '当前存在协作，切换账号会结束协作并踢出所有协作者，确定继续吗？'
+        : '处于协作状态，切换账号将退出所有已加入的协作，确定继续吗？')
+      : (isOwner
+        ? '当前存在协作，退出账号会结束协作并踢出所有协作者，确定退出吗？'
+        : '处于协作状态，退出账号将退出所有已加入的协作，确定退出吗？')
     if (!confirm(msg)) return
     // owner：踢出所有自有项目里的协作者（不二次确认）
     if (isOwner) {
@@ -120,7 +126,7 @@ const logout = async () => {
   sessionStorage.removeItem('sessionId')
   sessionStorage.removeItem('ea_user')
   authUser.value = null
-  activeTab.value = 'dashboard'
+  activeTab.value = 'chat'
   // 重置内存中的模型数据，避免下一个账号看到上一个账号的内容
   models.value = []
   elements = []
@@ -134,7 +140,19 @@ const logout = async () => {
   updateStats()
 }
 
-const activeTab = ref('dashboard')
+const logout = () => doLogout(false)
+// 「切换账号」：清理同上，authUser 置空后根组件自动回落到登录页
+const switchAccount = () => doLogout(true)
+
+// 两页式信息架构：activeTab 只有两页——'chat'（AI 智能体，默认）/ 'studio'（专业绘图编辑）
+const activeTab = ref<'chat' | 'studio'>('chat')
+// 第二页（专业编辑）内的子页签
+const studioTab = ref<'uml' | 'archimate' | 'data' | 'code' | 'dev' | 'admin'>('uml')
+// 跳到专业编辑页并选中子页签
+const openStudio = (t: 'uml' | 'archimate' | 'data' | 'code' | 'dev' | 'admin') => {
+  studioTab.value = t
+  activeTab.value = 'studio'
+}
 const showCreateModal = ref(false)
 const selectedTool = ref('select')
 const selectedToolName = computed(() => tools.find((t) => t.id === selectedTool.value)?.name || '选择')
@@ -147,18 +165,19 @@ const stats = ref({
   views: 0
 })
 
-const tabs = [
-  { id: 'dashboard', name: '仪表盘', icon: 'fas fa-gauge-high' },
-  { id: 'projects', name: '项目管理', icon: 'fas fa-folder-open' },
+// 专业编辑页的子页签定义
+const studioTabs = [
   { id: 'uml', name: 'UML建模', icon: 'fas fa-diagram-project' },
   { id: 'archimate', name: 'ArchiMate', icon: 'fas fa-cubes' },
   { id: 'data', name: '数据建模', icon: 'fas fa-database' },
   { id: 'code', name: '代码生成', icon: 'fas fa-code' },
-  { id: 'dev', name: '研发管理', icon: 'fas fa-tasks' },
-  { id: 'ai', name: 'AI助手', icon: 'fas fa-robot' }
+  { id: 'dev', name: '研发管理', icon: 'fas fa-tasks' }
 ]
-// 管理员专属 tab（非 admin 不显示）
-const navTabs = computed(() => (isAdmin.value ? [...tabs, { id: 'admin', name: '后台管理', icon: 'fas fa-shield-halved' }] : tabs))
+// 两页之间用页内按钮切换（智能体页右上「专业编辑」/ 专业编辑页右上「AI 智能体」）
+// 专业编辑页内的子页签（管理员多一个后台管理）
+const studioNavTabs = computed(() => (isAdmin.value
+  ? [...studioTabs, { id: 'admin', name: '后台管理', icon: 'fas fa-shield-halved' }]
+  : studioTabs))
 
 const tools = [
   { id: 'select', name: '选择', icon: 'fas fa-mouse-pointer' },
@@ -210,22 +229,6 @@ const models = ref<Model[]>([])
 const newModel = ref({ name: '', description: '' })
 
 // 项目图标：按项目名哈希取渐变色 + 首字母（Notion/Linear 式专业图标）
-const PROJECT_GRADIENTS = [
-  'linear-gradient(135deg, #6366f1, #8b5cf6)',
-  'linear-gradient(135deg, #0ea5e9, #06b6d4)',
-  'linear-gradient(135deg, #f59e0b, #f97316)',
-  'linear-gradient(135deg, #10b981, #059669)',
-  'linear-gradient(135deg, #ef4444, #f43f5e)',
-  'linear-gradient(135deg, #ec4899, #a855f7)',
-  'linear-gradient(135deg, #14b8a6, #0d9488)',
-  'linear-gradient(135deg, #8b5cf6, #d946ef)',
-]
-const projectIconStyle = (name: string) => {
-  let h = 0
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0
-  return { background: PROJECT_GRADIENTS[h % PROJECT_GRADIENTS.length] }
-}
-const projectInitial = (name: string) => (name || '?').charAt(0).toUpperCase()
 
 // ArchiMate 建模相关变量
 const archimateCanvas = ref<HTMLCanvasElement | null>(null)
@@ -257,7 +260,27 @@ const erEditingEntity = ref<any>(null)
 const showErEditModal = ref(false)
 const erSqlResult = ref('')
 
-const codeConfig = ref({ language: 'java', framework: 'spring', source: 'uml', outputType: 'entity' })
+const codeConfig = ref({
+  language: 'java', framework: 'spring', source: 'uml', outputType: 'entity',
+  // 若依 RuoYi-Vue3 整套模块的生成配置（仅 outputType==='ruoyi' 时可见/生效）
+  ruoyi: {
+    packageBase: 'com.ruoyi',
+    moduleName: 'system',
+    tablePrefix: '',
+    businessName: '',
+    className: '',
+    author: 'ruoyi',
+    parentMenuId: 3,
+    servletApi: 'jakarta',   // jakarta=若依 3.9.x/Spring Boot 3；javax=3.8.x
+    frontendTs: true,        // 官方 RuoYi-Vue3 出 .js，这里默认 TS（可一键切回）
+    useAI: true              // AI 只补中文注释/列标签，关闭则用内置词表
+  }
+})
+// 「若依整套模块」只对 ER 源开放（下拉项带 v-if）。源切到 UML 时把 outputType 复位，
+// 否则会留下一个「下拉里看不到但实际生效」的幽灵值，点生成会拿 ER 数据出若依代码。
+watch(() => codeConfig.value.source, (s) => {
+  if (s !== 'er' && codeConfig.value.outputType === 'ruoyi') codeConfig.value.outputType = 'entity'
+})
 // === JPA 贫血实体模式（全局开关，默认开）：图↔代码双向往返时实体类只保留数据面，save/拷贝等不进入循环 ===
 const jpaAnemic = ref(localStorage.getItem('jpaAnemic') !== '0')
 watch(jpaAnemic, (v) => localStorage.setItem('jpaAnemic', v ? '1' : '0'))
@@ -270,6 +293,10 @@ const isJpaEntityName = (name: string): boolean => {
 }
 const generatedCode = ref('// 选择模型源和输出类型，然后点击生成代码按钮')
 const codeGenerating = ref(false)
+// 若依整套模块（多文件）——与单文件链路 generatedCode 并存，互不干扰
+const ruoyiFiles = ref<any[]>([])
+const ruoyiMeta = ref<any>(null)
+const ruoyiDownloading = ref(false)
 
 // 代码反向工程（代码 → 模型）
 const reverseConfig = ref({ code: '', language: 'auto', target: 'uml' })
@@ -323,8 +350,9 @@ const showTour = ref(false)
 const tourStep = ref(0)
 const tourHighlightStyle = ref<Record<string, string>>({})
 const tourSteps = [
-  { target: '.header', tab: 'dashboard', title: '欢迎使用 👋', desc: '这是你的建模工作台。右上角是账号、帮助、退出与「协作」入口；顶部是功能模块导航。' },
-  { target: '[data-tab="projects"]', tab: 'projects', title: '项目管理', desc: '创建 / 打开项目，每个项目是一套独立模型；右上角「协作」可加入 / 管理协作项目。' },
+  { target: '.header', tab: 'chat', title: '欢迎使用 👋', desc: '主界面就是 AI 智能体：直接说一句业务描述，我来自动完成企业架构设计。右上角是账号、帮助、退出与「协作」入口。' },
+  { target: '.ai-project-pick', tab: 'chat', title: '项目', desc: '在顶部切换 / 新建项目；不选项目直接说需求，智能体也会自动为你新建。' },
+  { target: '[data-tab="studio"]', tab: 'studio', title: '专业编辑', desc: '需要精修时切到「专业编辑」：UML / ArchiMate / 数据建模 / 代码生成 / 研发管理 都在这里。' },
   { target: '[data-tab="uml"]', tab: 'uml', title: 'UML 建模', desc: '三段式类图（名称/属性/方法）自适应大小；连线可标注基数 1:1 / 1:N / M:N；自动防重叠布局。' },
   { target: '[data-tour="pattern"]', tab: 'uml', title: '设计模式', desc: '23 种 GoF 设计模式一键插入；「AI 智能推荐」能分析当前架构推荐最合适的模式并可覆盖重写。' },
   { target: '[data-tour="ai"]', tab: 'uml', title: 'AI 功能', desc: '「AI」包含：校验、架构评审、元素分析、对话式编辑、从描述生成图（一句话出图）。' },
@@ -332,7 +360,7 @@ const tourSteps = [
   { target: '[data-tour="health"]', tab: 'uml', title: '健康度', desc: 'AI 深度分析整个项目：评分 + 问题清单 + 改进建议，写代码前先给架构做个体检。' },
   { target: '[data-tab="code"]', tab: 'code', title: '代码生成', desc: '模型一键转代码（Java/Python/TS/C#）；ER 转 MySQL 建表语句；粘贴代码反推模型；AI 生成文档。' },
   { target: '[data-tour="collab"]', tab: 'uml', title: '实时协作', desc: '右上角「协作」：owner 发起邀请，协作者输 ID 直接加入当前项目；变更需 owner 审批（类 GitHub PR）。' },
-  { target: '[data-tab="ai"]', tab: 'ai', title: 'AI 助手', desc: '和 AI 对话，支持深度思考（推理模型）；说「记住：xxx」存入项目记忆库。' },
+  { target: '[data-tab="ai"]', tab: 'ai', title: 'AI 智能体', desc: '一句话描述业务自动生成整套企业架构（UML+ArchiMate+ER）；也可直接说「给 Order 加个字段」「体检并优化」，智能体自己调工具操作当前项目。' },
   { target: '[data-tab="dev"]', tab: 'dev', title: '研发管理', desc: '需求、测试用例、缺陷、任务管理，支持 AI 一键生成与排期。' },
   { target: '', tab: '', title: '完成 🎉', desc: '你已经掌握基本用法，随时可在右上角「帮助」里重新引导。' },
 ]
@@ -347,7 +375,10 @@ const positionTourHighlight = () => {
       tourHighlightStyle.value = {}
       return
     }
-    if (step.tab) activeTab.value = step.tab
+    if (step.tab) {
+      if (step.tab === 'ai') activeTab.value = 'chat'
+      else openStudio(step.tab as any)
+    }
     let placed = false
     const measure = () => {
       const el = document.querySelector(step.target)
@@ -618,7 +649,7 @@ const loadDevList = async () => {
   } finally { devLoading.value = false }
 }
 // 切到研发管理页时自动加载当前子 tab 的列表（默认需求），避免首屏空白
-watch(activeTab, (v) => {
+watch(studioTab, (v) => {
   if (v === 'dev') loadDevList()
   if (v === 'admin') loadAdminUsers()
 })
@@ -946,7 +977,7 @@ const createModel = async () => {
     selectedElement = null
     archimateSelectedElement = null
     erSelectedEntity = null
-    activeTab.value = 'uml'
+    openStudio('uml')
     updateStats()
     showToast('项目创建成功', 'success')
   } catch (e: any) {
@@ -989,7 +1020,7 @@ const deleteModel = async (id: string) => {
   }
 }
 
-const openModel = async (model: Model) => {
+const openModel = async (model: Model, stayInChat = false) => {
   elements = []
   connections = []
   archimateElements = []
@@ -1006,7 +1037,8 @@ const openModel = async (model: Model) => {
   selectedElement = null
   archimateSelectedElement = null
   erSelectedEntity = null
-  activeTab.value = 'uml'
+  // 从对话页点项目时留在智能体页（加载该项目历史对话）；其他入口进入专业编辑
+  if (!stayInChat) openStudio('uml')
   currentModelId.value = model.id
   currentModelName.value = model.name
   // 打开项目时按角色决定协作模式：协作者项目自动进入；切到自己项目自动退出
@@ -1023,6 +1055,12 @@ const openModel = async (model: Model) => {
 
 const generateCode = async () => {
   const { language, framework, source, outputType } = codeConfig.value
+
+  // 若依整套模块：走独立的多文件链路（后端确定性模板 + AI 只补中文标注）
+  if (outputType === 'ruoyi' && source === 'er') {
+    await generateRuoYiModule()
+    return
+  }
 
   // MySQL 语句：本地生成器直接出（AI 模板不支持该输出，避免绕 AI 兜底出错）
   if (outputType === 'mysql') {
@@ -1129,14 +1167,14 @@ const reverseCode = async () => {
       elements = data?.elements || []
       connections = data?.relationships || []
       selectedElement = null
-      activeTab.value = 'uml'
+      openStudio('uml')
       redraw()
     } else {
       saveErHistory()
       erEntities = data?.entities || []
       erRelations = data?.relationships || []
       erSelectedEntity = null
-      activeTab.value = 'data'
+      openStudio('data')
       redrawErCanvas()
     }
     updateStats()
@@ -1187,14 +1225,14 @@ const generateDiagram = async () => {
       connections = data?.relationships || []
       layoutElementsFlow(elements, 40, 40)  // 防重叠布局
       selectedElement = null
-      activeTab.value = 'uml'
+      openStudio('uml')
       redraw()
     } else {
       saveErHistory()
       erEntities = data?.entities || []
       erRelations = data?.relationships || []
       erSelectedEntity = null
-      activeTab.value = 'data'
+      openStudio('data')
       redrawErCanvas()
     }
     updateStats()
@@ -1305,6 +1343,131 @@ const downloadCode = () => {
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
+}
+
+// === 若依 RuoYi-Vue3 整套模块 ===
+
+// 前端实时回显命名推导（真值以服务端返回的 meta.tables 为准，这里只为让用户提前看到结果）
+const ruoyiDerived = computed(() => {
+  const c = codeConfig.value.ruoyi
+  const single = erEntities.length === 1
+  const raw = (single ? String(erEntities[0]?.name || '') : '') || ''
+  const snake = (s: string) => s.replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/[^0-9A-Za-z_]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').toLowerCase()
+  const pascal = (s: string) => snake(s).split('_').filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join('')
+  const camel = (s: string) => { const p = pascal(s); return p ? p[0].toLowerCase() + p.slice(1) : '' }
+  let table = snake(raw)
+  const prefix = (c.tablePrefix || '').toLowerCase()
+  if (prefix && table.startsWith(prefix) && table.length > prefix.length) table = table.slice(prefix.length)
+  const className = single && c.className ? pascal(c.className) : pascal(table)
+  const business = single && c.businessName ? camel(c.businessName) : camel(className)
+  return {
+    table: table || '（自动兜底）',
+    className: className || '—',
+    business: business || '—',
+    pkg: `${c.packageBase}.${c.moduleName}`,
+    dir: `${c.moduleName}/${business || '—'}`,
+    perm: `${c.moduleName}:${business || '—'}`,
+  }
+})
+
+const generateRuoYiModule = async () => {
+  if (erEntities.length === 0) {
+    generatedCode.value = '// 请先在数据建模页面创建实体（若依是表驱动，从 ER 模型生成）'
+    ruoyiFiles.value = []
+    ruoyiMeta.value = null
+    return
+  }
+  codeGenerating.value = true
+  ruoyiFiles.value = []
+  ruoyiMeta.value = null
+  generatedCode.value = '// 正在生成若依模块，请稍候...'
+  try {
+    const { ok, data } = await codeApi.generateRuoYi({
+      erEntities,
+      erRelations,
+      config: codeConfig.value.ruoyi,
+    })
+    if (!ok || !data?.files) {
+      generatedCode.value = `// ${data?.error || '生成失败，请检查后端服务'}`
+      showToast(data?.error || '生成失败', 'error')
+      return
+    }
+    ruoyiFiles.value = data.files
+    ruoyiMeta.value = data.meta
+    // 复用既有的 '//' 哨兵：复制/下载按钮的 disabled 判 startsWith('//')，
+    // 因此这里写摘要即可让它们自动禁用（多文件请用面板上的「下载 ZIP」）
+    generatedCode.value = `// 已生成 ${data.files.length} 个文件（若依 RuoYi-Vue3 模块），请在下方「若依模块文件」里查看与打包下载`
+    const failed = (data.meta?.warnings || []).length
+    showToast(failed ? `已生成 ${data.files.length} 个文件（${failed} 条告警）` : `已生成 ${data.files.length} 个文件`, 'success')
+  } catch (e: any) {
+    generatedCode.value = `// 生成失败：${e?.message || e}`
+    showToast('生成失败，请检查后端服务', 'error')
+  } finally {
+    codeGenerating.value = false
+  }
+}
+
+const downloadRuoYiZip = async () => {
+  if (!ruoyiFiles.value.length) return
+  ruoyiDownloading.value = true
+  try {
+    const zipName = `若依模块-${ruoyiDerived.value.className}-${ruoyiDerived.value.business}.zip`
+    const { ok, blob, filename, error } = await codeApi.generateRuoYiZip({
+      files: ruoyiFiles.value.map((f) => ({ path: f.path, content: f.content })),
+      zipName,
+    })
+    if (!ok || !blob) {
+      // 兜底：打包失败也别让用户空手而归——退化成带分隔符的单个文本文件下载
+      showToast(`${error || '打包失败'}，已改为下载合并文本`, 'error')
+      const merged = ruoyiFiles.value
+        .map((f) => `// ${'='.repeat(70)}\n// ${f.path}\n// ${'='.repeat(70)}\n\n${f.content}`)
+        .join('\n\n')
+      const fb = new Blob([merged], { type: 'text/plain;charset=utf-8' })
+      const fbUrl = URL.createObjectURL(fb)
+      const fa = document.createElement('a')
+      fa.href = fbUrl
+      fa.download = zipName.replace(/\.zip$/, '') + '.txt'
+      document.body.appendChild(fa)
+      fa.click()
+      document.body.removeChild(fa)
+      URL.revokeObjectURL(fbUrl)
+      return
+    }
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename || zipName
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    showToast(`已下载 ${ruoyiFiles.value.length} 个文件`, 'success')
+  } finally {
+    ruoyiDownloading.value = false
+  }
+}
+
+const copyRuoYiFile = async (path: string) => {
+  const f = ruoyiFiles.value.find((x) => x.path === path)
+  if (!f) return
+  try {
+    await navigator.clipboard.writeText(f.content)
+    showToast(`已复制 ${f.name}`, 'success')
+  } catch {
+    showToast('复制失败，请手动选择代码', 'error')
+  }
+}
+
+// 把模型里第一张表的名字填进业务名/类名（用按钮而非 watcher，避免静默覆盖用户输入）
+const fillRuoYiNames = () => {
+  const first = String(erEntities[0]?.name || '')
+  if (!first) return
+  const c = codeConfig.value.ruoyi
+  let table = first.replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/[^0-9A-Za-z_]+/g, '_').toLowerCase().replace(/^_|_$/g, '')
+  const prefix = (c.tablePrefix || '').toLowerCase()
+  if (prefix && table.startsWith(prefix) && table.length > prefix.length) table = table.slice(prefix.length)
+  c.className = ruoyiDerived.value.className === '—' ? '' : ruoyiDerived.value.className
+  c.businessName = ruoyiDerived.value.business === '—' ? '' : ruoyiDerived.value.business
 }
 
 // 依据 UML 图生成全套 Spring-Data-JPA 实体（Java）。
@@ -4598,12 +4761,53 @@ const submitAiEditModel = async () => {
       redrawErCanvas()
     }
     updateStats()
-    editModelSuccess.value = `修改完成（应用了 ${data?.applied_ops ?? 0} 步操作），画布已刷新。记得点「保存」落盘。`
+    // 生效数是真实改动数，claimed 是模型自称的步数——两者不一致时必须说清楚，
+    // 否则用户会以为「说了几步就改了几步」
+    const appliedN = data?.applied_ops ?? 0
+    const claimedN = data?.claimed_ops ?? appliedN
+    const dropped = data?.discarded || []
+    let note = `修改完成（生效 ${appliedN} 步`
+    note += claimedN !== appliedN ? ` / 模型提出 ${claimedN} 步）` : '）'
+    if (dropped.length) {
+      const head = dropped.slice(0, 3).map((d: any) => `${d.op || '操作'}（${d.reason}）`).join('、')
+      note += `，${dropped.length} 步未生效：${head}${dropped.length > 3 ? ' 等' : ''}`
+    }
+    editModelSuccess.value = `${note}，画布已刷新。记得点「保存」落盘。`
   } catch (e: any) {
     editModelError.value = e?.message || '编辑请求失败，请检查后端服务'
   } finally {
     editModelSubmitting.value = false
   }
+}
+
+// 对话页顶部下拉切换项目：按 id 打开
+const openModelById = (id: string) => {
+  const m = (models.value as any[]).find((x) => x.id === id)
+  if (m) openModel(m, true)  // 从对话页点项目：留在智能体页并恢复该项目的对话历史
+}
+
+// 智能体新建了项目 → 自动绑定为当前项目并加载（无需用户预先打开项目）
+const openCreatedModel = async (p: { id: string; name: string }) => {
+  currentModelId.value = p.id
+  if (p.name) currentModelName.value = p.name
+  collabEnabled.value = false
+  onlineUsers.value = []
+  joinProjectRoom()
+  await loadModelFromServer(p.id)
+  await loadModels()
+  updateStats()
+}
+
+// 智能体在后端改了模型 → 重载当前项目，让画布与后端一致
+const reloadCurrentModel = async (p?: { relayout?: boolean }) => {
+  if (!currentModelId.value) return
+  await loadModelFromServer(currentModelId.value)
+  if (p?.relayout) {
+    // 生成类操作：用前端真实测量再流式排布一次，保证卡片不重叠
+    layoutElementsFlow(elements, 40, 40)
+    redraw()
+  }
+  updateStats()
 }
 
 const loadModelFromServer = async (modelId: string) => {
@@ -4617,7 +4821,7 @@ const loadModelFromServer = async (modelId: string) => {
         currentModelId.value = ''
         currentModelName.value = ''
         clearCanvas()
-        activeTab.value = 'projects'
+        activeTab.value = 'chat'
         collabEnabled.value = false
         onlineUsers.value = []
       }
@@ -4670,7 +4874,7 @@ const removeMethod = (index: number) => {
   }
 }
 
-watch(activeTab, (newTab) => {
+watch(studioTab, (newTab) => {
   updateStats()
   // 切画布时清掉未完成的三击编辑等待与触点跟踪，避免残留状态串台
   clearPendingEdit()
@@ -4696,10 +4900,12 @@ watch(activeTab, (newTab) => {
     nextTick(() => {
       initErCanvas()
     })
-  } else if (newTab === 'ai') {
-    // 切到 AI 页时重建一次项目上下文（画布数组是非响应式的普通数组）
-    contextRefreshKey.value++
   }
+})
+
+// 切回 AI 智能体页时重建一次项目上下文（画布数组是非响应式的普通数组）
+watch(activeTab, (v) => {
+  if (v === 'chat') contextRefreshKey.value++
 })
 
 // === 实时协作（Socket.IO） ===
@@ -4782,7 +4988,7 @@ const exitCollabHeader = async () => {
     currentModelId.value = ''
     currentModelName.value = ''
     clearCanvas()
-    activeTab.value = 'projects'
+    activeTab.value = 'chat'
   }
   await loadModels()
 }
@@ -4866,7 +5072,7 @@ const initSocket = () => {
       currentModelId.value = ''
       currentModelName.value = ''
       clearCanvas()
-      activeTab.value = 'projects'
+      activeTab.value = 'chat'
     }
     loadModels()
   })
@@ -5065,7 +5271,7 @@ const joinCollabProject = async (id: string) => {
     } else {
       currentModelId.value = id
       currentModelName.value = data?.project?.name || '协作项目'
-      activeTab.value = 'uml'
+      openStudio('uml')
       collabEnabled.value = true
       if (!socket) initSocket()
       await loadModelFromServer(id)
@@ -5102,7 +5308,7 @@ const joinCurrentProject = async () => {
     } else {
       currentModelId.value = pid
       currentModelName.value = pname
-      activeTab.value = 'uml'
+      openStudio('uml')
       collabEnabled.value = true
       if (!socket) initSocket()
       await loadModelFromServer(pid)
@@ -5227,8 +5433,8 @@ onMounted(() => {
 
   <LoginView v-else-if="!authUser" @authenticated="onAuthenticated" />
 
-  <div v-else class="container">
-    <div class="header">
+  <div v-else class="container" :class="{ 'container-full': activeTab === 'chat' }">
+    <div class="header" v-if="activeTab !== 'chat'">
       <div class="header-left">
         <div class="header-logo"><i class="fas fa-project-diagram"></i></div>
         <div class="header-text">
@@ -5330,9 +5536,9 @@ onMounted(() => {
       </div>
     </div>
 
-    <div class="stats-row">
+    <div class="stats-row" v-if="activeTab !== 'chat'">
       <!-- 主页面显示项目数量 -->
-      <template v-if="activeTab === 'projects' || activeTab === 'ai'">
+      <template v-if="activeTab === 'chat'">
         <div class="stat-card stat-card-sm">
           <div class="stat-value">{{ stats.models }}</div>
           <div class="stat-label">项目模型</div>
@@ -5355,20 +5561,21 @@ onMounted(() => {
       </template>
     </div>
 
-    <div class="nav-tabs">
-      <button 
-        v-for="tab in navTabs"
-        :key="tab.id"
-        :class="['nav-tab', { active: activeTab === tab.id }]"
-        :data-tab="tab.id"
-        @click="activeTab = tab.id"
-      >
+    <!-- 专业编辑页的子页签（UML / ArchiMate / 数据 / 代码 / 研发 / 管理）+ 返回智能体 -->
+    <div class="nav-tabs studio-subtabs" v-if="activeTab === 'studio'">
+      <button v-for="tab in studioNavTabs" :key="tab.id"
+        :class="['nav-tab', { active: studioTab === tab.id }]"
+        :data-subtab="tab.id"
+        @click="openStudio(tab.id as any)">
         <i :class="tab.icon"></i> {{ tab.name }}
+      </button>
+      <button class="nav-tab switch-page-btn" data-tab="chat" @click="activeTab = 'chat'" title="切换到 AI 智能体">
+        <i class="fas fa-robot"></i> AI 智能体
       </button>
     </div>
 
-    <div class="ribbon" v-if="activeTab === 'uml' || activeTab === 'archimate' || activeTab === 'data'">
-  <template v-if="activeTab === 'uml'">
+    <div class="ribbon" v-if="activeTab === 'studio' && (studioTab === 'uml' || studioTab === 'archimate' || studioTab === 'data')">
+  <template v-if="studioTab === 'uml'">
     <div class="ribbon-group">
       <div class="ribbon-group-label">建模工具</div>
       <button v-for="tool in tools" :key="tool.id"
@@ -5433,7 +5640,7 @@ onMounted(() => {
       <button class="toolbar-btn" @click="exportImage"><i class="fas fa-download"></i> 导出图片</button>
     </div>
   </template>
-<template v-if="activeTab === 'archimate'">
+<template v-if="studioTab === 'archimate'">
   <div class="ribbon-group">
     <div class="ribbon-group-label">建模工具</div>
     <button v-for="tool in archimateTools" :key="tool.id"
@@ -5486,7 +5693,7 @@ onMounted(() => {
     <button class="toolbar-btn" @click="exportArchimateImage"><i class="fas fa-download"></i> 导出图片</button>
   </div>
 </template>
-<template v-if="activeTab === 'data'">
+<template v-if="studioTab === 'data'">
   <div class="ribbon-group">
     <div class="ribbon-group-label">建模工具</div>
     <button v-for="tool in erTools" :key="tool.id"
@@ -5530,113 +5737,7 @@ onMounted(() => {
 </template>
 </div>
 
-    <div v-if="activeTab === 'dashboard'" class="dashboard-grid tab-page">
-      <div class="card">
-        <div class="card-icon" style="background: linear-gradient(135deg, #1f5eff 0%, #3b82f6 100%);">
-          <i class="fas fa-folder-open"></i>
-        </div>
-        <h3 class="card-title">项目管理</h3>
-        <p class="card-desc">创建、管理和组织您的企业架构项目</p>
-        <button class="btn btn-primary" @click="activeTab = 'projects'">
-          <i class="fas fa-arrow-right"></i> 进入
-        </button>
-      </div>
-
-      <div class="card">
-        <div class="card-icon" style="background: linear-gradient(135deg, #2563eb 0%, #4a7bff 100%);">
-          <i class="fas fa-diagram-project"></i>
-        </div>
-        <h3 class="card-title">UML建模</h3>
-        <p class="card-desc">创建类图、序列图、活动图等UML图表</p>
-        <button class="btn btn-primary" @click="activeTab = 'uml'">
-          <i class="fas fa-arrow-right"></i> 进入
-        </button>
-      </div>
-
-      <div class="card">
-        <div class="card-icon" style="background: linear-gradient(135deg, #1d4ed8 0%, #3b82f6 100%);">
-          <i class="fas fa-cubes"></i>
-        </div>
-        <h3 class="card-title">ArchiMate建模</h3>
-        <p class="card-desc">企业架构可视化与分析</p>
-        <button class="btn btn-primary" @click="activeTab = 'archimate'">
-          <i class="fas fa-arrow-right"></i> 进入
-        </button>
-      </div>
-
-      <div class="card">
-        <div class="card-icon" style="background: linear-gradient(135deg, #2f6bff 0%, #5b8dff 100%);">
-          <i class="fas fa-database"></i>
-        </div>
-        <h3 class="card-title">数据建模</h3>
-        <p class="card-desc">设计ER图和数据库模型</p>
-        <button class="btn btn-primary" @click="activeTab = 'data'">
-          <i class="fas fa-arrow-right"></i> 进入
-        </button>
-      </div>
-
-      <div class="card">
-        <div class="card-icon" style="background: linear-gradient(135deg, #1f5eff 0%, #2f6bff 100%);">
-          <i class="fas fa-code"></i>
-        </div>
-        <h3 class="card-title">代码生成</h3>
-        <p class="card-desc">从模型自动生成代码</p>
-        <button class="btn btn-primary" @click="activeTab = 'code'">
-          <i class="fas fa-arrow-right"></i> 进入
-        </button>
-      </div>
-
-      <div class="card">
-        <div class="card-icon" style="background: linear-gradient(135deg, #2456ff 0%, #6a5acd 100%);">
-          <i class="fas fa-robot"></i>
-        </div>
-        <h3 class="card-title">AI助手</h3>
-        <p class="card-desc">智能分析和建议</p>
-        <button class="btn btn-primary" @click="activeTab = 'ai'">
-          <i class="fas fa-arrow-right"></i> 进入
-        </button>
-      </div>
-    </div>
-
-    <div v-if="activeTab === 'projects'" class="card tab-page">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-        <h3 class="card-title" style="margin: 0;">项目列表</h3>
-        <button class="btn btn-primary" @click="showCreateModal = true">
-          <i class="fas fa-plus"></i> 新建项目
-        </button>
-      </div>
-
-      <div class="model-list">
-        <div v-for="model in ownedModels" :key="model.id" class="model-item">
-          <div class="model-icon" :style="projectIconStyle(model.name)">{{ projectInitial(model.name) }}</div>
-          <div class="model-info">
-            <h4>
-              {{ model.name }}
-              <span v-if="model.role === 'editor'" class="collab-badge">协作者</span>
-            </h4>
-            <p>{{ model.description || '暂无描述' }}</p>
-            <p style="font-size: 11px; margin-top: 4px;">
-              <span style="margin-right: 15px;">元素: {{ model.elements_count }}</span>
-              <span>关系: {{ model.relationships_count }}</span>
-            </p>
-          </div>
-          <div class="model-actions">
-            <button class="btn-edit" @click="openModel(model)">
-              <i class="fas fa-eye"></i> 打开
-            </button>
-            <button v-if="model.role !== 'editor'" class="btn-delete" @click="deleteModel(model.id)">
-              <i class="fas fa-trash"></i> 删除
-            </button>
-          </div>
-        </div>
-        <div v-if="ownedModels.length === 0" style="text-align: center; padding: 40px; color: #999;">
-          <template v-if="joinedCollabModels.length">暂无自有项目；协作项目请通过右上角「协作 → 我协作的项目」进入</template>
-          <template v-else>暂无项目，请创建一个新项目</template>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="activeTab === 'uml'" class="card canvas-container tab-page">
+    <div v-if="activeTab === 'studio' && studioTab === 'uml'" class="card canvas-container tab-page">
       <!-- 关系基数标注工具栏（选中连线时出现） -->
       <div v-if="selectedConnectionId && selConnCardinality" class="conn-cardinality-bar">
         <span style="color: #666;">关系基数：</span>
@@ -5687,7 +5788,7 @@ onMounted(() => {
     </div>
 
     <!-- ArchiMate 企业架构建模 -->
-    <div v-if="activeTab === 'archimate'" class="card canvas-container tab-page">
+    <div v-if="activeTab === 'studio' && studioTab === 'archimate'" class="card canvas-container tab-page">
       <canvas
         ref="archimateCanvas"
         id="archimateCanvas"
@@ -5716,7 +5817,7 @@ onMounted(() => {
     </div>
 
     <!-- 数据建模（ER图） -->
-    <div v-if="activeTab === 'data'" class="card canvas-container tab-page">
+    <div v-if="activeTab === 'studio' && studioTab === 'data'" class="card canvas-container tab-page">
       <canvas
         ref="erCanvas"
         id="erCanvas"
@@ -5744,7 +5845,7 @@ onMounted(() => {
       </div>
     </div>
 
-    <div v-if="activeTab === 'code'" class="card tab-page">
+    <div v-if="activeTab === 'studio' && studioTab === 'code'" class="card tab-page">
       <h3 class="card-title">代码生成</h3>
       <p class="card-desc">从模型自动生成代码</p>
       <label style="display:inline-flex;align-items:center;gap:6px;margin:0 0 6px;font-size:13px;color:#444;cursor:pointer;">
@@ -5770,6 +5871,7 @@ onMounted(() => {
             <option v-if="codeConfig.source === 'uml'" value="service">Service</option>
             <option v-if="codeConfig.source === 'uml'" value="pojo">POJO 纯类（往返保真）</option>
             <option v-if="codeConfig.source === 'er'" value="sql">SQL脚本</option>
+            <option v-if="codeConfig.source === 'er'" value="ruoyi">若依整套模块（多文件）</option>
             <option value="mysql">MySQL语句</option>
           </select>
           <select 
@@ -5812,6 +5914,69 @@ onMounted(() => {
         <div class="code-preview">
           <pre>{{ generatedCode }}</pre>
         </div>
+
+        <!-- 若依 RuoYi-Vue3 整套模块：生成配置（纯插入，不影响上面的单文件链路） -->
+        <div v-if="codeConfig.source === 'er' && codeConfig.outputType === 'ruoyi'" class="ruoyi-config">
+          <div class="ruoyi-config-head">
+            <i class="fas fa-mug-hot"></i> 若依模块配置
+            <span class="ruoyi-config-hint">当前模型 {{ erEntities.length }} 张表，每张表生成一套完整 CRUD</span>
+          </div>
+          <div class="ruoyi-grid">
+            <label>包名<input v-model="codeConfig.ruoyi.packageBase" placeholder="com.ruoyi" /></label>
+            <label>模块名<input v-model="codeConfig.ruoyi.moduleName" placeholder="system" /></label>
+            <label>表前缀<input v-model="codeConfig.ruoyi.tablePrefix" placeholder="如 sys_（留空则不去前缀）" /></label>
+            <label>作者<input v-model="codeConfig.ruoyi.author" placeholder="ruoyi" /></label>
+            <label>
+              父菜单 ID
+              <input v-model.number="codeConfig.ruoyi.parentMenuId" type="number" min="1" placeholder="3" />
+              <span class="ruoyi-tip">1=系统管理　2=系统监控　3=系统工具</span>
+            </label>
+            <label v-if="erEntities.length === 1">
+              类名（可留空）
+              <input v-model="codeConfig.ruoyi.className" placeholder="自动推导，如 User" />
+            </label>
+            <label v-if="erEntities.length === 1">
+              业务名（可留空）
+              <input v-model="codeConfig.ruoyi.businessName" placeholder="自动推导，如 user" />
+            </label>
+            <label>
+              Servlet API
+              <select v-model="codeConfig.ruoyi.servletApi">
+                <option value="jakarta">jakarta（若依 3.9.x / Spring Boot 3）</option>
+                <option value="javax">javax（若依 3.8.x / Spring Boot 2）</option>
+              </select>
+            </label>
+            <label>
+              前端产物
+              <select v-model="codeConfig.ruoyi.frontendTs">
+                <option :value="true">TypeScript（.ts + lang="ts"）</option>
+                <option :value="false">JavaScript（与官方模板一致）</option>
+              </select>
+            </label>
+            <label class="ruoyi-check">
+              <input type="checkbox" v-model="codeConfig.ruoyi.useAI" />
+              用 AI 补中文注释与列标签（关掉则用内置词表）
+            </label>
+          </div>
+          <div class="ruoyi-derived">
+            <span><b>{{ ruoyiDerived.className }}</b> 类</span>
+            <span>目录 <b>{{ ruoyiDerived.dir }}</b></span>
+            <span>权限前缀 <b>{{ ruoyiDerived.perm }}</b></span>
+            <span>包 <b>{{ ruoyiDerived.pkg }}</b></span>
+            <span>表名 <b>{{ ruoyiDerived.table }}</b></span>
+            <button type="button" class="btn btn-outline ruoyi-fill" :disabled="!erEntities.length" @click="fillRuoYiNames">从模型填充</button>
+          </div>
+        </div>
+
+        <RuoYiModulePreview
+          v-if="ruoyiFiles.length"
+          :files="ruoyiFiles"
+          :meta="ruoyiMeta"
+          :generating="codeGenerating"
+          :downloading="ruoyiDownloading"
+          @download="downloadRuoYiZip"
+          @copy-file="copyRuoYiFile"
+        />
       </div>
 
       <div style="margin-top: 36px; border-top: 1px solid #e8ecf0; padding-top: 24px;">
@@ -5893,7 +6058,7 @@ onMounted(() => {
       </div>
     </div>
 
-    <div v-if="activeTab === 'dev'" class="card tab-page">
+    <div v-if="activeTab === 'studio' && studioTab === 'dev'" class="card tab-page">
       <h3 class="card-title"><i class="fas fa-tasks" style="color:#1f5eff;"></i> 研发管理</h3>
       <p class="card-desc">管理项目的需求、测试用例、缺陷与任务</p>
       <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px;">
@@ -5934,7 +6099,7 @@ onMounted(() => {
     </div>
 
     <!-- 后台管理（仅 admin） -->
-    <div v-if="activeTab === 'admin'" class="card tab-page">
+    <div v-if="activeTab === 'studio' && studioTab === 'admin'" class="card tab-page">
       <h3 class="card-title"><i class="fas fa-shield-halved" style="color:#1f5eff;"></i> 后台管理</h3>
       <p class="card-desc">管理系统所有账号与各账号下的项目</p>
 
@@ -5978,8 +6143,26 @@ onMounted(() => {
       <p v-else style="color:#999;">暂无用户{{ adminLoading ? '（加载中）' : '' }}</p>
     </div>
 
-    <div v-if="activeTab === 'ai'" class="card tab-page" style="padding: 0; height: calc(100vh - 120px);">
-      <AIAssistant :project-context="projectContext" :project-id="currentModelId || ''" />
+    <!-- 切页用 v-show 保活：KeepAlive 必须留在 v-if 外层，若把 v-if 放在这层 div 上，
+         切到专业编辑时 KeepAlive 会随子树一起卸载，缓存的对话记录随即丢失 -->
+    <div v-show="activeTab === 'chat'" class="card tab-page" style="padding: 0; height: 100vh;">
+      <KeepAlive>
+        <AIAssistant
+          v-if="activeTab === 'chat'"
+          :project-context="projectContext"
+          :project-id="currentModelId || ''"
+          :models="models"
+          :user="authUser"
+          @refresh-model="reloadCurrentModel"
+          @model-created="openCreatedModel"
+          @open-project="openModelById"
+          @new-project="showCreateModal = true"
+          @delete-project="deleteModel"
+          @open-studio="activeTab = 'studio'"
+          @logout="logout"
+          @switch-account="switchAccount"
+        />
+      </KeepAlive>
     </div>
   </div>
 
@@ -6031,10 +6214,11 @@ onMounted(() => {
       </div>
 
       <div class="help-section">
-        <h4><i class="fas fa-comment-dots"></i> 五、AI 助手</h4>
+        <h4><i class="fas fa-comment-dots"></i> 五、AI 智能体</h4>
         <ul>
-          <li>右下角「AI助手」页对话问答，回复实时流式输出</li>
-          <li><b>记忆库</b>：说「记住：xxx」自动保存，以后 AI 会记住你的项目偏好</li>
+          <li>顶部「AI 智能体」页：<b>一句话描述业务</b>即可自动生成 UML + ArchiMate + ER 三套架构；也可直接说「给 Order 加个字段」「体检并优化」</li>
+          <li>智能体会<b>自己调用工具</b>在<b>当前项目</b>上生成/修改/体检，改完画布自动刷新（无项目时先在「项目管理」打开一个）</li>
+          <li><b>记忆库</b>：说「记住：xxx」自动保存，智能体后续会遵循你的项目偏好</li>
         </ul>
       </div>
 
@@ -6494,8 +6678,8 @@ onMounted(() => {
         <button class="btn btn-outline" style="justify-content:flex-start; text-align:left;" @click="showPatternNoMatch = false; openGenerateDiagram('uml')">
           <i class="fas fa-wand-magic-sparkles" style="color:#1f5eff;"></i> AI 从描述生成 UML 图
         </button>
-        <button class="btn btn-outline" style="justify-content:flex-start; text-align:left;" @click="showPatternNoMatch = false; activeTab = 'ai'">
-          <i class="fas fa-robot" style="color:#1f5eff;"></i> 去 AI 助手对话（描述你的架构）
+        <button class="btn btn-outline" style="justify-content:flex-start; text-align:left;" @click="showPatternNoMatch = false; activeTab = 'chat'">
+          <i class="fas fa-robot" style="color:#1f5eff;"></i> 去 AI 智能体（描述业务，自动出架构）
         </button>
       </div>
     </div>
@@ -6913,6 +7097,9 @@ onMounted(() => {
   margin: 0 auto;
   padding: 20px;
 }
+/* AI 智能体页：对话框铺满整屏（去边距/圆角/阴影） */
+.container-full { max-width: none; padding: 0; }
+.container-full .card { border-radius: 0; border: none; box-shadow: none; }
 
 /* 顶部导航栏 */
 .header {
@@ -7114,6 +7301,9 @@ onMounted(() => {
   padding: 6px;
   box-shadow: var(--shadow-sm);
 }
+/* 专业编辑页右上角「AI 智能体」切换按钮 */
+.studio-subtabs .switch-page-btn { margin-left: auto; border: 1px solid #dbe4ff !important; color: #1f5eff; }
+.studio-subtabs .switch-page-btn:hover { background: #1f5eff; color: #fff; }
 
 .nav-tab {
   display: inline-flex;
@@ -7829,6 +8019,29 @@ onMounted(() => {
   background: #fff3e0;
   color: #e65100;
 }
+
+/* 若依模块配置表单（代码生成页，仅 outputType==='ruoyi' 时显示） */
+.ruoyi-config {
+  margin-top: 14px;
+  border: 1px solid #e3e8f1;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fbfcff 0%, #f7faff 100%);
+  padding: 12px 14px 10px;
+}
+.ruoyi-config-head { display: flex; align-items: center; gap: 8px; font-weight: 600; color: #22304a; margin-bottom: 10px; }
+.ruoyi-config-head > i { color: #1f5eff; }
+.ruoyi-config-hint { font-weight: 400; font-size: 12px; color: #8b98ab; }
+.ruoyi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px 14px; }
+.ruoyi-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #4a5568; }
+.ruoyi-grid input,
+.ruoyi-grid select { padding: 7px 10px; border: 1px solid #dfe6f2; border-radius: 8px; font-size: 13px; color: #1f2937; background: #fff; }
+.ruoyi-grid input:focus,
+.ruoyi-grid select:focus { outline: none; border-color: #1f5eff; }
+.ruoyi-grid .ruoyi-check { flex-direction: row; align-items: center; gap: 7px; font-size: 12.5px; grid-column: 1 / -1; }
+.ruoyi-tip { font-size: 11px; color: #9aa7bb; }
+.ruoyi-derived { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed #e3e8f1; font-size: 12px; color: #6b7a90; }
+.ruoyi-derived b { color: #1f5eff; font-weight: 600; }
+.ruoyi-fill { margin-left: auto; padding: 4px 12px; font-size: 12px; }
 
 .code-preview {
   background: #2d2d2d;

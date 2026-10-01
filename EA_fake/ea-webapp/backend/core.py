@@ -277,20 +277,24 @@ class AIService:
     """AI服务类 - 统一接口调用大模型（兼容OpenAI格式）"""
 
     @staticmethod
-    def chat_completion(messages, config=None, max_tokens=None, temperature=None, use_reasoning=False):
-        """调用大模型进行对话。use_reasoning=True 时走推理模型（未配置则回退普通模型）。"""
+    def chat_completion(messages, config=None, max_tokens=None, temperature=None, use_reasoning=False,
+                        tools=None, tool_choice=None):
+        """调用大模型进行对话。use_reasoning=True 时走推理模型（未配置则回退普通模型）。
+        tools/tool_choice 传入时启用 OpenAI 兼容的 function-calling（智能体工具循环用）。"""
         if config is None:
             config = ai_service_config
         if not config.enabled:
             return {'error': 'AI服务未启用，请配置API密钥'}
         try:
             return AIService._call_api(messages, config, max_tokens=max_tokens,
-                                       temperature=temperature, use_reasoning=use_reasoning)
+                                       temperature=temperature, use_reasoning=use_reasoning,
+                                       tools=tools, tool_choice=tool_choice)
         except Exception as e:
             return {'error': f'AI服务调用失败: {str(e)}'}
 
     @staticmethod
-    def _call_api(messages, config, max_tokens=None, temperature=None, use_reasoning=False):
+    def _call_api(messages, config, max_tokens=None, temperature=None, use_reasoning=False,
+                  tools=None, tool_choice=None):
         """通用API调用（兼容OpenAI格式）。推理模型不支持 temperature，调用时去掉。"""
         model = config.model
         include_temperature = True
@@ -310,12 +314,16 @@ class AIService:
         }
         if include_temperature:
             payload['temperature'] = temperature if temperature is not None else config.temperature
+        if tools:
+            payload['tools'] = tools
+            if tool_choice:
+                payload['tool_choice'] = tool_choice
 
         response = requests.post(
             f'{config.base_url.rstrip("/")}/chat/completions',
             headers=headers,
             json=payload,
-            timeout=60
+            timeout=90
         )
         if response.status_code != 200:
             return {'error': f'API调用失败: {response.status_code} - {response.text}'}
@@ -461,6 +469,57 @@ def _ai_parse_json_response(content):
             except (json.JSONDecodeError, TypeError):
                 return None
         return None
+
+
+def extract_completion(result):
+    """把 `AIService.chat_completion` 的原始返回归一成 `(content, finish_reason, error)`。
+
+    刻意**不改** `chat_completion` 的返回形状——它返回的是原始 OpenAI 响应，
+    约十个调用方直接读 `choices[0].message.content`。需要「区分截断与失败」的
+    调用方主动用这个函数。
+    """
+    if not isinstance(result, dict):
+        return '', '', 'invalid_response'
+    if result.get('error'):
+        return '', '', str(result['error'])
+    choices = result.get('choices')
+    if not isinstance(choices, list) or not choices:
+        return '', '', 'no_choices'
+    first = choices[0]
+    if not isinstance(first, dict):
+        return '', '', 'invalid_choice'
+    finish = str(first.get('finish_reason') or '')
+    message = first.get('message')
+    content = message.get('content') if isinstance(message, dict) else None
+    if not isinstance(content, str):
+        return '', finish, 'no_content'
+    return content, finish, ''
+
+
+def chat_json(messages, config=None, max_tokens=None, temperature=None, use_reasoning=False,
+              tools=None, tool_choice=None):
+    """调模型并解析 JSON，返回 `(data|None, reason)`。
+
+    reason：`''` 成功 / `'truncated'` 被 max_tokens 截断 / `'invalid_json'` /
+    `'empty'` / `'error:<原因>'`。
+
+    **截断单独成一个信号**是重点：以前截断只表现为 JSON 解析失败，
+    调用方分不清「模型答错了」和「模型话没说完」，也就无从重试。
+    """
+    result = AIService.chat_completion(
+        messages, config=config, max_tokens=max_tokens, temperature=temperature,
+        use_reasoning=use_reasoning, tools=tools, tool_choice=tool_choice)
+    content, finish, error = extract_completion(result)
+    if error:
+        return None, f'error:{error}'
+    if finish == 'length':
+        return None, 'truncated'
+    if not content.strip():
+        return None, 'empty'
+    data = _ai_parse_json_response(content)
+    if data is None:
+        return None, 'invalid_json'
+    return data, ''
 
 
 def _load_dev_entries(kind, project_id):

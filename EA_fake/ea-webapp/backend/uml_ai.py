@@ -4,22 +4,36 @@
 """
 import uuid
 import json
-from constants import RELATIONSHIP_TYPES
+from constants import ELEMENT_TYPES, RELATIONSHIP_TYPES
 from core import AIService, ai_service_config, _ai_parse_json_response
-from prompts import uml_system_prompt, VALIDATE_SYSTEM_PROMPT
+from prompts import uml_system_prompt, VALIDATE_SYSTEM_PROMPT, ARCHIMATE_GENERATE_SYSTEM_PROMPT
+
+#: 画布认识的 UML 元素类型（闭合白名单）
+_UML_CANVAS_TYPES = frozenset(ELEMENT_TYPES['uml'])
 
 
-def _normalize_uml_type(t):
-    """把LLM返回的元素类型归一化成画布认识的UML类型。"""
-    t = str(t).strip().lower()
+def _normalize_uml_type(t, default='Class', report=None):
+    """把LLM返回的元素类型归一化成画布认识的UML类型。
+
+    闭合白名单：认不出的类型回落到 `default` 并记一条 report，而不是
+    `capitalize()` 直接放行——放行会让「LLM 编出来的类型」原样进模型，
+    到渲染/校验那一步才以更难查的形式暴露。
+    """
+    key = str(t).strip().lower()
     aliases = {
-        'class': 'Class', 'interface': 'Interface', 'usecase': 'UseCase', 'use_case': 'UseCase',
+        'class': 'Class', 'interface': 'Interface', 'enum': 'Enum', 'enumeration': 'Enum',
+        'usecase': 'UseCase', 'use_case': 'UseCase',
         'actor': 'Actor', 'activity': 'Activity', 'action': 'Activity',
         'start': 'Activity', 'end': 'Activity', 'decision': 'Activity',
         'state': 'State', 'sequence': 'Sequence', 'component': 'Component',
         'package': 'Package', 'node': 'Node', 'artifact': 'Artifact',
     }
-    return aliases.get(t, t.capitalize())
+    result = aliases.get(key, str(t).strip().capitalize())
+    if result in _UML_CANVAS_TYPES:
+        return result
+    if report is not None:
+        report.append(f'未知元素类型「{t}」，已按 {default} 处理')
+    return default
 
 
 def _default_rel_type(view_type):
@@ -53,20 +67,46 @@ def _ai_generate_uml(prompt, view_type):
     return data['elements'], relationships
 
 
-def _layout_ai_elements(elements_raw, relationships_raw, view_type):
-    """把LLM返回的元素/关系（按名字引用）布局成画布元素（分配uuid/坐标/宽高）。"""
+def _est_text_w(s, bold=False):
+    """估算文本像素宽（中文按 12px、其余按 6.6px；粗体略放大）。"""
+    w = 0.0
+    for ch in str(s):
+        w += 12.0 if ord(ch) > 127 else 6.6
+    return w * (1.06 if bold else 1.0)
+
+
+def _est_uml_size(elem_type, item):
+    """按元素内容估算画布尺寸（与前端 drawElement 的自适应规则一致），用于防重叠布局。"""
+    fixed = {'Actor': (60, 80), 'UseCase': (100, 60), 'Activity': (100, 50)}
+    if elem_type in fixed:
+        return fixed[elem_type]
+    name = str(item.get('name') or '')
+    attrs = item.get('attributes') if isinstance(item.get('attributes'), list) else []
+    methods = item.get('methods') if isinstance(item.get('methods'), list) else []
+    maxw = _est_text_w(name, True)
+    for a in attrs:
+        maxw = max(maxw, _est_text_w(a))
+    for m in methods:
+        maxw = max(maxw, _est_text_w(m))
+    w = max(120, int(maxw) + 18)
+    line_h = 14
+    attr_h = max(1, len(attrs)) * line_h
+    meth_h = len(methods) * line_h
+    h = 25 + 10 + attr_h + ((7 + meth_h) if methods else 0) + 8
+    return w, h
+
+
+def _layout_ai_elements(elements_raw, relationships_raw, view_type, report=None):
+    """把LLM返回的元素/关系（按名字引用）布局成画布元素（分配uuid/坐标/宽高）。
+
+    `report` 传入 list 时收集「被改写/被丢弃」的说明，供上层展示与记录。
+    """
     name_to_uuid = {}
     name_by_uuid = {}
     elements = []
-    x, y = 100, 100
-    col = 0
-
-    # 元素类型 → (默认宽, 高)
-    size_map = {
-        'Actor': (60, 80),
-        'UseCase': (100, 60),
-        'Activity': (100, 50),
-    }
+    # 流式布局：按内容估算尺寸后逐行排布，避免元素重叠（画布逻辑宽 1150）
+    LX, LY, GAP_X, GAP_Y, CANVAS_W = 60, 60, 50, 50, 1150
+    cur_x, cur_y, row_h = LX, LY, 0
     for item in elements_raw:
         if not isinstance(item, dict) or not item.get('name'):
             continue
@@ -75,18 +115,23 @@ def _layout_ai_elements(elements_raw, relationships_raw, view_type):
             continue
 
         raw_type = str(item.get('type') or 'Class').strip()
-        elem_type = _normalize_uml_type(raw_type)
-        w, h = size_map.get(elem_type, (120, 80))
+        elem_type = _normalize_uml_type(raw_type, report=report)
+        w, h = _est_uml_size(elem_type, item)
+        # 超出行宽则换行（新行 y 下移本行最高元素的高度）
+        if cur_x + w > CANVAS_W - 40:
+            cur_x, cur_y, row_h = LX, cur_y + row_h + GAP_Y, 0
         elem = {
             'uuid': str(uuid.uuid4()),
             'type': elem_type,
             'name': name,
             'description': item.get('description', '') or '',
-            'x': x + (col % 3) * 200,
-            'y': y + (col // 3) * 150,
+            'x': cur_x,
+            'y': cur_y,
             'width': w,
             'height': h,
         }
+        cur_x += w + GAP_X
+        row_h = max(row_h, h)
         # 活动图起止/判定节点画成圆形
         if raw_type.lower() in ('start', 'end', 'decision'):
             elem['shape'] = 'circle'
@@ -102,7 +147,6 @@ def _layout_ai_elements(elements_raw, relationships_raw, view_type):
         name_to_uuid[name] = elem['uuid']
         name_by_uuid[elem['uuid']] = name
         elements.append(elem)
-        col += 1
 
     relationships = []
     for rel in relationships_raw:
@@ -113,9 +157,13 @@ def _layout_ai_elements(elements_raw, relationships_raw, view_type):
         src = name_to_uuid.get(src_name)
         tgt = name_to_uuid.get(tgt_name)
         if not src or not tgt or src == tgt:
+            if report is not None:
+                report.append(f'关系 {src_name or "?"} → {tgt_name or "?"} 端点无法解析或自环，已丢弃')
             continue
         rel_type = str(rel.get('type') or _default_rel_type(view_type)).strip()
         if rel_type not in RELATIONSHIP_TYPES:
+            if report is not None:
+                report.append(f'未知关系类型「{rel_type}」，已按 {_default_rel_type(view_type)} 处理')
             rel_type = _default_rel_type(view_type)
         relationships.append({
             'uuid': str(uuid.uuid4()),
@@ -457,8 +505,12 @@ def _rel_target(rel):
     return rel.get('target') or rel.get('endElement')
 
 
-def validate_uml_model(model, view=None):
-    """校验UML模型（元素 id/uuid 均可，关系兼容 source/startElement、target/endElement）"""
+def validate_uml_model(model, view=None, use_ai=True):
+    """校验UML模型（元素 id/uuid 均可，关系兼容 source/startElement、target/endElement）。
+
+    `use_ai=False` 时跳过语义级 AI 评审，只做确定性结构规则——质量打分器与
+    离线测试必须走这条路，否则一次打分就会静默发 LLM 请求、结果不可复现。
+    """
     errors = []
     warnings = []
     suggestions = []
@@ -555,7 +607,7 @@ def validate_uml_model(model, view=None):
         suggestions.append(f"共有 {invalid_count} 个问题需要修复")
 
     # 语义级AI评审（叠加在结构规则之上，AI未启用时跳过）
-    ai_analysis = _ai_validate_semantics(elements_to_check, relationships_to_check)
+    ai_analysis = _ai_validate_semantics(elements_to_check, relationships_to_check) if use_ai else None
     if ai_analysis:
         for issue in ai_analysis.get('issues', []):
             if not isinstance(issue, dict) or not issue.get('message'):
@@ -719,3 +771,71 @@ def generate_explanation(model, view_id, element_id, question):
     
     return result
 
+
+
+# ============ ArchiMate 生成（AI 智能体用：LLM 优先 + 规则回退） ============
+ARCH_LAYERS = ('business', 'application', 'technology')
+
+def generate_archimate_from_prompt(prompt):
+    """业务描述 → ArchiMate 原始数据 {elements:[{type,name,layer}], relationships:[{source,target,type}]}。
+    返回 (elements_raw, relationships_raw)；LLM 未启用/失败回退 _mock_archimate。"""
+    ai = _ai_generate_archimate(prompt)
+    if ai is not None:
+        return ai
+    return _mock_archimate(prompt)
+
+
+def _ai_generate_archimate(prompt):
+    if not ai_service_config.enabled:
+        return None
+    messages = [
+        {'role': 'system', 'content': ARCHIMATE_GENERATE_SYSTEM_PROMPT},
+        {'role': 'user', 'content': prompt}
+    ]
+    result = AIService.chat_completion(messages, max_tokens=4096, temperature=0.3)
+    if not isinstance(result, dict) or 'error' in result:
+        return None
+    try:
+        content = result['choices'][0]['message']['content']
+    except (KeyError, IndexError, TypeError):
+        return None
+    data = _ai_parse_json_response(content)
+    if not isinstance(data, dict) or not isinstance(data.get('elements'), list):
+        return None
+    rels = data.get('relationships')
+    if not isinstance(rels, list):
+        rels = []
+    return data['elements'], rels
+
+
+def _mock_archimate(prompt):
+    """AI 不可用时的 ArchiMate 兜底：根据业务文本粗分层（尽力，提示用户可重生成）。"""
+    text = (prompt or '')
+    words = []
+    import re
+    seg = re.split(r'[，。；、,.?!\n\s]+', text)
+    for s in seg:
+        s = s.strip()
+        if not s or len(s) < 2:
+            continue
+        words.append(s)
+    core = words[0][:14] if words else '核心业务'
+    theme = words[1][:14] if len(words) > 1 else '支撑业务'
+    elements = [
+        {'type': 'process', 'name': f'{core}主流程', 'layer': 'business', 'description': ''},
+        {'type': 'service', 'name': f'{core}服务', 'layer': 'business', 'description': ''},
+        {'type': 'process', 'name': f'{theme}协同', 'layer': 'business', 'description': ''},
+        {'type': 'component', 'name': f'{core}应用', 'layer': 'application', 'description': ''},
+        {'type': 'component', 'name': '集成网关', 'layer': 'application', 'description': ''},
+        {'type': 'node', 'name': '业务数据库', 'layer': 'technology', 'description': ''},
+        {'type': 'node', 'name': '消息中间件', 'layer': 'technology', 'description': ''},
+    ]
+    rels = [
+        {'source': f'{core}主流程', 'target': f'{core}服务', 'type': 'serving'},
+        {'source': f'{core}应用', 'target': f'{core}服务', 'type': 'realization'},
+        {'source': '集成网关', 'target': f'{theme}协同', 'type': 'realization'},
+        {'source': f'{core}主流程', 'target': f'{theme}协同', 'type': 'flow'},
+        {'source': '业务数据库', 'target': f'{core}应用', 'type': 'serving'},
+        {'source': '消息中间件', 'target': '集成网关', 'type': 'serving'},
+    ]
+    return elements, rels
