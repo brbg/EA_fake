@@ -33,6 +33,17 @@ fi
 command -v python3 >/dev/null || die "python3 装不上，请手动 apt install python3 python3-venv"
 python3 -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, 10) else 1)' \
     || die "Python 版本过低（$(python3 -V)），本项目需要 3.10+"
+# Ubuntu 24.04 上 python3-venv 不随 python3 一起装（ensurepip 缺失），
+# venv 建到一半才报错。这里提前探测并补装——实测踩过。
+if ! python3 -c 'import ensurepip' >/dev/null 2>&1; then
+    echo "    缺 python3-venv，正在补装..."
+    apt-get update -qq
+    PYV=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+    apt-get install -y -qq python3-venv "python3.${PYV#*.}-venv" 2>/dev/null \
+        || apt-get install -y -qq python3-venv
+fi
+python3 -c 'import ensurepip' >/dev/null 2>&1 \
+    || die "python3-venv 装不上，请手动执行：apt install python3-venv"
 ok "$(python3 -V)"
 if [ -r /etc/os-release ]; then
     . /etc/os-release
