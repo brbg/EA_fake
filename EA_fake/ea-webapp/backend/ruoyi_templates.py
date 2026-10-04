@@ -1416,8 +1416,13 @@ def render_integration_readme(schema, cfg):
 ## 4. 执行建表与菜单 SQL
 
 ```bash
-mysql -u<用户> -p <数据库> < sql/*.sql
+mysql -u<用户> -p --default-character-set=utf8mb4 <数据库> < sql/*.sql
 ```
+
+> **必须带 `--default-character-set=utf8mb4`**：SQL 里有中文表注释/菜单名，
+> 客户端字符集不对会被截断或写乱码（实测报 `Data too long for column`）。
+> 另外这些 SQL 会 **insert 到 `sys_menu`**，所以要导入**已经跑过若依自带
+> `sql/ry_*.sql` 的业务库**，而不是新建的空库——否则会报 `Table 'sys_menu' doesn't exist`。
 
 ## 5. 合并前端产物
 
