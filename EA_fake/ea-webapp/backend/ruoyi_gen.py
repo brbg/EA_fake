@@ -137,9 +137,13 @@ class RuoYiConfig:
     class_name: str = ''
     author: str = 'ruoyi'
     parent_menu_id: int = 3
-    servlet_api: str = 'jakarta'   # jakarta(Spring Boot 3 / 若依 3.9.x) | javax(2.x)
+    servlet_api: str = 'jakarta'   # jakarta(Spring Boot 3/4、若依 3.9.x) | javax(Spring Boot 2、若依 3.8.x)
     frontend_ts: bool = True
     db_type: str = 'mysql'
+    # 目标若依工程的版本，用于生成的模块 pom 的 <parent>。默认 3.9.2 —— 这个值不是猜的，
+    # 是 2026-10-04 从 gitee.com/y_project/RuoYi-Vue 实拉（ruoyi.version=3.9.2，
+    # Spring Boot 4.1.0，Java 17），并已用该版本真编译通过。
+    ruoyi_version: str = '3.9.2'
 
     @property
     def package_name(self) -> str:
@@ -156,6 +160,7 @@ class RuoYiConfig:
 
 _PKG_RE = re.compile(r'^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$')
 _MODULE_RE = re.compile(r'^[a-z][a-z0-9_]*$')
+_VERSION_RE = re.compile(r'^\d+\.\d+(\.\d+)?$')
 
 
 def normalize_config(raw):
@@ -172,6 +177,7 @@ def normalize_config(raw):
         servlet_api='javax' if str(raw.get('servletApi') or '').lower() == 'javax' else 'jakarta',
         frontend_ts=bool(raw.get('frontendTs', True)),
         db_type=str(raw.get('dbType') or 'mysql').strip().lower(),
+        ruoyi_version=str(raw.get('ruoyiVersion') or '3.9.2').strip(),
     )
     try:
         cfg.parent_menu_id = int(raw.get('parentMenuId', 3))
@@ -186,6 +192,9 @@ def normalize_config(raw):
         return cfg, f'模块名不合法：「{cfg.module_name}」（只允许小写字母/数字/下划线，如 system）'
     if cfg.db_type != 'mysql':
         return cfg, f'当前仅支持 MySQL，收到「{cfg.db_type}」'
+    if not _VERSION_RE.match(cfg.ruoyi_version):
+        # 版本要写进模块 pom 的 <parent>，格式错会让 Maven 直接解析失败
+        return cfg, f'若依版本号不合法：「{cfg.ruoyi_version}」（形如 3.9.2）'
     return cfg, None
 
 
@@ -784,6 +793,8 @@ def generate_ruoyi_module(er_entities, er_relations, cfg, annotation=None):
         'joinTables': [j['table_name'] for j in schema['join_tables']],
         'warnings': schema['warnings'],
         'fileCount': len(files),
+        # 回显给前端：产物的模块 pom 按这个版本对齐，也用于提示用户核对
+        'ruoyiVersion': cfg.ruoyi_version,
     }
     return {'files': files, 'meta': meta}
 

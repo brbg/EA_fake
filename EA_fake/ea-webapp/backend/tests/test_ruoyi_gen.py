@@ -126,8 +126,41 @@ def main():
         print(f"  - {f['path']}  ({len(f['content'])} 字符)")
 
     check(len(meta['tables']) == 4, '4 张表')
-    check(len(files) == 4 * 8 + 4 + 1, f'文件数 = 4 表×8 + 4 SQL + README（实得 {len(files)}）')
+    # 4 表×8 + 4 个 SQL + README + 模块 pom.xml + INTEGRATION.md
+    check(len(files) == 4 * 8 + 4 + 3, f'文件数 = 4 表×8 + 4 SQL + README + pom + INTEGRATION（实得 {len(files)}）')
     check(meta['joinTables'] == ['farm_crop_sys_user'], f"M:N 中间表名（实得 {meta['joinTables']}）")
+
+    print('\n== Maven 模块与集成说明 ==')
+    pom = by_path['backend/ruoyi-system/pom.xml']['content']
+    check('<artifactId>ruoyi</artifactId>' in pom and '<version>3.9.2</version>' in pom,
+          'pom 的 parent 指向根工程、版本默认 3.9.2')
+    check('<artifactId>ruoyi-system</artifactId>' in pom, 'pom 的 artifactId = ruoyi-模块名')
+    dep_block = pom.split('<artifactId>ruoyi-common</artifactId>')[1].split('</dependency>')[0]
+    check('<version>' not in dep_block, 'ruoyi-common 依赖不写 version（由根 pom 的 dependencyManagement 管）')
+    try:
+        ET.fromstring(pom)
+        check(True, 'pom 可被 XML 解析')
+    except Exception as e:   # noqa: BLE001
+        check(False, f'pom 解析失败：{e}')
+
+    integ = by_path['INTEGRATION.md']['content']
+    for frag, label in (('<module>ruoyi-system</module>', '根 pom 的 modules 片段'),
+                        ('<dependencyManagement>', '根 pom 的 dependencyManagement 片段'),
+                        ('ruoyi-admin/pom.xml', 'ruoyi-admin 的依赖片段'),
+                        ('missing', '漏了第二处的报错提示')):
+        check(frag in integ, f'集成说明含：{label}')
+
+    # 版本可配置：换一个版本号要能流到 pom 的 parent 里
+    cfg2, err2 = G.normalize_config({**{
+        'packageBase': 'com.ruoyi', 'moduleName': 'business', 'tablePrefix': 'sys_',
+        'author': 'ruoyi', 'parentMenuId': 3, 'servletApi': 'jakarta',
+        'frontendTs': True, 'dbType': 'mysql'}, 'ruoyiVersion': '3.8.9'})
+    check(err2 is None, f'自定义版本号通过校验（err={err2}）')
+    check('3.8.9' in T.render_module_pom({'tables': []}, cfg2), '自定义版本写进了 pom 的 parent')
+    badv, bade = G.normalize_config({**{
+        'packageBase': 'com.ruoyi', 'moduleName': 'business', 'parentMenuId': 3,
+        'dbType': 'mysql'}, 'ruoyiVersion': 'v3.9.x'})
+    check(bade is not None and '版本号' in bade, f'非法版本号被拒（实得 {bade}）')
 
     t1 = meta['tables'][0]
     check(t1['tableName'] == 'sys_user' and t1['className'] == 'User', 'sys_user → 类名 User')

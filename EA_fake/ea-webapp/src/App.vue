@@ -271,7 +271,11 @@ const codeConfig = ref({
     className: '',
     author: 'ruoyi',
     parentMenuId: 3,
-    servletApi: 'jakarta',   // jakarta=若依 3.9.x/Spring Boot 3；javax=3.8.x
+    servletApi: 'jakarta',   // jakarta=若依 3.9.x/Spring Boot 3、4；javax=3.8.x
+    // 目标若依版本：写进模块 pom 的 <parent><version>，必须与你要拖进去的工程一致。
+    // 3.9.2 不是猜的——2026-10-04 从 gitee.com/y_project/RuoYi-Vue 实拉核对（ruoyi.version=3.9.2），
+    // 并用该版本真编译通过（BUILD SUCCESS）。
+    ruoyiVersion: '3.9.2',
     frontendTs: true,        // 官方 RuoYi-Vue3 出 .js，这里默认 TS（可一键切回）
     useAI: true              // AI 只补中文注释/列标签，关闭则用内置词表
   }
@@ -5951,9 +5955,14 @@ onMounted(() => {
               <input v-model="codeConfig.ruoyi.businessName" placeholder="自动推导，如 user" />
             </label>
             <label>
+              若依版本
+              <input v-model="codeConfig.ruoyi.ruoyiVersion" placeholder="如 3.9.2"
+                     title="写进生成模块 pom.xml 的 &lt;parent&gt;&lt;version&gt;，必须与目标工程一致" />
+            </label>
+            <label>
               Servlet API
               <select v-model="codeConfig.ruoyi.servletApi">
-                <option value="jakarta">jakarta（若依 3.9.x / Spring Boot 3）</option>
+                <option value="jakarta">jakarta（若依 3.9.x / Spring Boot 3、4）</option>
                 <option value="javax">javax（若依 3.8.x / Spring Boot 2）</option>
               </select>
             </label>

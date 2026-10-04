@@ -8,11 +8,24 @@
   （`extends BaseMapper` + `selectById/updateById/deleteBatchIds` 是 **RuoYi-Vue-Plus** 的写法，经典版用了编译不过）
 - Mapper.xml **含完整 CRUD**（insert 用 <trim> 动态列、update 用 <trim prefix="SET">、
   delete{X}ByIds 用 <foreach collection="array">），不是「只写 select 交给 BaseMapper」。
-- controller 的 export 用 `jakarta.servlet.http.HttpServletResponse`（3.9.x / Spring Boot 3），
+- controller 的 export 用 `jakarta.servlet.http.HttpServletResponse`（若依 3.9.x / Spring Boot 3、4），
   3.8.x 是 `javax.servlet.http.HttpServletResponse`。
 - 前端页面 `<script setup name="{ClassName}">` 的 name 必须有（tags-view/keep-alive 依赖）；
   依赖 unplugin-auto-import，ref/useDict/parseTime 都不 import；图标是字符串（icon="Plus"），
   不是 FontAwesome 的 class。
+
+**版本事实（2026-10-04 从 gitee.com/y_project/RuoYi-Vue 实拉核对，不是猜的）**：
+RuoYi-Vue `3.9.2`、`ruoyi.version=3.9.2`、`java.version=17`、`spring-boot.version=4.1.0`；
+根 pom 有 `<packaging>pom</packaging>`，并在 `<dependencyManagement>` 里给各 ruoyi-* 模块管版本。
+
+**真编译验证**：同日在 JDK 17 + Maven 3.9.16 上，把生成的模块按
+`render_integration_readme` 的三处编辑接入官方工程，`mvn -DskipTests compile` **BUILD SUCCESS**
+（10 个生成类全部编译，全项目 0 错误 0 警告）。改动模板后请重跑这条验证。
+
+**集成需三处编辑**（`render_integration_readme` 产出可粘贴片段），第三处最容易漏：
+根 pom 的 `<modules>`、根 pom 的 `<dependencyManagement>`（给新模块管版本）、
+`ruoyi-admin/pom.xml` 的 `<dependencies>`。少了第二处会报
+`'dependencies.dependency.version' for com.ruoyi:<module>:jar is missing`。
 """
 
 # ---------------------------------------------------------------- 小工具
@@ -1139,6 +1152,125 @@ def render_readme(schema, cfg):
     return '\n'.join(lines) + '\n'
 
 
+# ---------------------------------------------------------------- Maven 模块
+
+def render_module_pom(schema, cfg):
+    """生成模块自身的 pom.xml。
+
+    形态不是抄来的、是**真编译验证过**的（2026-10-04，RuoYi-Vue 3.9.2 + Spring Boot 4.1.0 +
+    JDK 17，`mvn compile` BUILD SUCCESS）：与官方 `ruoyi-system/pom.xml` 同形——
+    parent 写根工程坐标、artifactId 只有模块名、**依赖只声明 ruoyi-common 且不写 version**
+    （版本由根 pom 的 dependencyManagement 管）。
+
+    为什么一个依赖就够：产物用到的 `com.ruoyi.common.*`（BaseEntity / BaseController /
+    AjaxResult / TableDataInfo / ExcelUtil / DateUtils / BusinessType）以及
+    `jakarta.servlet-api`、`spring-web`、`spring-boot-starter-security`(@PreAuthorize)、
+    `commons-lang3`、`poi-ooxml`、`pagehelper` 全部由 ruoyi-common 传递带来。
+    """
+    module = cfg.module_name
+    return f'''<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <parent>
+        <artifactId>ruoyi</artifactId>
+        <groupId>com.ruoyi</groupId>
+        <version>{cfg.ruoyi_version}</version>
+    </parent>
+    <modelVersion>4.0.0</modelVersion>
+
+    <artifactId>ruoyi-{module}</artifactId>
+
+    <description>
+        {module}业务模块
+    </description>
+
+    <dependencies>
+
+        <!-- 通用工具。BaseEntity/BaseController/AjaxResult/TableDataInfo/ExcelUtil/DateUtils、
+             jakarta.servlet-api、spring-security(@PreAuthorize)、commons-lang3、poi、pagehelper
+             都由它传递带来，所以本模块只需要这一个依赖 -->
+        <dependency>
+            <groupId>com.ruoyi</groupId>
+            <artifactId>ruoyi-common</artifactId>
+        </dependency>
+
+    </dependencies>
+
+</project>
+'''
+
+
+def render_integration_readme(schema, cfg):
+    """把「怎么把它接进若依工程」写成可直接粘贴的片段。
+
+    **三处编辑缺一不可**——第三处（根 pom 的 dependencyManagement）是 2026-10-04 真编译
+    才发现的：根 pom 只给官方那几个模块（ruoyi-common/system/framework/…）管了版本，
+    新模块不加这条，`ruoyi-admin` 引用它会报
+    `'dependencies.dependency.version' for com.ruoyi:{module}:jar is missing`。
+    """
+    module = cfg.module_name
+    version = cfg.ruoyi_version
+    return f'''# 集成步骤（{module} 模块）
+
+按顺序做完这三处编辑，再执行 SQL、合并前端产物。**三处缺一不可**（第三处最容易漏，
+漏了会在 `mvn compile` 时报 `'dependencies.dependency.version' ... is missing`）。
+
+## 1. 根 `pom.xml` 的 `<modules>` 里加一行
+
+```xml
+        <module>ruoyi-{module}</module>
+```
+
+## 2. 根 `pom.xml` 的 `<dependencyManagement>` 里加版本（**最容易漏的一步**）
+
+```xml
+            <dependency>
+                <groupId>com.ruoyi</groupId>
+                <artifactId>ruoyi-{module}</artifactId>
+                <version>${{ruoyi.version}}</version>
+            </dependency>
+```
+
+> 根 pom 只为官方模块管了版本。新模块不加这条，下一步引用它时会因为拿不到版本而
+> 直接让 Maven 解析失败（`ProjectBuildingException`）。
+
+## 3. `ruoyi-admin/pom.xml` 的 `<dependencies>` 里加依赖
+
+```xml
+        <dependency>
+            <groupId>com.ruoyi</groupId>
+            <artifactId>ruoyi-{module}</artifactId>
+        </dependency>
+```
+
+> 这里**不写 version**，由第 2 步统一管理。
+
+## 4. 执行建表与菜单 SQL
+
+```bash
+mysql -u<用户> -p <数据库> < sql/*.sql
+```
+
+## 5. 合并前端产物
+
+把 `frontend/src/api/` 与 `frontend/src/views/` 合并进 RuoYi-Vue3 工程。
+
+## 6. 重启并授权
+
+重新登录（或清一次菜单缓存）即可在左侧菜单看到；菜单挂在父 ID `{cfg.parent_menu_id}` 下。
+首次还需到「系统管理 → 菜单管理」给角色勾上新菜单权限，否则按钮不显示（`v-hasPermi` 生效）。
+
+---
+
+## 版本对齐
+
+本包按 **RuoYi-Vue {version}**（Spring Boot {'4.x/3.x' if cfg.servlet_api == 'jakarta' else '2.x'}、
+`{cfg.servlet_api}` servlet API）生成。若你的工程是别的版本，请把 `ruoyiVersion` 配置项
+改成你的版本号后重新生成——pom 的 `<parent><version>` 必须与目标工程一致。
+'''
+
+
 # ---------------------------------------------------------------- 组装
 
 def render_module_files(schema, cfg):
@@ -1175,6 +1307,9 @@ def render_module_files(schema, cfg):
 
     if not schema['tables']:
         return []   # 空模型不产出任何文件（调用方按 meta.warnings 提示）
+    # 模块自身的 pom：没有它就只能手工建模块，是这个包此前最卡的缺口
+    add(f'{root}/pom.xml', render_module_pom(schema, cfg), 'backend', 'xml')
+    add('INTEGRATION.md', render_integration_readme(schema, cfg), 'docs', 'md')
     add('README.md', render_readme(schema, cfg), 'docs', 'md')
     return files
 

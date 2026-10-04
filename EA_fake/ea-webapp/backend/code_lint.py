@@ -112,6 +112,20 @@ def vue_lint(src):
     return problems
 
 
+def xml_lint(src):
+    """XML 是否可被解析器读进来（pom.xml / Mapper.xml 格式错误会让 Maven 或 MyBatis 直接炸）。
+
+    用标准库的 ElementTree：它不会去抓 DOCTYPE 里的远程 DTD，
+    所以 MyBatis 的 `http://mybatis.org/dtd/mybatis-3-mapper.dtd` 不会造成联网。
+    """
+    import xml.etree.ElementTree as ET
+    try:
+        ET.fromstring(src)
+    except ET.ParseError as e:
+        return [f'XML 解析失败：{e}']
+    return []
+
+
 def lint_generated_files(files):
     """对生成产物做结构自检。
 
@@ -133,8 +147,10 @@ def lint_generated_files(files):
                 found = java_lint(src)
             elif lang == 'vue' or path.endswith('.vue'):
                 found = vue_lint(src)
+            elif lang == 'xml' or path.endswith('.xml'):
+                found = xml_lint(src)
             else:
-                continue   # xml / js / ts / sql / md 暂无检查器
+                continue   # js / ts / sql / md 暂无检查器
             checked += 1
         except Exception as e:   # noqa: BLE001
             # 自检器本身出错也要如实报出来，不能静默当成「没问题」

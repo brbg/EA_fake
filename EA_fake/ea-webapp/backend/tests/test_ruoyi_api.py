@@ -79,8 +79,9 @@ def main():
     body = r.get_json()
     files, meta = body['files'], body['meta']
     check(meta['aiUsed'] is False and meta['aiFallback'] == 'disabled', 'meta 标明未用 AI')
-    check(meta['fileCount'] == len(files) == 2 * 8 + 2 + 1,
-          f"文件数 = 2 表×8 + 2 SQL + README（实得 {meta['fileCount']}）")
+    check(meta['fileCount'] == len(files) == 2 * 8 + 2 + 3,
+          f"文件数 = 2 表×8 + 2 SQL + README + pom + INTEGRATION（实得 {meta['fileCount']}）")
+    check(meta.get('ruoyiVersion') == '3.9.2', f"meta 回显若依版本（实得 {meta.get('ruoyiVersion')}）")
     check(all(f['group'] in ('backend', 'frontend', 'sql', 'docs') for f in files), 'group 分类合法')
     check(all(f['content'].strip() for f in files), '没有空文件')
     check(all(not f['path'].startswith('/') and '..' not in f['path'] for f in files), '路径安全')
