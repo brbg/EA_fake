@@ -17,6 +17,9 @@
         <button class="switch-page-btn" data-tab="studio" @click="emit('open-studio')" title="切换到专业编辑（UML / ArchiMate / ER 等）">
           <i class="fas fa-drafting-compass"></i> 专业编辑
         </button>
+        <button class="icon-btn" @click="emit('start-tour')" title="新手引导">
+          <i class="fas fa-circle-question"></i>
+        </button>
         <button class="icon-btn" @click="showMemory = !showMemory" :class="{ active: showMemory }" title="记忆库">
           <i class="fas fa-brain"></i>
         </button>
@@ -249,6 +252,7 @@ const emit = defineEmits<{
   (e: 'open-studio'): void
   (e: 'logout'): void
   (e: 'switch-account'): void
+  (e: 'start-tour'): void
 }>()
 
 // 项目管理弹窗（左上角 ☰ 打开）

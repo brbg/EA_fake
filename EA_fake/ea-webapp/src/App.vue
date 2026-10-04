@@ -349,20 +349,29 @@ const showHelpModal = ref(false)
 const showTour = ref(false)
 const tourStep = ref(0)
 const tourHighlightStyle = ref<Record<string, string>>({})
+// 引导步骤。锚点必须真实存在于 DOM，且要和 tab 一致：
+// - 智能体页（tab:'chat'）只有 AIAssistant 里的元素（.ai-header/.hamburger/.ai-title-btn/…）
+// - 专业编辑页（tab:'uml' 等）才有 .header、子页签（data-subtab）、ribbon（data-tour）
+// 注意「同一步既切页又高亮」是高危写法：切页会让目标元素在定位时还不存在，
+// 高亮会停在上一处。所以「切到专业编辑」这一步只高亮按钮、不切页，下一步才切。
 const tourSteps = [
-  { target: '.header', tab: 'chat', title: '欢迎使用 👋', desc: '主界面就是 AI 智能体：直接说一句业务描述，我来自动完成企业架构设计。右上角是账号、帮助、退出与「协作」入口。' },
-  { target: '.ai-project-pick', tab: 'chat', title: '项目', desc: '在顶部切换 / 新建项目；不选项目直接说需求，智能体也会自动为你新建。' },
-  { target: '[data-tab="studio"]', tab: 'studio', title: '专业编辑', desc: '需要精修时切到「专业编辑」：UML / ArchiMate / 数据建模 / 代码生成 / 研发管理 都在这里。' },
-  { target: '[data-tab="uml"]', tab: 'uml', title: 'UML 建模', desc: '三段式类图（名称/属性/方法）自适应大小；连线可标注基数 1:1 / 1:N / M:N；自动防重叠布局。' },
+  // —— 第 1 页：AI 智能体 ——
+  { target: '.ai-header', tab: 'chat', title: '欢迎使用 👋', desc: '主界面就是 AI 智能体：说一句业务描述，它自动完成整套企业架构设计（UML + ArchiMate + ER），并做健康度体检。' },
+  { target: '.hamburger', tab: 'chat', title: '项目', desc: '左上角 ☰ 打开项目管理：切换 / 新建 / 删除。不选项目直接说需求，智能体也会自动为你新建一个。' },
+  { target: '.ai-title-btn', tab: 'chat', title: '账号管理', desc: '点标题右侧的「>」进入账号管理：查看当前账号与绑定邮箱、退出账号、切换账号。' },
+  { target: '.agent-chips', tab: 'chat', title: '一句话出架构', desc: '点上面的快捷入口，或直接在下方输入：「一键生成架构」出整套图；也能说「给 Order 加个字段」「体检并优化」，智能体自己调工具操作当前项目。' },
+  { target: '[data-tab="studio"]', tab: 'chat', title: '专业编辑', desc: '需要精修时切到「专业编辑」——UML / ArchiMate / 数据建模 / 代码生成 / 研发管理 都在那边。下一步带你过去。' },
+  // —— 第 2 页：专业编辑 ——
+  { target: '.studio-subtabs', tab: 'uml', title: '子页签', desc: '五个页签：UML 建模 / ArchiMate / 数据建模 / 代码生成 / 研发管理。最右边的「AI 智能体」随时切回对话。' },
   { target: '[data-tour="pattern"]', tab: 'uml', title: '设计模式', desc: '23 种 GoF 设计模式一键插入；「AI 智能推荐」能分析当前架构推荐最合适的模式并可覆盖重写。' },
-  { target: '[data-tour="ai"]', tab: 'uml', title: 'AI 功能', desc: '「AI」包含：校验、架构评审、元素分析、对话式编辑、从描述生成图（一句话出图）。' },
-  { target: '[data-tour="tools"]', tab: 'uml', title: '实用工具', desc: '版本历史 / 一键回滚、需求→模型（粘贴需求 AI 出图）、项目知识库（AI 自动记录每次结论）。' },
-  { target: '[data-tour="health"]', tab: 'uml', title: '健康度', desc: 'AI 深度分析整个项目：评分 + 问题清单 + 改进建议，写代码前先给架构做个体检。' },
-  { target: '[data-tab="code"]', tab: 'code', title: '代码生成', desc: '模型一键转代码（Java/Python/TS/C#）；ER 转 MySQL 建表语句；粘贴代码反推模型；AI 生成文档。' },
-  { target: '[data-tour="collab"]', tab: 'uml', title: '实时协作', desc: '右上角「协作」：owner 发起邀请，协作者输 ID 直接加入当前项目；变更需 owner 审批（类 GitHub PR）。' },
-  { target: '[data-tab="ai"]', tab: 'ai', title: 'AI 智能体', desc: '一句话描述业务自动生成整套企业架构（UML+ArchiMate+ER）；也可直接说「给 Order 加个字段」「体检并优化」，智能体自己调工具操作当前项目。' },
-  { target: '[data-tab="dev"]', tab: 'dev', title: '研发管理', desc: '需求、测试用例、缺陷、任务管理，支持 AI 一键生成与排期。' },
-  { target: '', tab: '', title: '完成 🎉', desc: '你已经掌握基本用法，随时可在右上角「帮助」里重新引导。' },
+  { target: '[data-tour="ai"]', tab: 'uml', title: 'AI 功能', desc: '校验、架构评审、元素分析、对话式编辑、从描述生成图——都收在这个「AI」菜单里。' },
+  { target: '[data-tour="tools"]', tab: 'uml', title: '实用工具', desc: '版本历史 / 一键回滚、需求→模型（粘贴需求出图）、项目知识库（AI 自动记录每次结论）。' },
+  { target: '[data-tour="health"]', tab: 'uml', title: '健康度', desc: '给整个项目做体检：评分 + 问题清单 + 改进建议。生成架构后会自动跑一次，含跨图命名一致性检查。' },
+  { target: '[data-subtab="code"]', tab: 'code', title: '代码生成', desc: '模型转代码（Java/Python/TS/C#）、ER 转建表 SQL、粘贴代码反推模型；还能一键生成整套若依 RuoYi-Vue3 模块（含菜单 SQL 与前端页面）。' },
+  { target: '[data-tour="collab"]', tab: 'uml', title: '实时协作', desc: '右上角「协作」：owner 发起邀请，协作者凭 6 位账户 ID 加入当前项目；变更需 owner 审批（类 GitHub PR）。' },
+  { target: '[data-subtab="dev"]', tab: 'dev', title: '研发管理', desc: '需求、测试用例、缺陷、任务管理，支持 AI 一键生成与排期。' },
+  { target: '[data-tab="chat"]', tab: 'dev', title: '随时回到智能体', desc: '两个页面随时互切：编辑页最右边的「AI 智能体」回到对话，对话页右上角「专业编辑」再过来。' },
+  { target: '', tab: '', title: '完成 🎉', desc: '你已经掌握基本用法。想重看这段引导：智能体页右上角的「?」，或专业编辑页的「帮助」。' },
 ]
 const currentTourStep = computed(() => tourSteps[tourStep.value])
 const isLastTourStep = computed(() => tourStep.value >= tourSteps.length - 1)
@@ -376,7 +385,9 @@ const positionTourHighlight = () => {
       return
     }
     if (step.tab) {
-      if (step.tab === 'ai') activeTab.value = 'chat'
+      // 两页式：'chat' 回智能体页，其余（uml/archimate/data/code/dev/admin）走专业编辑
+      // （'ai' 是拆分前的旧页签名，保留兼容）
+      if (step.tab === 'chat' || step.tab === 'ai') activeTab.value = 'chat'
       else openStudio(step.tab as any)
     }
     let placed = false
@@ -6161,6 +6172,7 @@ onMounted(() => {
           @open-studio="activeTab = 'studio'"
           @logout="logout"
           @switch-account="switchAccount"
+          @start-tour="startTour"
         />
       </KeepAlive>
     </div>
