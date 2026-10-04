@@ -169,6 +169,33 @@ def main():
     check(any('t_4' == t['tableName'] for t in meta['tables']), '中文表名兜底为 t_4')
     check(any(t['compositePk'] for t in meta['tables']), '复合主键被识别')
 
+    print('\n== 复合主键 = 联合主键实现（不再降级） ==')
+    oi_base = 'backend/ruoyi-system/src/main/java/com/ruoyi/system'
+    oi_mapper = by_path[f'{oi_base}/mapper/OrderItemMapper.java']['content']
+    oi_xml = by_path['backend/ruoyi-system/src/main/resources/mapper/system/OrderItemMapper.xml']['content']
+    oi_ctrl = by_path[f'{oi_base}/controller/OrderItemController.java']['content']
+    oi_svc = by_path[f'{oi_base}/service/impl/OrderItemServiceImpl.java']['content']
+
+    check('selectOrderItemByOrderIdAndProductId(@Param("orderId") Long orderId, @Param("productId") Long productId)'
+          in oi_mapper, 'Mapper 用双参数且带 @Param（不依赖编译器的 -parameters）')
+    check('import org.apache.ibatis.annotations.Param;' in oi_mapper, '复合主键才引入 Param import')
+    check('deleteOrderItemByOrderIdAndProductId(' in oi_mapper, '删除走组合键')
+    check('deleteOrderItemByIds' not in oi_mapper, '复合主键不生成批量删除（语义不成立）')
+    check('where order_id = #{orderId} and product_id = #{productId}' in oi_xml, 'XML 的 where 用组合键')
+    check('deleteOrderItemByIds' not in oi_xml, 'XML 同样没有批量删除')
+    check('@GetMapping(value = "/{orderId}/{productId}")' in oi_ctrl, 'Controller 的查询路径是两段')
+    check('@DeleteMapping("/{orderId}/{productId}")' in oi_ctrl, 'Controller 的删除路径是两段')
+    check('@RequestMapping("/{ids}")' not in oi_ctrl, '没有残留的批量删除端点')
+    check('deleteOrderItemByOrderIdAndProductId(orderId, productId)' in oi_svc, 'ServiceImpl 传两个实参')
+    # 第二个主键不能再出现在「已降级为普通列」的旧告警里
+    joined_warn = '\n'.join(meta['warnings'])
+    check('已降级为普通列' not in joined_warn, '不再出现「降级为普通列」的旧告警')
+    check('已按**联合主键**生成' in joined_warn, '改成了联合主键说明')
+    # 单主键不受影响：仍然有批量删除
+    single_mapper = by_path[f'{oi_base}/mapper/UserMapper.java']['content']
+    check('deleteUserByIds(Long[] ids)' in single_mapper, '单主键表的批量删除保持不变')
+    check('@Param' not in single_mapper, '单主键不引入 @Param')
+
     print('\n== 内容健全性 ==')
     joined = '\n'.join(f['content'] for f in files)
     # 只找 Python 的 None / 模板占位符泄漏；`undefined` 与 `${new Date().getTime()}` 是若依代码本就有的写法

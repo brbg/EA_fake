@@ -465,6 +465,8 @@ def build_table_schema(entity, cfg, index=0, apply_override=False):
 
     fields = entity.get('fields') or []
     pk_indexes = [i for i, f in enumerate(fields) if f.get('isPrimary')]
+    # 复合主键（中间表常见）：**所有**主键列都保持主键身份，不再把第二个降级成普通列
+    composite = len(pk_indexes) > 1
 
     columns = []
     seen = set()
@@ -485,7 +487,7 @@ def build_table_schema(entity, cfg, index=0, apply_override=False):
             continue
         seen.add(col_name)
 
-        is_pk = len(pk_indexes) > 0 and i == pk_indexes[0]
+        is_pk = i in pk_indexes
         if i in pk_indexes:
             pk_col_names.append(col_name)
         base, length, scale, tw = parse_sql_type(f.get('type'))
@@ -506,17 +508,20 @@ def build_table_schema(entity, cfg, index=0, apply_override=False):
             is_pk=is_pk, is_fk=is_fk, is_super=super_col,
             # 只有 create_time 进列表展示（与若依自带页面一致），TEXT/JSON 不进
             list_=(col_name == 'create_time') if super_col else base not in ('TEXT', 'LONGTEXT', 'MEDIUMTEXT', 'TINYTEXT', 'JSON'),
-            dict_type=guess_dict_type(col_name), increment=is_pk,
+            # 复合主键不能有自增列（MySQL 只允许一个 auto_increment 且必须在索引首列）
+            dict_type=guess_dict_type(col_name), increment=is_pk and not composite,
         )
         col['_index'] = i
         columns.append(col)
 
-    # 复合主键：第一个当业务主键，其余降级为普通列
-    if len(pk_indexes) > 1:
-        extra = [columns[i]['column_name'] for i in pk_indexes[1:]]
+    # 复合主键：按联合主键生成（相关模板走双参数），不再是「降级 + 手工调整」
+    if composite:
+        names = '、'.join(columns[i]['column_name'] for i in pk_indexes)
         warnings.append(
-            f'表 {table_name} 是复合主键（{"、".join(extra)} 已降级为普通列）：'
-            f'若依假定单主键，domain / Mapper.xml / ServiceImpl / Controller / index.vue 里的主键相关代码需手工调整'
+            f'表 {table_name} 是复合主键（{names}），已按**联合主键**生成：'
+            f'Mapper/Controller 用多参数（如 /{{pk1}}/{{pk2}}），前端按组合键标识行，且不提供批量删除'
+            f'（复合主键的批量删语义不成立）。注意这不是若依官方范式——官方仅支持单主键，'
+            f'所以与官方生成器的产出形态不同，属本平台自定义方案'
         )
     if not pk_indexes:
         warnings.append(f'表 {table_name} 没有主键，已自动补一个自增 id')
@@ -540,9 +545,10 @@ def build_table_schema(entity, cfg, index=0, apply_override=False):
     for c in columns:
         c.pop('_index', None)
 
-    pk = next((c for c in columns if c['is_pk']), None)
+    pk_fields = [c for c in columns if c['is_pk']]
+    pk = pk_fields[0] if pk_fields else None
     pk_field = pk['java_field'] if pk else 'id'
-    composite_pk = len(pk_indexes) > 1
+    composite_pk = len(pk_fields) > 1
 
     stripped = strip_table_prefix(table_name, cfg.table_prefix)
     if apply_override and cfg.class_name:
@@ -570,7 +576,8 @@ def build_table_schema(entity, cfg, index=0, apply_override=False):
         'pk_field': pk_field,
         'pk_cap': pk_field[:1].upper() + pk_field[1:],
         'composite_pk': composite_pk,
-        'pk_columns': pk_col_names,   # 复合主键时 DDL 用（Java 层只用第一个）
+        'pk_columns': pk_col_names,   # DDL 用（复合主键时全量）
+        'pk_fields': pk_fields,       # 全部主键列；模板按它决定单参数还是多参数
         'warnings': warnings,
         'has_create_time': any(c['column_name'] == 'create_time' for c in columns),
         'has_update_time': any(c['column_name'] == 'update_time' for c in columns),

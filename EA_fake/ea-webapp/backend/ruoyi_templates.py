@@ -146,14 +146,95 @@ def render_domain(table, cfg):
     return _java_file(table['package_name'] + '.domain', imports, '\n'.join(body), doc)
 
 
+# ---------------------------------------------------------------- 主键辅助
+# 单主键与复合主键（中间表常见）在这里统一出口，渲染函数不各判一次。
+# **注意：若依官方只支持单主键**；复合主键是本平台自定义的自洽方案
+# （多参数 + 不提供批量删除），与官方生成器的产出形态不同。
+
+def _pk_list(table):
+    """全部主键列。没有主键时返回空列表。"""
+    return table.get('pk_fields') or ([table['pk']] if table.get('pk') else [])
+
+
+def _is_composite(table):
+    return len(_pk_list(table)) > 1
+
+
+def _pk_args(table):
+    """Java 形参：'Long id' / 'Long orderId, Long productId'。"""
+    pks = _pk_list(table)
+    if not pks:
+        return 'Long id'
+    return ', '.join(f"{c['java_type']} {c['java_field']}" for c in pks)
+
+
+def _pk_params(table):
+    """Java 实参：'id' / 'orderId, productId'。"""
+    pks = _pk_list(table)
+    if not pks:
+        return 'id'
+    return ', '.join(c['java_field'] for c in pks)
+
+
+def _pk_args_annotated(table):
+    """Mapper 接口的形参：多参数时逐个加 @Param。
+
+    不加 @Param 时 MyBatis 只认 `param1/param2`/`arg0/arg1`，想用 `#{orderId}` 这种
+    真参数名得同时满足「编译带 -parameters」且「MyBatis useActualParamName=true」——
+    两个隐式条件任一不成立，XML 里的 `#{orderId}` 就会在**运行时**报
+    「Parameter 'orderId' not found」。显式注解把这个坑堵死。
+    """
+    pks = _pk_list(table)
+    if len(pks) <= 1:
+        return _pk_args(table)
+    return ', '.join(f'@Param("{c["java_field"]}") {c["java_type"]} {c["java_field"]}' for c in pks)
+
+
+def _pk_suffix(table):
+    """方法名里的主键后缀：单主键沿用 pk_cap（Id）；复合用 OrderIdAndProductId。"""
+    pks = _pk_list(table)
+    if len(pks) <= 1:
+        return table['pk_cap']
+    return 'And'.join(c['java_field'][:1].upper() + c['java_field'][1:] for c in pks)
+
+
+def _pk_where(table):
+    """Mapper.xml 的 where：'id = #{id}' / 'order_id = #{orderId} and product_id = #{productId}'。"""
+    pks = _pk_list(table)
+    if not pks:
+        return 'id = #{id}'
+    return ' and '.join(f"{c['column_name']} = #{{{c['java_field']}}}" for c in pks)
+
+
+def _pk_path_vars(table):
+    """Controller 形参：'@PathVariable("id") Long id'；复合主键逐个列举。"""
+    pks = _pk_list(table)
+    if not pks:
+        return '@PathVariable("id") Long id'
+    return ', '.join(f'@PathVariable("{c["java_field"]}") {c["java_type"]} {c["java_field"]}' for c in pks)
+
+
+def _pk_path(table):
+    """REST 路径变量：'{id}' / '{orderId}/{productId}'。"""
+    pks = _pk_list(table)
+    if not pks:
+        return '{id}'
+    return '/'.join('{' + c['java_field'] + '}' for c in pks)
+
+
+def _pk_doc(table):
+    """javadoc 里逐参数说明。"""
+    pks = _pk_list(table)
+    return [f'     * @param {c["java_field"]} 主键' for c in pks] or ['     * @param id 主键']
+
+
 # ---------------------------------------------------------------- Java: mapper
 
 def render_mapper_java(table, cfg):
     cls = table['class_name']
     var = table['business_name']
-    pk_type = table['pk']['java_type'] if table['pk'] else 'Long'
-    pk_field = table['pk_field']
-    pk_cap = table['pk_cap']
+    pk_args = _pk_args_annotated(table)
+    pk_suffix = _pk_suffix(table)
 
     body = [
         f'public interface {cls}Mapper ',
@@ -161,10 +242,10 @@ def render_mapper_java(table, cfg):
         '    /**',
         f'     * 查询{table["comment"]}',
         '     * ',
-        f'     * @param {pk_field} {table["comment"]}主键',
+    ] + _pk_doc(table) + [
         f'     * @return {table["comment"]}',
         '     */',
-        f'    public {cls} select{cls}By{pk_cap}({pk_type} {pk_field});',
+        f'    public {cls} select{cls}By{pk_suffix}({pk_args});',
         '',
         '    /**',
         f'     * 查询{table["comment"]}列表',
@@ -193,21 +274,28 @@ def render_mapper_java(table, cfg):
         '    /**',
         f'     * 删除{table["comment"]}',
         '     * ',
-        f'     * @param {pk_field} {table["comment"]}主键',
+    ] + _pk_doc(table) + [
         '     * @return 结果',
         '     */',
-        f'    public int delete{cls}By{pk_cap}({pk_type} {pk_field});',
-        '',
-        '    /**',
-        f'     * 批量删除{table["comment"]}',
-        '     * ',
-        f'     * @param {pk_field}s 需要删除的数据主键集合',
-        '     * @return 结果',
-        '     */',
-        f'    public int delete{cls}By{pk_cap}s({pk_type}[] {pk_field}s);',
-        '}',
+        f'    public int delete{cls}By{pk_suffix}({pk_args});',
     ]
+    # 批量删除：复合主键下「一维主键数组」表达不了成对的键，语义不成立，故不生成
+    if not _is_composite(table):
+        pk_type = table['pk']['java_type'] if table['pk'] else 'Long'
+        body += [
+            '',
+            '    /**',
+            f'     * 批量删除{table["comment"]}',
+            '     * ',
+            f'     * @param {table["pk_field"]}s 需要删除的数据主键集合',
+            '     * @return 结果',
+            '     */',
+            f'    public int delete{cls}By{pk_suffix}s({pk_type}[] {table["pk_field"]}s);',
+        ]
+    body.append('}')
     imports = ['java.util.List', f'{table["package_name"]}.domain.{cls}']
+    if _is_composite(table):
+        imports.append('org.apache.ibatis.annotations.Param')   # 多参数必须显式命名
     doc = _comment([f'{table["comment"]}Mapper接口', '', f'@author {cfg.author}', f'@date {_today()}'], 0)
     return _java_file(table['package_name'] + '.mapper', imports, '\n'.join(body), doc)
 
@@ -217,11 +305,10 @@ def render_mapper_java(table, cfg):
 def _service_methods(table, suffix=';'):
     cls = table['class_name']
     var = table['business_name']
-    pk_type = table['pk']['java_type'] if table['pk'] else 'Long'
-    pk_field = table['pk_field']
-    pk_cap = table['pk_cap']
-    return [
-        f'    public {cls} select{cls}By{pk_cap}({pk_type} {pk_field}){suffix}',
+    pk_args = _pk_args(table)
+    pk_suffix = _pk_suffix(table)
+    methods = [
+        f'    public {cls} select{cls}By{pk_suffix}({pk_args}){suffix}',
         '',
         f'    public List<{cls}> select{cls}List({cls} {var}){suffix}',
         '',
@@ -229,10 +316,12 @@ def _service_methods(table, suffix=';'):
         '',
         f'    public int update{cls}({cls} {var}){suffix}',
         '',
-        f'    public int delete{cls}By{pk_cap}({pk_type} {pk_field}){suffix}',
-        '',
-        f'    public int delete{cls}By{pk_cap}s({pk_type}[] {pk_field}s){suffix}',
+        f'    public int delete{cls}By{pk_suffix}({pk_args}){suffix}',
     ]
+    if not _is_composite(table):
+        pk_type = table['pk']['java_type'] if table['pk'] else 'Long'
+        methods += ['', f'    public int delete{cls}By{pk_suffix}s({pk_type}[] {table["pk_field"]}s){suffix}']
+    return methods
 
 
 def render_service_interface(table, cfg):
@@ -248,7 +337,9 @@ def render_service_impl(table, cfg):
     var = table['business_name']
     pk_type = table['pk']['java_type'] if table['pk'] else 'Long'
     pk_field = table['pk_field']
-    pk_cap = table['pk_cap']
+    pk_args = _pk_args(table)
+    pk_params = _pk_params(table)
+    pk_suffix = _pk_suffix(table)
 
     body = [
         '@Service',
@@ -260,13 +351,13 @@ def render_service_impl(table, cfg):
         '    /**',
         f'     * 查询{table["comment"]}',
         '     * ',
-        f'     * @param {pk_field} {table["comment"]}主键',
+    ] + _pk_doc(table) + [
         f'     * @return {table["comment"]}',
         '     */',
         '    @Override',
-        f'    public {cls} select{cls}By{pk_cap}({pk_type} {pk_field})',
+        f'    public {cls} select{cls}By{pk_suffix}({pk_args})',
         '    {',
-        f'        return {var}Mapper.select{cls}By{pk_cap}({pk_field});',
+        f'        return {var}Mapper.select{cls}By{pk_suffix}({pk_params});',
         '    }',
         '',
         '    /**',
@@ -312,29 +403,35 @@ def render_service_impl(table, cfg):
     body += [
         f'        return {var}Mapper.update{cls}({var});',
         '    }',
-        '',
-        '    /**',
-        f'     * 批量删除{table["comment"]}',
-        '     * ',
-        f'     * @param {pk_field}s 需要删除的{table["comment"]}主键',
-        '     * @return 结果',
-        '     */',
-        '    @Override',
-        f'    public int delete{cls}By{pk_cap}s({pk_type}[] {pk_field}s)',
-        '    {',
-        f'        return {var}Mapper.delete{cls}By{pk_cap}s({pk_field}s);',
-        '    }',
+    ]
+    # 批量删除只对单主键成立（复合主键要传成对的键，一维数组表达不了）
+    if not _is_composite(table):
+        body += [
+            '',
+            '    /**',
+            f'     * 批量删除{table["comment"]}',
+            '     * ',
+            f'     * @param {pk_field}s 需要删除的{table["comment"]}主键',
+            '     * @return 结果',
+            '     */',
+            '    @Override',
+            f'    public int delete{cls}By{pk_suffix}s({pk_type}[] {pk_field}s)',
+            '    {',
+            f'        return {var}Mapper.delete{cls}By{pk_suffix}s({pk_field}s);',
+            '    }',
+        ]
+    body += [
         '',
         '    /**',
         f'     * 删除{table["comment"]}信息',
         '     * ',
-        f'     * @param {pk_field} {table["comment"]}主键',
+    ] + _pk_doc(table) + [
         '     * @return 结果',
         '     */',
         '    @Override',
-        f'    public int delete{cls}By{pk_cap}({pk_type} {pk_field})',
+        f'    public int delete{cls}By{pk_suffix}({pk_args})',
         '    {',
-        f'        return {var}Mapper.delete{cls}By{pk_cap}({pk_field});',
+        f'        return {var}Mapper.delete{cls}By{pk_suffix}({pk_params});',
         '    }',
         '}',
     ]
@@ -358,6 +455,10 @@ def render_controller(table, cfg):
     var = table['business_name']
     pk_type = table['pk']['java_type'] if table['pk'] else 'Long'
     pk_field = table['pk_field']
+    pk_suffix = _pk_suffix(table)
+    pk_params = _pk_params(table)
+    pk_path = _pk_path(table)
+    pk_path_ann = _pk_path_vars(table)
     perm = table['permission_prefix']
     func = table['comment']
     servlet_pkg = 'jakarta' if cfg.servlet_api == 'jakarta' else 'javax'
@@ -399,10 +500,10 @@ def render_controller(table, cfg):
         f'     * 获取{func}详细信息',
         '     */',
         f'    @PreAuthorize("@ss.hasPermi(\'{perm}:query\')")',
-        f'    @GetMapping(value = "/{{{pk_field}}}")',
-        f'    public AjaxResult getInfo(@PathVariable("{pk_field}") {pk_type} {pk_field})',
+        f'    @GetMapping(value = "/{pk_path}")',
+        f'    public AjaxResult getInfo({pk_path_ann})',
         '    {',
-        f'        return success({var}Service.select{cls}By{table["pk_cap"]}({pk_field}));',
+        f'        return success({var}Service.select{cls}By{pk_suffix}({pk_params}));',
         '    }',
         '',
         '    /**',
@@ -432,13 +533,25 @@ def render_controller(table, cfg):
         '     */',
         f'    @PreAuthorize("@ss.hasPermi(\'{perm}:remove\')")',
         f'    @Log(title = "{func}", businessType = BusinessType.DELETE)',
-        f'    @DeleteMapping("/{{{pk_field}s}}")',
-        f'    public AjaxResult remove(@PathVariable {pk_type}[] {pk_field}s)',
-        '    {',
-        f'        return toAjax({var}Service.delete{cls}By{table["pk_cap"]}s({pk_field}s));',
-        '    }',
-        '}',
     ]
+    if _is_composite(table):
+        # 复合主键：没有「主键数组」这种形态，删除走组合键
+        body += [
+            f'    @DeleteMapping("/{pk_path}")',
+            f'    public AjaxResult remove({pk_path_ann})',
+            '    {',
+            f'        return toAjax({var}Service.delete{cls}By{pk_suffix}({pk_params}));',
+            '    }',
+        ]
+    else:
+        body += [
+            f'    @DeleteMapping("/{{{pk_field}s}}")',
+            f'    public AjaxResult remove(@PathVariable {pk_type}[] {pk_field}s)',
+            '    {',
+            f'        return toAjax({var}Service.delete{cls}By{pk_suffix}s({pk_field}s));',
+            '    }',
+        ]
+    body.append('}')
 
     imports = ['java.util.List', f'{servlet_pkg}.servlet.http.HttpServletResponse']
     imports += [
@@ -472,7 +585,10 @@ def render_mapper_xml(table, cfg):
     cls = table['class_name']
     var = table['business_name']
     pk_field = table['pk_field']
-    pk_cap = table['pk_cap']
+    pk_suffix = _pk_suffix(table)
+    pk_where = _pk_where(table)
+    # 复合主键走多参数 + @Param，MyBatis 自己推断参数，写 parameterType 反而错
+    pk_ptype = '' if _is_composite(table) else f' parameterType="{table["pk"]["java_type"] if table["pk"] else "Long"}"'
     columns = table['columns']
     col_names = ', '.join(c['column_name'] for c in columns)
     pk_col = table['pk']['column_name'] if table['pk'] else 'id'
@@ -553,9 +669,9 @@ def render_mapper_xml(table, cfg):
         '        </where>',
         '    </select>',
         '    ',
-        f'    <select id="select{cls}By{pk_cap}" parameterType="{table["pk"]["java_type"] if table["pk"] else "Long"}" resultMap="{cls}Result">',
+        f'    <select id="select{cls}By{pk_suffix}"{pk_ptype} resultMap="{cls}Result">',
         f'        <include refid="select{cls}Vo"/>',
-        f'        where {pk_col} = #{{{pk_field}}}',
+        f'        where {pk_where}',
         '    </select>',
         '    ',
         f'    <insert id="insert{cls}"{insert_attrs}>',
@@ -579,19 +695,25 @@ def render_mapper_xml(table, cfg):
     lines += update_sets
     lines += [
         '        </trim>',
-        f'        where {pk_col} = #{{{pk_field}}}',
+        f'        where {pk_where}',
         '    </update>',
         '',
-        f'    <delete id="delete{cls}By{pk_cap}" parameterType="{table["pk"]["java_type"] if table["pk"] else "Long"}">',
-        f'        delete from {table["table_name"]} where {pk_col} = #{{{pk_field}}}',
+        f'    <delete id="delete{cls}By{pk_suffix}"{pk_ptype}>',
+        f'        delete from {table["table_name"]} where {pk_where}',
         '    </delete>',
-        '',
-        f'    <delete id="delete{cls}By{pk_cap}s" parameterType="String">',
-        f'        delete from {table["table_name"]} where {pk_col} in ',
-        f'        <foreach item="{pk_field}" collection="array" open="(" separator="," close=")">',
-        f'            #{{{pk_field}}}',
-        '        </foreach>',
-        '    </delete>',
+    ]
+    # 批量删除只对单主键成立（复合主键要传成对的键，一维数组表达不了）
+    if not _is_composite(table):
+        lines += [
+            '',
+            f'    <delete id="delete{cls}By{pk_suffix}s" parameterType="String">',
+            f'        delete from {table["table_name"]} where {pk_col} in ',
+            f'        <foreach item="{pk_field}" collection="array" open="(" separator="," close=")">',
+            f'            #{{{pk_field}}}',
+            '        </foreach>',
+            '    </delete>',
+        ]
+    lines += [
         '    ',
         '</mapper>',
     ]
@@ -688,6 +810,15 @@ def render_api(table, cfg):
     url = f'/{table["module_name"]}/{var}'
     pk_field = table['pk_field']
     ts = cfg.frontend_ts
+    # 复合主键：get/del 收多个参数，URL 拼成 a/b 两段（与 Controller 的 /{a}/{b} 对应）
+    _jstype = ': number | string' if ts else ''
+    if _is_composite(table):
+        _pks = [c['java_field'] for c in _pk_list(table)]
+        pk_sig = ', '.join(f'{f}{_jstype}' for f in _pks)
+        pk_url = f"'{url}/' + " + " + '/' + ".join(_pks)
+    else:
+        pk_sig = f'{pk_field}{_jstype}'
+        pk_url = f"'{url}/' + {pk_field}"
     q = ': any' if ts else ''
     head = "import request from '@/utils/request'\n\n" if ts else "import request from '@/utils/request'\n\n"
     body = [
@@ -701,9 +832,9 @@ def render_api(table, cfg):
         '}',
         '',
         f'// 查询{cls}详细',
-        f'export function get{cls}({pk_field}{": number | string" if ts else ""}) {{',
+        f'export function get{cls}({pk_sig}) {{',
         '  return request({',
-        f"    url: '{url}/' + {pk_field},",
+        f"    url: {pk_url},",
         "    method: 'get'",
         '  })',
         '}',
@@ -727,9 +858,9 @@ def render_api(table, cfg):
         '}',
         '',
         f'// 删除{cls}',
-        f'export function del{cls}({pk_field}{": number | string | (number | string)[]" if ts else ""}) {{',
+        f'export function del{cls}({pk_sig}) {{',
         '  return request({',
-        f"    url: '{url}/' + {pk_field},",
+        f"    url: {pk_url},",
         "    method: 'delete'",
         '  })',
         '}',
@@ -865,8 +996,17 @@ def render_index_vue(table, cfg):
     dict_types = _dict_types(table)
     query_cols = [c for c in table['columns'] if c['query']]
     list_cols = [c for c in table['columns'] if c['list']]
-    edit_cols = [c for c in _business_columns(table) if c['java_field'] != table['pk_field']]
+    # 主键列不进编辑表单：编辑时 form.value 由 getX() 回来的整行数据填充，
+    # 主键在里面就够 update 用的，不需要（也不该）让用户改主键
+    _pk_java = [c['java_field'] for c in _pk_list(table)] or [table['pk_field']]
+    edit_cols = [c for c in _business_columns(table) if c['java_field'] not in _pk_java]
     required_cols = [c for c in edit_cols if c['required']]
+    # 复合主键（中间表常见）：前端按组合键标识行，且不提供批量操作
+    composite = _is_composite(table)
+    pk_js = [c['java_field'] for c in _pk_list(table)] or [table['pk_field']]
+    pk_call = ', '.join(pk_js)                                     # getX(a, b) / delX(a, b)
+    pk_row_call = ', '.join(f'row.{f}' for f in pk_js)             # 行内取值
+    pk_row_key_expr = ' + "-" + '.join(f'row.{f}' for f in pk_js)  # 组合键表达式
     pk_field = table['pk_field']
     perm = table['permission_prefix']
     between_cols = [c for c in query_cols if c['query_type'] == 'BETWEEN']
@@ -890,20 +1030,26 @@ def render_index_vue(table, cfg):
     A('      <el-col :span="1.5">')
     A(f'        <el-button type="primary" plain icon="Plus" @click="handleAdd" v-hasPermi="[\'{perm}:add\']">新增</el-button>')
     A('      </el-col>')
-    A('      <el-col :span="1.5">')
-    A(f'        <el-button type="success" plain icon="Edit" :disabled="single" @click="handleUpdate" v-hasPermi="[\'{perm}:edit\']">修改</el-button>')
-    A('      </el-col>')
-    A('      <el-col :span="1.5">')
-    A(f'        <el-button type="danger" plain icon="Delete" :disabled="multiple" @click="handleDelete" v-hasPermi="[\'{perm}:remove\']">删除</el-button>')
-    A('      </el-col>')
+    # 批量修改/删除依赖「一行一个主键」，复合主键下不成立 → 不渲染这两个按钮
+    if not composite:
+        A('      <el-col :span="1.5">')
+        A(f'        <el-button type="success" plain icon="Edit" :disabled="single" @click="handleUpdate" v-hasPermi="[\'{perm}:edit\']">修改</el-button>')
+        A('      </el-col>')
+        A('      <el-col :span="1.5">')
+        A(f'        <el-button type="danger" plain icon="Delete" :disabled="multiple" @click="handleDelete" v-hasPermi="[\'{perm}:remove\']">删除</el-button>')
+        A('      </el-col>')
     A('      <el-col :span="1.5">')
     A(f'        <el-button type="warning" plain icon="Download" @click="handleExport" v-hasPermi="[\'{perm}:export\']">导出</el-button>')
     A('      </el-col>')
     A('      <right-toolbar v-model:showSearch="showSearch" @queryTable="getList"></right-toolbar>')
     A('    </el-row>')
     A('')
-    A(f'    <el-table v-loading="loading" :data="{var_list}" @selection-change="handleSelectionChange">')
-    A('      <el-table-column type="selection" width="55" align="center" />')
+    if composite:
+        # 组合键标识行：不能用单一主键属性，给 row-key 一个函数
+        A(f'    <el-table v-loading="loading" :data="{var_list}" :row-key="rowKey">')
+    else:
+        A(f'    <el-table v-loading="loading" :data="{var_list}" @selection-change="handleSelectionChange">')
+        A('      <el-table-column type="selection" width="55" align="center" />')
     for c in list_cols:
         L.extend(_table_column(c))
     A('      <el-table-column label="操作" align="center" width="180" class-name="small-padding fixed-width">')
@@ -950,9 +1096,14 @@ def render_index_vue(table, cfg):
     A('const open = ref(false)')
     A('const loading = ref(true)')
     A('const showSearch = ref(true)')
-    A('const ids = ref<any[]>([])' if ts else 'const ids = ref([])')
-    A('const single = ref(true)')
-    A('const multiple = ref(true)')
+    if composite:
+        A('/** 复合主键：没有单一 id 可选，用组合键唯一标识一行 */')
+        A('const rowKey = (row: any) => `${row.' + '}-${row.'.join(pk_js) + '}`' if ts
+          else 'const rowKey = (row) => `${row.' + '}-${row.'.join(pk_js) + '}`')
+    else:
+        A('const ids = ref<any[]>([])' if ts else 'const ids = ref([])')
+        A('const single = ref(true)')
+        A('const multiple = ref(true)')
     A('const total = ref(0)')
     A('const title = ref("")')
     for c in between_cols:
@@ -1013,13 +1164,14 @@ def render_index_vue(table, cfg):
     A('  handleQuery()')
     A('}')
     A('')
-    A('/** 多选框选中数据 */')
-    A('function handleSelectionChange(selection) {')
-    A(f'  ids.value = selection.map(item => item.{pk_field})')
-    A('  single.value = selection.length != 1')
-    A('  multiple.value = !selection.length')
-    A('}')
-    A('')
+    if not composite:
+        A('/** 多选框选中数据 */')
+        A('function handleSelectionChange(selection) {')
+        A(f'  ids.value = selection.map(item => item.{pk_field})')
+        A('  single.value = selection.length != 1')
+        A('  multiple.value = !selection.length')
+        A('}')
+        A('')
     A('/** 新增按钮操作 */')
     A('function handleAdd() {')
     A('  reset()')
@@ -1030,8 +1182,12 @@ def render_index_vue(table, cfg):
     A('/** 修改按钮操作 */')
     A('function handleUpdate(row) {')
     A('  reset()')
-    A(f'  const {pk_field} = row.{pk_field} || ids.value')
-    A(f'  get{cls}({pk_field}).then(response => {{')
+    if composite:
+        A(f'  const {{ {", ".join(pk_js)} }} = row')
+        A(f'  get{cls}({pk_call}).then(response => {{')
+    else:
+        A(f'  const {pk_field} = row.{pk_field} || ids.value')
+        A(f'  get{cls}({pk_field}).then(response => {{')
     A('    form.value = response.data')
     A('    open.value = true')
     A(f'    title.value = "修改{cls}"')
@@ -1042,7 +1198,8 @@ def render_index_vue(table, cfg):
     A('function submitForm() {')
     A(f'  proxy.$refs["{var}Ref"].validate(valid => {{')
     A('    if (valid) {')
-    A('      if (form.value.' + pk_field + ') {')
+    # 提交时判断「新增还是修改」：单主键看那一个，复合主键要几个都在才算修改
+    A('      if (' + ' && '.join(f'form.value.{f}' for f in pk_js) + ') {')
     A(f'        update{cls}(form.value).then(response => {{')
     A('          proxy.$modal.msgSuccess("修改成功")')
     A('          open.value = false')
@@ -1061,9 +1218,15 @@ def render_index_vue(table, cfg):
     A('')
     A('/** 删除按钮操作 */')
     A('function handleDelete(row) {')
-    A('  const _' + pk_field + 's = row.' + pk_field + ' || ids.value')
-    A(f'  proxy.$modal.confirm(\'是否确认删除编号为"\' + _{pk_field}s + \'"的数据项？\').then(function() {{')
-    A(f'    return del{cls}(_{pk_field}s)')
+    if composite:
+        A(f'  const _key = `${{row.{pk_js[0]}}}-${{row.{pk_js[1]}}}`' if ts
+          else f'  const _key = `${{row.{pk_js[0]}}}-${{row.{pk_js[1]}}}`')
+        A('  proxy.$modal.confirm(\'是否确认删除编号为"\' + _key + \'"的数据项？\').then(function() {')
+        A(f'    return del{cls}({pk_row_call})')
+    else:
+        A('  const _' + pk_field + 's = row.' + pk_field + ' || ids.value')
+        A(f'  proxy.$modal.confirm(\'是否确认删除编号为"\' + _{pk_field}s + \'"的数据项？\').then(function() {{')
+        A(f'    return del{cls}(_{pk_field}s)')
     A('  }).then(() => {')
     A('    getList()')
     A('    proxy.$modal.msgSuccess("删除成功")')
@@ -1145,6 +1308,10 @@ def render_readme(schema, cfg):
         '- 关联关系按若依的**平铺外键**惯例处理，未自动改表结构；需要外键列请在 ER 图里补上再生成一次。',
         '- `@Excel` 的字典选项文本取自若依内置字典；若你的库里改过字典项，导出的 Excel 中文可能与页面不一致（无害）。',
         '- 本模板对齐**经典 RuoYi-Vue**（`com.ruoyi.*`、`@ss.hasPermi`、MyBatis）。RuoYi-Vue-Plus（`org.dromara.*`、`@SaCheckPermission`、MyBatis-Plus）不适用。',
+        '- **复合主键表（如中间表）用的是本平台自定义方案**：若依官方只支持单主键，官方生成器遇到复合主键会只取第一个。'
+        '这里的做法是——所有主键列都保持主键，Mapper/Service 收多参数（`selectXxxByAAndB`）、'
+        'Controller 路径是两段（`/a/b`）、XML 用 `a = #{a} and b = #{b}`、'
+        '**不生成批量删除**（复合主键的批量删语义不成立）。懂若依的人会看出与官方不同，这是刻意的。',
     ]
     if schema['warnings']:
         lines += ['', '## 生成告警', '']
