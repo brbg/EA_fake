@@ -560,6 +560,51 @@ def test_architect_agent_flow():
         core.ai_service_config.enabled = was_enabled
 
 
+def test_archimate_prompt_drift():
+    """防漂移：提示词里的 ArchiMate 枚举必须与 constants.py 的白名单一致。
+
+    这组值原先散在三处（app.py 校验用 / prompts.py 提示词 / 前端调色板），
+    改一处忘一处就会「提示词让模型输出 A，后端白名单只认 B」——模型照着提示词
+    给出的类型被后端静默改写，很难查。收敛到 constants.py 后，用这条断言锁住。
+    """
+    print('\n== ArchiMate 枚举防漂移 ==')
+    from constants import (ARCHIMATE_ELEMENT_TYPES, ARCHIMATE_REL_TYPES, ARCHIMATE_LAYERS,
+                           ARCHIMATE_ELEMENT_ENUM, ARCHIMATE_REL_ENUM, ARCHIMATE_LAYER_ENUM)
+
+    # 常量之间的自洽：枚举串必须覆盖集合里的每一项（拼串时漏了就会被抓）
+    for label, enum, items in (('元素', ARCHIMATE_ELEMENT_ENUM, ARCHIMATE_ELEMENT_TYPES),
+                               ('关系', ARCHIMATE_REL_ENUM, ARCHIMATE_REL_TYPES),
+                               ('层次', ARCHIMATE_LAYER_ENUM, ARCHIMATE_LAYERS)):
+        missing = [t for t in items if t not in enum.split('/')]
+        check(not missing, f'{label}枚举串覆盖白名单全部（缺 {missing}）')
+        extra = [t for t in enum.split('/') if t not in items]
+        check(not extra, f'{label}枚举串没有多余项（多 {extra}）')
+
+    # 三处提示词的正文里必须逐个出现
+    import prompts
+    prompts_texts = {
+        'edit_model_system_prompt(archimate)': prompts.edit_model_system_prompt('archimate'),
+        'ARCHIMATE_GENERATE_SYSTEM_PROMPT': prompts.ARCHIMATE_GENERATE_SYSTEM_PROMPT,
+        'ARCHITECT_GENERATE_SYSTEM_PROMPT': prompts.ARCHITECT_GENERATE_SYSTEM_PROMPT,
+    }
+    for name, text in prompts_texts.items():
+        miss_e = [t for t in ARCHIMATE_ELEMENT_TYPES if t not in text]
+        miss_r = [t for t in ARCHIMATE_REL_TYPES if t not in text]
+        miss_l = [t for t in ARCHIMATE_LAYERS if t not in text]
+        check(not miss_e, f'{name} 含全部元素类型（缺 {miss_e}）')
+        check(not miss_r, f'{name} 含全部关系类型（缺 {miss_r}）')
+        check(not miss_l, f'{name} 含全部层次（缺 {miss_l}）')
+
+    # JSON 示例的大括号没被 f-string 吃掉（重构时最容易错的地方）
+    for name, text in prompts_texts.items():
+        check('{{' not in text and '}}' not in text,
+              f'{name} 没有残留的转义大括号（f-string 忘了还原）')
+    # 后端布局器与前端配色用的层色必须一致（值本身写死在两处语言里，至少锁住后端这份）
+    from constants import ARCH_HEAD, ARCH_BODY
+    check(set(ARCH_HEAD) == set(ARCHIMATE_LAYERS), 'ARCH_HEAD 的键与层次白名单一致')
+    check(set(ARCH_BODY) == set(ARCHIMATE_LAYERS), 'ARCH_BODY 的键与层次白名单一致')
+
+
 def test_truncation_signal():
     """截断必须单独成一个信号——不能与「模型答错」混为一谈。"""
     print('\n== 截断信号（core.chat_json） ==')
@@ -697,6 +742,7 @@ def main():
             test_edit_report_integration()
             test_edit_api_contract()
             test_auto_repair()
+            test_archimate_prompt_drift()
             test_best_of_n()
             test_architect_agent_flow()
             test_truncation_signal()

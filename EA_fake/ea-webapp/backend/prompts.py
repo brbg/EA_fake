@@ -2,7 +2,13 @@
 
 所有 AI 结构化生成的 system prompt 都放在这里，便于统一调优。
 约定：结构化任务只输出 JSON、代码任务只输出纯代码，都不要 markdown 围栏/解释。
+
+**ArchiMate 的枚举串不在这里手写**：原先散在 app.py / 本文件 / 前端三处，改一处忘一处
+就会「提示词让模型输出 A，后端白名单只认 B」。现在统一从 constants.py 派生。
+注意这几行是 f-string，JSON 示例里的字面量大括号必须写成 `{{` `}}`。
 """
+from constants import (ARCHIMATE_ELEMENT_ENUM, ARCHIMATE_REL_ENUM,
+                       ARCHIMATE_LAYER_ENUM)
 
 # 视图类型 → 中文名（供 UML 生成提示词使用）
 UML_VIEW_LABELS = {
@@ -170,10 +176,10 @@ def edit_model_system_prompt(kind):
             '只输出一个JSON对象，不要markdown代码围栏、不要任何解释。格式：\n'
             '{"operations":[操作1,操作2,...]}\n'
             '支持的操作为：\n'
-            '- {"op":"add_element","type":"actor/process/service/component/node/artifact","name":"元素名","layer":"business/application/technology"}\n'
-            '- {"op":"update_element","name":"元素名","new_name":"新名(可选)","layer":"business/application/technology(可选)"}\n'
+            f'- {{"op":"add_element","type":"{ARCHIMATE_ELEMENT_ENUM}","name":"元素名","layer":"{ARCHIMATE_LAYER_ENUM}"}}\n'
+            f'- {{"op":"update_element","name":"元素名","new_name":"新名(可选)","layer":"{ARCHIMATE_LAYER_ENUM}(可选)"}}\n'
             '- {"op":"delete_element","name":"元素名"}\n'
-            '- {"op":"add_relationship","source":"源元素名","target":"目标元素名","type":"association/realization/serving/composition/aggregation/access/flow/triggering"}\n'
+            f'- {{"op":"add_relationship","source":"源元素名","target":"目标元素名","type":"{ARCHIMATE_REL_ENUM}"}}\n'
             '- {"op":"delete_relationship","source":"源元素名","target":"目标元素名"}\n'
             '要求：所有操作里引用的元素名必须来自「当前模型」或本条指令中明确要新建的元素；'
             '新增元素如用户未指定层次则默认 business。'
@@ -293,8 +299,8 @@ ARCHIMATE_GENERATE_SYSTEM_PROMPT = (
     '你是一名资深企业架构师。根据下面的业务描述，设计一套 ArchiMate 企业架构建模。\n'
     '用 ArchiMate 元素覆盖三个层次：business(业务流程/服务/角色)、application(应用组件/服务)、technology(技术节点/工件/服务)。\n'
     '只输出一个JSON对象，不要markdown代码围栏、不要任何解释。格式：\n'
-    '{"elements":[{"type":"actor/process/service/component/node/artifact","name":"元素名","layer":"business/application/technology","description":"一句话说明"}],'
-    '"relationships":[{"source":"源元素名","target":"目标元素名","type":"association/realization/serving/composition/aggregation/access/flow/triggering"}]}\n'
+    f'{{"elements":[{{"type":"{ARCHIMATE_ELEMENT_ENUM}","name":"元素名","layer":"{ARCHIMATE_LAYER_ENUM}","description":"一句话说明"}}],'
+    f'"relationships":[{{"source":"源元素名","target":"目标元素名","type":"{ARCHIMATE_REL_ENUM}"}}]}}\n'
     '要求：元素 5~12 个；relationship 的 source/target 必须引用 elements 里的 name；名字用业务术语、不要翻译成中文拼音缩写。'
 )
 
@@ -306,8 +312,8 @@ ARCHITECT_GENERATE_SYSTEM_PROMPT = (
     ' "project_name":"简短中文项目名",\n'
     ' "uml":{"elements":[{"type":"Class/Interface","name":"类名","attributes":["- 字段名: 类型"],"methods":["+ 方法名(参数): 返回"]}],'
     '"relationships":[{"source":"源类名","target":"目标类名","type":"Association/Composition/Aggregation/Generalization/Realization/Dependency"}]},\n'
-    ' "archimate":{"elements":[{"type":"actor/process/service/component/node/artifact","name":"元素名","layer":"business/application/technology"}],'
-    '"relationships":[{"source":"源","target":"目标","type":"association/realization/serving/composition/aggregation/access/flow/triggering"}]},\n'
+    f' "archimate":{{"elements":[{{"type":"{ARCHIMATE_ELEMENT_ENUM}","name":"元素名","layer":"{ARCHIMATE_LAYER_ENUM}"}}],'
+    f'"relationships":[{{"source":"源","target":"目标","type":"{ARCHIMATE_REL_ENUM}"}}]}},\n'
     ' "er":{"entities":[{"name":"表名","attributes":[{"name":"列名","data_type":"integer/string/decimal/datetime/boolean","is_primary_key":true/false,"is_foreign_key":false}]}],'
     '"relationships":[{"source":"源表","target":"目标表","type":"one_to_one/one_to_many/many_to_many"}]}\n'
     '}\n'

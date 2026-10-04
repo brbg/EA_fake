@@ -70,3 +70,24 @@ ELEMENT_COLORS = {
 
 def get_default_color(elem_type):
     return ELEMENT_COLORS.get(elem_type, '#d0d0d0')
+
+
+# ---------------------------------------------------------------- ArchiMate
+# 单一事实来源：此前这三处各写一份、会各自漂移——
+#   ① backend/app.py（校验用）② backend/prompts.py（提示词里的枚举串）③ 前端 archimateTools
+# 用**有序元组**而不是 set：提示词里要把它们拼成 `a/b/c` 给模型看，顺序必须是稳定的，
+# 不能靠 set 的迭代顺序（每次进程启动都可能不同）。
+# 成员判断用 `in` 即可，元组一样work（元素 ≤10 个，顺序查找的开销可忽略）。
+ARCHIMATE_ELEMENT_TYPES = ('actor', 'process', 'service', 'component', 'node', 'artifact')
+ARCHIMATE_REL_TYPES = ('association', 'realization', 'serving', 'composition',
+                       'aggregation', 'access', 'flow', 'triggering')
+ARCHIMATE_LAYERS = ('business', 'application', 'technology')
+
+# 提示词里直接插值用的枚举串（从上面派生，杜绝「改了集合忘了改提示词」）
+ARCHIMATE_ELEMENT_ENUM = '/'.join(ARCHIMATE_ELEMENT_TYPES)
+ARCHIMATE_REL_ENUM = '/'.join(ARCHIMATE_REL_TYPES)
+ARCHIMATE_LAYER_ENUM = '/'.join(ARCHIMATE_LAYERS)
+
+# 三层配色（后端布局器与前端 getLayerColor 需保持一致）
+ARCH_HEAD = {'business': '#3498db', 'application': '#2ecc71', 'technology': '#e67e22'}
+ARCH_BODY = {'business': '#ecf0f1', 'application': '#e8f8f5', 'technology': '#fef5e7'}

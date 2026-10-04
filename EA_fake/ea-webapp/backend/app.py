@@ -12,7 +12,9 @@ import math
 import requests
 import bcrypt
 import db
-from constants import ELEMENT_TYPES, RELATIONSHIP_TYPES, ELEMENT_COLORS, get_default_color
+from constants import (ELEMENT_TYPES, RELATIONSHIP_TYPES, ELEMENT_COLORS, get_default_color,
+                       ARCHIMATE_ELEMENT_TYPES, ARCHIMATE_REL_TYPES, ARCHIMATE_LAYERS,
+                       ARCH_HEAD, ARCH_BODY)
 from models import Project, SimpleModel, Requirement, TestCase, Defect, Task
 from prompts import uml_system_prompt, ER_SYSTEM_PROMPT, code_system_prompt, VALIDATE_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT, ELEMENT_ANALYSIS_SYSTEM_PROMPT, code_reverse_system_prompt, edit_model_system_prompt, document_system_prompt, ruoyi_annotate_system_prompt
 import ruoyi_gen
@@ -6917,10 +6919,8 @@ def _apply_er_edits(erEntities, erRelations, ops, report=None):
     return new_entities, new_relations
 
 
-ARCHIMATE_ELEMENT_TYPES = {'actor', 'process', 'service', 'component', 'node', 'artifact'}
-ARCHIMATE_REL_TYPES = {'association', 'realization', 'serving', 'composition',
-                       'aggregation', 'access', 'flow', 'triggering'}
-ARCHIMATE_LAYERS = ('business', 'application', 'technology')
+# ArchiMate 元素/关系/层次白名单已移到 constants.py（单一事实来源，
+# prompts.py 也要用它派生提示词里的枚举串，放这里会形成 app→prompts 的反向依赖）
 
 
 def _describe_archimate_for_edit(archimateElements, archimateConnections):
@@ -14638,8 +14638,7 @@ AGENT_STEPS = [('create_project', '新建项目'), ('gen_uml', '生成 UML 类�
                ('auto_repair', '自动校验修复'),
                ('save_version', '保存基线快照'), ('health', '健康度检查'),
                ('apply_optimization', '应用 AI 优化'), ('done', '完成')]
-ARCH_HEAD = {'business': '#3498db', 'application': '#2ecc71', 'technology': '#e67e22'}
-ARCH_BODY = {'business': '#ecf0f1', 'application': '#e8f8f5', 'technology': '#fef5e7'}
+# ARCH_HEAD / ARCH_BODY 已移到 constants.py（与前端 getLayerColor 需一致，集中一处便于对照）
 
 
 def _layout_ai_archimate(elements_raw, rels_raw, report=None):
