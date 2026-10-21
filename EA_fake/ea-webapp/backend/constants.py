@@ -78,10 +78,27 @@ def get_default_color(elem_type):
 # 用**有序元组**而不是 set：提示词里要把它们拼成 `a/b/c` 给模型看，顺序必须是稳定的，
 # 不能靠 set 的迭代顺序（每次进程启动都可能不同）。
 # 成员判断用 `in` 即可，元组一样work（元素 ≤10 个，顺序查找的开销可忽略）。
-ARCHIMATE_ELEMENT_TYPES = ('actor', 'process', 'service', 'component', 'node', 'artifact')
-ARCHIMATE_REL_TYPES = ('association', 'realization', 'serving', 'composition',
-                       'aggregation', 'access', 'flow', 'triggering')
+#
+# 元素类型按层次聚类，便于阅读（不是强制约束——类型与层次是两个独立字段）：
+#   业务层：actor / process / service
+#   应用层：component
+#   技术层：node / device / system_software / communication_network / technology_service
+#   跨层：artifact
+# 技术层这 5 个是 2026-10 补的：此前技术层只有 node/artifact，"部署拓扑"画不出来
+# （服务器、数据库、中间件、网关都只能挤成 node，视觉上无法区分）。
+ARCHIMATE_ELEMENT_TYPES = ('actor', 'process', 'service', 'component',
+                           'node', 'device', 'system_software', 'communication_network',
+                           'technology_service', 'artifact')
+# assignment 是 ArchiMate 规范里表达「部署/分配」的关系（如应用组件分配到节点上），
+# 加它是为了「部署视图」不再用 serving 凑合（语义上 serving 是「提供服务」）。
+ARCHIMATE_REL_TYPES = ('association', 'realization', 'serving', 'assignment',
+                       'composition', 'aggregation', 'access', 'flow', 'triggering')
 ARCHIMATE_LAYERS = ('business', 'application', 'technology')
+
+# 三层背景带的 y 范围（逻辑坐标；画布逻辑高 600，正好三等分）。
+# 后端布局器的 layer_y 必须落在对应带内，否则元素会画到别的层的带上——
+# 而且此前 layer_y[technology]=560 + 元素高 70 = 630 已超出 600 被裁掉 30px。
+ARCHIMATE_LAYER_BANDS = {'business': (0, 200), 'application': (200, 400), 'technology': (400, 600)}
 
 # 提示词里直接插值用的枚举串（从上面派生，杜绝「改了集合忘了改提示词」）
 ARCHIMATE_ELEMENT_ENUM = '/'.join(ARCHIMATE_ELEMENT_TYPES)

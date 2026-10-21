@@ -105,6 +105,42 @@ def test_structural_invariants():
         bad_rel = sorted({r.get('type') for r in m.relationships if r.get('type') not in RELATIONSHIP_TYPES})
         check(not bad_rel, f'{cid}: UML 关系类型都在白名单内（越界 {bad_rel}）')
 
+        # ArchiMate 白名单（2026-10 补：此前只查 UML，ArchiMate 完全不校验）
+        from constants import (ARCHIMATE_ELEMENT_TYPES, ARCHIMATE_REL_TYPES,
+                               ARCHIMATE_LAYERS, ARCHIMATE_LAYER_BANDS)
+        bad_ae = sorted({e.get('type') for e in m.archimate_elements
+                         if e.get('type') not in ARCHIMATE_ELEMENT_TYPES})
+        check(not bad_ae, f'{cid}: ArchiMate 元素类型都在白名单内（越界 {bad_ae}）')
+        bad_al = sorted({e.get('layer') for e in m.archimate_elements
+                         if e.get('layer') not in ARCHIMATE_LAYERS})
+        check(not bad_al, f'{cid}: ArchiMate 层次都在白名单内（越界 {bad_al}）')
+        bad_ar = sorted({c.get('type') for c in m.archimate_connections
+                         if c.get('type') not in ARCHIMATE_REL_TYPES})
+        check(not bad_ar, f'{cid}: ArchiMate 关系类型都在白名单内（越界 {bad_ar}）')
+
+        # 布局器必须把元素放进**本层**的带内，且不溢出画布逻辑高 600
+        # （此前 layer_y[technology]=560 + 高 70 = 630，被裁掉 30px）
+        off_band = []
+        for e in m.archimate_elements:
+            band = ARCHIMATE_LAYER_BANDS.get(e.get('layer'))
+            if not band:
+                continue
+            top, bottom = band
+            y, h = e.get('y'), e.get('height') or 0
+            if not (top <= y and y + h <= bottom):
+                off_band.append((e.get('name'), e.get('layer'), y, h, band))
+        check(not off_band, f'{cid}: ArchiMate 元素都落在本层带内且不溢出（越界 {off_band}）')
+
+        # 新技术类型必须原样保留：布局器对未知类型会回落（技术层→node），
+        # 常量若没加对，这里会被悄悄改掉，部署视图退化成清一色节点
+        for t in exp.get('must_keep_types', ()):
+            hit = [e for e in m.archimate_elements if e.get('type') == t]
+            check(bool(hit), f'{cid}: 技术类型「{t}」未被降级（实得 {len(hit)} 个）')
+        if exp.get('must_keep_rel'):
+            rt = exp['must_keep_rel']
+            hit = [c for c in m.archimate_connections if c.get('type') == rt]
+            check(bool(hit), f'{cid}: 关系类型「{rt}」未被降级（实得 {len(hit)} 条）')
+
         # ER 每个实体至少一个主键；字段类型必须落在闭合词表内
         bad_er = []
         for e in m.er_entities:

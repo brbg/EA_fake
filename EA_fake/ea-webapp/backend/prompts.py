@@ -301,7 +301,13 @@ ARCHIMATE_GENERATE_SYSTEM_PROMPT = (
     '只输出一个JSON对象，不要markdown代码围栏、不要任何解释。格式：\n'
     f'{{"elements":[{{"type":"{ARCHIMATE_ELEMENT_ENUM}","name":"元素名","layer":"{ARCHIMATE_LAYER_ENUM}","description":"一句话说明"}}],'
     f'"relationships":[{{"source":"源元素名","target":"目标元素名","type":"{ARCHIMATE_REL_ENUM}"}}]}}\n'
-    '要求：元素 5~12 个；relationship 的 source/target 必须引用 elements 里的 name；名字用业务术语、不要翻译成中文拼音缩写。'
+    '要求：元素 8~14 个；relationship 的 source/target 必须引用 elements 里的 name；名字用业务术语、不要翻译成中文拼音缩写。\n'
+    '技术层必须是一个**可部署拓扑**（这是本视图的重点，不要只放几个泛泛的节点）：\n'
+    '- 至少包含：应用服务器（type=device）、数据库（type=system_software）、缓存（type=system_software）、'
+    '网关或负载均衡（type=communication_network）；按业务需要可再加中间件、消息队列、对象存储。\n'
+    '- 应用层的 component/service 用 type=assignment 指向**承载它的技术层元素**，表达「部署在…之上」；'
+    '不要用 serving 表达部署（serving 的语义是「对外提供服务」）。\n'
+    '- 技术层元素命名要具体（如 "MySQL 主库"、"Redis 缓存"、"Nginx 网关"），不要都叫 "服务器"。'
 )
 
 ARCHITECT_GENERATE_SYSTEM_PROMPT = (
@@ -318,8 +324,10 @@ ARCHITECT_GENERATE_SYSTEM_PROMPT = (
     '"relationships":[{"source":"源表","target":"目标表","type":"one_to_one/one_to_many/many_to_many"}]}\n'
     '}\n'
     '要求与数量约束：\n'
-    '- UML 类 4~12 个、ER 实体 4~10 个、ArchiMate 元素 5~12 个；每个类的属性/方法、每个表的列尽量精简（属性 ≤8），以控制长度。\n'
+    '- UML 类 4~12 个、ER 实体 4~10 个、ArchiMate 元素 8~14 个；每个类的属性/方法、每个表的列尽量精简（属性 ≤8），以控制长度。\n'
     '- 每个 ER 实体必须有主键（is_primary_key=true）；外键列命名 表_id 并 is_foreign_key=true。\n'
     '- ER 实体名优先与 UML 核心类同名（如 UML 有 Order 类则 ER 有 orders 或 order 表）。\n'
+    '- **ArchiMate 技术层必须是一个可部署拓扑**：至少含应用服务器（device）、数据库（system_software）、'
+    '缓存（system_software）、网关/负载均衡（communication_network）；应用层元素用 assignment 指向承载它的技术层元素。\n'
     '- 覆盖用户描述的主要业务实体、跨领域概念与支撑组件。类名/表名/元素名用领域英文术语。'
 )

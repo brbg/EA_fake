@@ -240,7 +240,59 @@ PREFIXED = {
                'cross_map_reports': 1},   # OrderEntry 真不同 → 只报告
 }
 
-CANONICAL_CASES = [FARM, SHOP, PARTIAL, MESSY, PREFIXED]
+# ------------------------------------------- 用例 6：技术层部署拓扑（4 个新技术类型）
+# 这一例专测「部署视图」：技术层必须能画出服务器/数据库/缓存/网关，而不是清一色 node。
+# 断言重点是**新技术类型不被降级**——布局器对未知类型有回落逻辑（技术层→node、
+# 其余→service），如果常量没加对，这里会被悄悄改成 node，图就退化成清一色节点。
+DEPLOY = {
+    'id': 'deploy',
+    'text': '（用例：技术层部署拓扑，含 device / system_software / communication_network / technology_service）',
+    'canonical': {
+        'project_name': '部署拓扑',
+        'uml': {
+            'elements': [
+                {'type': 'Class', 'name': 'Order', 'attributes': ['- id: Long'], 'methods': []},
+                {'type': 'Class', 'name': 'Customer', 'attributes': ['- id: Long'], 'methods': []},
+            ],
+            'relationships': [{'source': 'Order', 'target': 'Customer', 'type': 'Association'}],
+        },
+        'archimate': {
+            'elements': [
+                {'type': 'component', 'name': 'OrderApp', 'layer': 'application'},
+                {'type': 'service', 'name': 'OrderService', 'layer': 'application'},
+                {'type': 'device', 'name': 'AppServer', 'layer': 'technology'},
+                {'type': 'system_software', 'name': 'MySQL', 'layer': 'technology'},
+                {'type': 'system_software', 'name': 'Redis', 'layer': 'technology'},
+                {'type': 'communication_network', 'name': 'NginxGateway', 'layer': 'technology'},
+                {'type': 'technology_service', 'name': 'Monitoring', 'layer': 'technology'},
+            ],
+            'relationships': [
+                # assignment = 部署关系（规范里表达「部署在…之上」）
+                {'source': 'OrderApp', 'target': 'AppServer', 'type': 'assignment'},
+                {'source': 'OrderService', 'target': 'MySQL', 'type': 'access'},
+                {'source': 'OrderApp', 'target': 'Redis', 'type': 'access'},
+                {'source': 'NginxGateway', 'target': 'OrderApp', 'type': 'serving'},
+                {'source': 'AppServer', 'target': 'Monitoring', 'type': 'association'},
+            ],
+        },
+        'er': {
+            'entities': [
+                {'name': 'orders', 'attributes': [
+                    {'name': 'id', 'data_type': 'bigint', 'is_primary_key': True}]},
+                {'name': 'customers', 'attributes': [
+                    {'name': 'id', 'data_type': 'bigint', 'is_primary_key': True}]},
+            ],
+            'relationships': [{'source': 'orders', 'target': 'customers', 'type': 'many_to_one'}],
+        },
+    },
+    'expect': {'min_uml': 2, 'min_archimate': 7, 'min_er': 2, 'min_rels': 2,
+               # 4 个新技术类型必须原样保留（不被降级成 node/service）
+               'must_keep_types': ('device', 'system_software',
+                                   'communication_network', 'technology_service'),
+               'must_keep_rel': 'assignment'},
+}
+
+CANONICAL_CASES = [FARM, SHOP, PARTIAL, MESSY, PREFIXED, DEPLOY]
 
 
 # ------------------------------------------------------------------ 离线打分用样本

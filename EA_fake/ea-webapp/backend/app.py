@@ -14,7 +14,7 @@ import bcrypt
 import db
 from constants import (ELEMENT_TYPES, RELATIONSHIP_TYPES, ELEMENT_COLORS, get_default_color,
                        ARCHIMATE_ELEMENT_TYPES, ARCHIMATE_REL_TYPES, ARCHIMATE_LAYERS,
-                       ARCH_HEAD, ARCH_BODY)
+                       ARCHIMATE_LAYER_BANDS, ARCH_HEAD, ARCH_BODY)
 from models import Project, SimpleModel, Requirement, TestCase, Defect, Task
 from prompts import uml_system_prompt, ER_SYSTEM_PROMPT, code_system_prompt, VALIDATE_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT, ELEMENT_ANALYSIS_SYSTEM_PROMPT, code_reverse_system_prompt, edit_model_system_prompt, document_system_prompt, ruoyi_annotate_system_prompt
 import ruoyi_gen
@@ -4951,11 +4951,46 @@ def review_archimate_model(model, use_ai=True):
             invalid_count += 1
         else:
             valid_count += 1
+        # 白名单校验（2026-10 补）：此前完全不校验 type/layer，模型给了非法值也照画，
+        # 到渲染那步才以更难查的形式暴露。severity=warning 而非 error——
+        # 布局器已经会回落，图仍然能画出来，只是语义可疑。
+        etype = str(elem.get('type') or '').strip().lower()
+        if etype and etype not in ARCHIMATE_ELEMENT_TYPES:
+            warnings.append({
+                'type': 'element_type',
+                'severity': 'warning',
+                'message': f'元素「{name or elem.get("id")}」的类型「{etype}」不在 ArchiMate 白名单内',
+                'element_id': elem.get('id'),
+                'element_name': name
+            })
+        layer = str(elem.get('layer') or '').strip().lower()
+        if layer and layer not in ARCHIMATE_LAYERS:
+            warnings.append({
+                'type': 'element_layer',
+                'severity': 'warning',
+                'message': f'元素「{name or elem.get("id")}」的层次「{layer}」不在 ArchiMate 白名单内',
+                'element_id': elem.get('id'),
+                'element_name': name
+            })
+
+    # 技术层可部署性：技术层非空但没有任何可部署元素时提示（不是错误，是建议）
+    tech_types = {'node', 'device', 'system_software', 'communication_network'}
+    tech_elems = [e for e in elements if str(e.get('layer') or '').strip().lower() == 'technology']
+    if tech_elems and not any(str(e.get('type') or '').strip().lower() in tech_types for e in tech_elems):
+        suggestions.append('技术层缺少可部署元素（服务器/数据库/网关等），部署拓扑画不出来')
 
     # 关系合法性检查
     for rel in relationships:
         source = rel.get('startElement')
         target = rel.get('endElement')
+        rtype = str(rel.get('type') or '').strip().lower()
+        if rtype and rtype not in ARCHIMATE_REL_TYPES:
+            warnings.append({
+                'type': 'relationship_type',
+                'severity': 'warning',
+                'message': f'关系的类型「{rtype}」不在 ArchiMate 白名单内',
+                'relationship_id': rel.get('id', ''),
+            })
         if source not in elem_ids:
             errors.append({
                 'type': 'relationship',
@@ -6967,18 +7002,21 @@ def _apply_archimate_edits(archimateElements, archimateConnections, ops, report=
                 if report is not None:
                     report.skip(op, 'empty_name' if not name else 'duplicate_name', name)
                 continue
-            etype = str(op.get('type') or 'service').strip().lower()
-            if etype not in ARCHIMATE_ELEMENT_TYPES:
-                etype = 'service'
             layer = str(op.get('layer') or 'business').strip()
             if layer not in ARCHIMATE_LAYERS:
                 layer = 'business'
+            etype = str(op.get('type') or '').strip().lower()
+            if etype not in ARCHIMATE_ELEMENT_TYPES:
+                # 与布局器同规则：技术层回落到 node，其余回落 service
+                etype = 'node' if layer == 'technology' else 'service'
             eid = next_id
             next_id += 1
+            # 颜色按层取，与布局器/前端一致（此前硬编码白底紫头，新增的元素
+            # 在画布上跟其它元素不是一个色系）
             new_elements.append({'id': eid, 'type': etype, 'name': name, 'layer': layer,
                                  'x': 100, 'y': 100 + len(new_elements) * 50,
                                  'width': 120, 'height': 80,
-                                 'color': '#ffffff', 'headerColor': '#667eea'})
+                                 'color': ARCH_BODY[layer], 'headerColor': ARCH_HEAD[layer]})
             name_to_id[name] = eid
             if report is not None:
                 report.ok()
@@ -14642,8 +14680,18 @@ AGENT_STEPS = [('create_project', '新建项目'), ('gen_uml', '生成 UML 类�
 
 
 def _layout_ai_archimate(elements_raw, rels_raw, report=None):
-    """ArchiMate 原始数据 → 前端画布结构（三层横排，id 数字）。"""
-    layer_y = {'business': 40, 'application': 300, 'technology': 560}
+    """ArchiMate 原始数据 → 前端画布结构（三层横排，id 数字）。
+
+    layer_y 必须落在 constants.ARCHIMATE_LAYER_BANDS 的对应带内，否则元素会画到
+    别的层的背景带上。此前是 {40, 300, 560}：技术层 560 + 元素高 70 = 630，
+    **超出画布逻辑高 600，被裁掉 30px**（实测发现）。现改为三等分带内居上。
+    """
+    # 行位置**从层带派生**（带内顶部留 60px），不另写一份——否则改了带忘了改这里，
+    # 元素就会画到隔壁层的背景带上。
+    layer_y = {ly: band[0] + 60 for ly, band in ARCHIMATE_LAYER_BANDS.items()}
+    # 未知类型的回落目标按层区分：技术层回落到 node，其余层回落到 service。
+    # 否则「技术服务」被画成「业务服务」，颜色对但语义错。
+    layer_default_type = {'technology': 'node'}
     per = {'business': 0, 'application': 0, 'technology': 0}
     elems, by_name, eid = [], {}, 1
     for it in elements_raw:
@@ -14662,11 +14710,12 @@ def _layout_ai_archimate(elements_raw, rels_raw, report=None):
             if report is not None:
                 report.append(f'未知 ArchiMate 层次「{it.get("layer")}」，已按 business 处理')
             layer = 'business'
-        etype = str(it.get('type') or 'service').lower()
+        etype = str(it.get('type') or '').strip().lower()
         if etype not in ARCHIMATE_ELEMENT_TYPES:
+            fallback = layer_default_type.get(layer, 'service')
             if report is not None:
-                report.append(f'未知 ArchiMate 元素类型「{it.get("type")}」，已按 service 处理')
-            etype = 'service'
+                report.append(f'未知 ArchiMate 元素类型「{it.get("type")}」，已按 {fallback} 处理')
+            etype = fallback
         el = {'id': eid, 'type': etype, 'name': name, 'layer': layer,
               'x': 80 + per[layer] * 230, 'y': layer_y[layer], 'width': 160, 'height': 70,
               'color': ARCH_BODY[layer], 'headerColor': ARCH_HEAD[layer]}
