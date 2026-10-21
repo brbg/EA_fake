@@ -193,19 +193,41 @@ const tools = [
   { id: 'aggregation', name: '聚合', icon: 'fas fa-object-group' }
 ]
 
-// ArchiMate 工具定义
-const archimateTools = [
-  { id: 'select', name: '选择', icon: 'fas fa-mouse-pointer' },
+// ArchiMate 工具定义。
+// 元素 10 种、关系 9 种，**与 backend/constants.py 的白名单一一对应**——
+// 此前只列了 6 个元素 + 3 个关系，另外 5 种关系在 UI 里根本建不出来
+// （只能由 AI 生成写入）。改这里时请同步后端白名单（有防漂移测试）。
+const archimateElementTools = [
   { id: 'actor', name: '角色', icon: 'fas fa-user' },
   { id: 'process', name: '流程', icon: 'fas fa-cogs' },
   { id: 'service', name: '服务', icon: 'fas fa-concierge-bell' },
   { id: 'component', name: '组件', icon: 'fas fa-puzzle-piece' },
   { id: 'node', name: '节点', icon: 'fas fa-server' },
+  { id: 'device', name: '设备', icon: 'fas fa-hdd' },
+  { id: 'system_software', name: '系统软件', icon: 'fas fa-gears' },
+  { id: 'communication_network', name: '网络', icon: 'fas fa-network-wired' },
+  { id: 'technology_service', name: '技术服务', icon: 'fas fa-cloud' },
   { id: 'artifact', name: '制品', icon: 'fas fa-file-alt' },
+]
+const archimateRelationTools = [
   { id: 'association', name: '关联', icon: 'fas fa-link' },
   { id: 'realization', name: '实现', icon: 'fas fa-arrow-down' },
   { id: 'serving', name: '服务', icon: 'fas fa-hands-helping' },
+  { id: 'assignment', name: '部署', icon: 'fas fa-circle-dot' },
+  { id: 'composition', name: '组合', icon: 'fas fa-diamond' },
+  { id: 'aggregation', name: '聚合', icon: 'fas fa-gem' },
+  { id: 'access', name: '访问', icon: 'fas fa-key' },
+  { id: 'flow', name: '流向', icon: 'fas fa-arrows-left-right' },
+  { id: 'triggering', name: '触发', icon: 'fas fa-bolt' },
 ]
+const archimateTools = [
+  { id: 'select', name: '选择', icon: 'fas fa-mouse-pointer' },
+  ...archimateElementTools,
+  ...archimateRelationTools,
+]
+/** 集合判断用（避免在各处硬编码类型名列表——漏一个就会「点了没反应」） */
+const ARCH_ELEMENT_IDS = new Set(archimateElementTools.map((t) => t.id))
+const ARCH_RELATION_IDS = new Set(archimateRelationTools.map((t) => t.id))
 
 // ER图工具定义
 const erTools = [
@@ -938,18 +960,22 @@ const loadModels = async () => {
 
 const updateStats = () => {
   stats.value.models = models.value.length
-  // 根据当前激活的标签页统计元素和关系数量
-  if (activeTab.value === 'uml') {
+  // 根据当前激活的标签页统计元素和关系数量。
+  // 注意：两页式改造后 activeTab 只有 'chat'/'studio'，子页签在 studioTab——
+  // 以前这里判断的是改造前的页签名（'uml'/'archimate'/'data'），**永远命中不了**，
+  // 于是统计栏一直显示项目汇总数、不反映当前画布。用 studioTab 兜住。
+  const tab = activeTab.value === 'studio' ? studioTab.value : activeTab.value
+  if (tab === 'uml') {
     stats.value.elements = elements.length
     stats.value.relationships = connections.length
-  } else if (activeTab.value === 'archimate') {
+  } else if (tab === 'archimate') {
     stats.value.elements = archimateElements.length
     stats.value.relationships = archimateConnections.length
-  } else if (activeTab.value === 'data') {
+  } else if (tab === 'data') {
     stats.value.elements = erEntities.length
     stats.value.relationships = erRelations.length
   } else {
-    // 其他标签页使用项目数据统计
+    // 智能体页等：用项目数据统计
     stats.value.elements = models.value.reduce((acc, m) => acc + m.elements_count, 0)
     stats.value.relationships = models.value.reduce((acc, m) => acc + m.relationships_count, 0)
   }
@@ -3305,16 +3331,19 @@ const handleArchimateClick = (e: MouseEvent) => {
   
   // 创建新元素
   const layer = archimateLayer.value
+  // 配色走主题（此前这里又抄了一份三层色值，与后端 ARCH_HEAD/ARCH_BODY 是第 N 份副本）
   const colors = {
-    business: { header: '#3498db', body: '#ecf0f1' },
-    application: { header: '#2ecc71', body: '#e8f8f5' },
-    technology: { header: '#e67e22', body: '#fef5e7' }
+    business: { header: archTheme.LAYER_HEAD.business, body: archTheme.LAYER_BODY.business },
+    application: { header: archTheme.LAYER_HEAD.application, body: archTheme.LAYER_BODY.application },
+    technology: { header: archTheme.LAYER_HEAD.technology, body: archTheme.LAYER_BODY.technology },
   }
   
-  if (currentTool === 'actor' || currentTool === 'process' || currentTool === 'service' ||
-      currentTool === 'component' || currentTool === 'node' || currentTool === 'artifact') {
+  // 元素工具：类型判断走集合，新增类型不必再来改这里（以前是硬编码 6 个类型名，
+  // 加了新类型就会「点了没反应」）
+  if (ARCH_ELEMENT_IDS.has(currentTool)) {
     saveArchimateHistory()
-    const isActor = currentTool === 'actor'
+    // 尺寸统一（不再给 actor 特例 30×50）：actor 现在也是画在框内的火柴人，
+    // 特例尺寸会让命中区域和视觉不一致
     archimateElements.push({
       id: nextEid(),
       type: currentTool,
@@ -3322,8 +3351,8 @@ const handleArchimateClick = (e: MouseEvent) => {
       layer,
       x,
       y,
-      width: isActor ? 30 : 120,
-      height: isActor ? 50 : 80,
+      width: 140,
+      height: 70,
       color: colors[layer as keyof typeof colors].body,
       headerColor: colors[layer as keyof typeof colors].header
     })
@@ -3339,7 +3368,11 @@ const getElementName = (type: string) => {
     service: 'Business Service',
     component: 'Application Component',
     node: 'Technology Node',
-    artifact: 'Artifact'
+    device: 'Device',
+    system_software: 'System Software',
+    communication_network: 'Network',
+    technology_service: 'Technology Service',
+    artifact: 'Artifact',
   }
   return names[type] || type
 }
@@ -3367,8 +3400,8 @@ const handleArchimateMouseDown = (e: PointerEvent) => {
 
   const currentTool = selectedArchimateTool.value
 
-  // 连线工具
-  if (currentTool === 'association' || currentTool === 'realization' || currentTool === 'serving') {
+  // 连线工具（同样走集合：以前只认 3 种，另外 6 种点了不进连线态）
+  if (ARCH_RELATION_IDS.has(currentTool)) {
     for (let i = archimateElements.length - 1; i >= 0; i--) {
       const elem = archimateElements[i]
       if (x >= elem.x && x <= elem.x + elem.width &&
@@ -6723,7 +6756,11 @@ onMounted(() => {
       <h3 style="margin-bottom: 20px;">编辑 ArchiMate 元素</h3>
       <div class="form-group">
         <label>元素类型</label>
-        <input :value="archimateEditingElement.type" disabled style="background: #f0f0f0;" />
+        <!-- 可改：扩到 10 种类型后，用户需要能把建错的类型纠正过来。
+             改类型无尺寸副作用（所有形状都画在同一个存储尺寸内）。 -->
+        <select v-model="archimateEditingElement.type" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+          <option v-for="t in archimateElementTools" :key="t.id" :value="t.id">{{ t.name }}（{{ t.id }}）</option>
+        </select>
       </div>
       <div class="form-group">
         <label>元素名称</label>
