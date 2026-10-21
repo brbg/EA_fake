@@ -14686,13 +14686,20 @@ def _layout_ai_archimate(elements_raw, rels_raw, report=None):
     别的层的背景带上。此前是 {40, 300, 560}：技术层 560 + 元素高 70 = 630，
     **超出画布逻辑高 600，被裁掉 30px**（实测发现）。现改为三等分带内居上。
     """
-    # 行位置**从层带派生**（带内顶部留 60px），不另写一份——否则改了带忘了改这里，
-    # 元素就会画到隔壁层的背景带上。
-    layer_y = {ly: band[0] + 60 for ly, band in ARCHIMATE_LAYER_BANDS.items()}
+    # 行位置**从层带派生**，不另写一份——否则改了带忘了改这里，元素就会画到隔壁层的带上。
+    # 带内顶部留 26px（让开带标签），一行放不下就换行；层带高 200，最多容纳 2 行
+    # （26 + 70 = 96，第二行 114~184，都在带内）。
+    layer_y = {ly: band[0] + 26 for ly, band in ARCHIMATE_LAYER_BANDS.items()}
     # 未知类型的回落目标按层区分：技术层回落到 node，其余层回落到 service。
     # 否则「技术服务」被画成「业务服务」，颜色对但语义错。
     layer_default_type = {'technology': 'node'}
-    per = {'business': 0, 'application': 0, 'technology': 0}
+    # 层内排布：固定间距从左到右，**超出画布宽度就换行**。
+    # 此前是 x = 80 + per*230 一路排下去：技术层 5 个元素时最后一个右边缘到 1160，
+    # 超出逻辑宽 1150 被裁掉（截图实测）。
+    ELEM_W, ELEM_H, GAP_X, ROW_H, LEFT = 160, 70, 70, 88, 80
+    MAX_X = 1150 - 40 - ELEM_W
+    per = {ly: 0 for ly in ARCHIMATE_LAYER_BANDS}
+    row = {ly: 0 for ly in ARCHIMATE_LAYER_BANDS}
     elems, by_name, eid = [], {}, 1
     for it in elements_raw:
         if not isinstance(it, dict) or not it.get('name'):
@@ -14716,8 +14723,14 @@ def _layout_ai_archimate(elements_raw, rels_raw, report=None):
             if report is not None:
                 report.append(f'未知 ArchiMate 元素类型「{it.get("type")}」，已按 {fallback} 处理')
             etype = fallback
+        x = LEFT + per[layer] * (ELEM_W + GAP_X)
+        if x > MAX_X and per[layer] > 0:
+            per[layer] = 0
+            row[layer] += 1
+            x = LEFT
         el = {'id': eid, 'type': etype, 'name': name, 'layer': layer,
-              'x': 80 + per[layer] * 230, 'y': layer_y[layer], 'width': 160, 'height': 70,
+              'x': x, 'y': layer_y[layer] + row[layer] * ROW_H,
+              'width': ELEM_W, 'height': ELEM_H,
               'color': ARCH_BODY[layer], 'headerColor': ARCH_HEAD[layer]}
         elems.append(el)
         by_name[name] = eid

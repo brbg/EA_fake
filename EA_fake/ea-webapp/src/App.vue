@@ -7,6 +7,8 @@ import LoginView from './LoginView.vue'
 import type { ProjectContext } from './projectContext'
 import { getAIConfig } from './aiService'
 import { setupCanvasTransform, toLogical, setCanvasView, LOGICAL_W, LOGICAL_H } from './canvasUtils'
+// ArchiMate 视觉主题与纯绘制助手（层带/元素形状/关系样式表都在那边，本文件只调用）
+import * as archTheme from './archimateTheme'
 // 统一 API 层（借鉴 AI_EA_Web 分层：request.ts + 按域 api 模块）
 import { authApi } from './api/auth'
 import { modelApi } from './api/models'
@@ -3205,17 +3207,19 @@ const redrawArchimateCanvas = () => {
   if (!archimateCtx || !archimateCanvas.value) return
   const v = archView.value
   archimateCtx.clearRect(v.x, v.y, LOGICAL_W / v.scale, LOGICAL_H / v.scale)
+  // 分层背景带：必须在网格与连线/元素**之前**画，否则会盖住它们
+  archTheme.drawLayerBands(archimateCtx, LOGICAL_W)
   drawGridFor(archimateCtx, v)
 
-  // 绘制连接
+  // 绘制连接（传整个 conn，箭头/线型/标签都由主题按 type 分派）
   archimateConnections.forEach((conn: any) => {
     const startElem = archimateElements.find((e: any) => e.id === conn.startElement)
     const endElem = archimateElements.find((e: any) => e.id === conn.endElement)
     if (startElem && endElem) {
-      drawArchimateConnection(startElem, endElem, conn.type)
+      archTheme.drawArchimateConnection(archimateCtx!, startElem, endElem, conn, v.scale)
     }
   })
-  
+
   // 绘制元素
   archimateElements.forEach((elem: any) => {
     drawArchimateElement(elem)
@@ -3224,128 +3228,17 @@ const redrawArchimateCanvas = () => {
 
 const drawArchimateElement = (elem: any) => {
   if (!archimateCtx) return
-  const ctx = archimateCtx
-  
-  ctx.save()
-  
-  // 根据元素类型绘制不同形状
-  if (elem.type === 'actor') {
-    // 绘制角色（人物图标形状）
-    const cx = elem.x + elem.width / 2
-    const cy = elem.y + 15
-    ctx.beginPath()
-    ctx.arc(cx, cy, 10, 0, Math.PI * 2)
-    ctx.fillStyle = elem.color || '#3498db'
-    ctx.fill()
-    ctx.strokeStyle = '#2c3e50'
-    ctx.lineWidth = 2
-    ctx.stroke()
-    
-    // 身体
-    ctx.beginPath()
-    ctx.moveTo(cx, cy + 10)
-    ctx.lineTo(cx, cy + 35)
-    ctx.strokeStyle = '#2c3e50'
-    ctx.lineWidth = 2
-    ctx.stroke()
-    
-    // 手臂
-    ctx.beginPath()
-    ctx.moveTo(cx - 15, cy + 20)
-    ctx.lineTo(cx + 15, cy + 20)
-    ctx.stroke()
-    
-    // 腿
-    ctx.beginPath()
-    ctx.moveTo(cx, cy + 35)
-    ctx.lineTo(cx - 12, cy + 50)
-    ctx.moveTo(cx, cy + 35)
-    ctx.lineTo(cx + 12, cy + 50)
-    ctx.stroke()
-    
-    // 名称
-    ctx.fillStyle = '#2c3e50'
-    ctx.font = '12px Arial'
-    ctx.textAlign = 'center'
-    ctx.fillText(elem.name, cx, elem.y + elem.height + 15)
-    
-    elem.width = 30
-    elem.height = 50
-  } else {
-    // 绘制矩形元素
-    ctx.fillStyle = elem.color || '#ecf0f1'
-    ctx.fillRect(elem.x, elem.y, elem.width, elem.height)
-    
-    // 头部颜色
-    ctx.fillStyle = elem.headerColor || getLayerColor(elem.layer)
-    ctx.fillRect(elem.x, elem.y, elem.width, 25)
-    
-    // 边框
-    ctx.strokeStyle = '#2c3e50'
-    ctx.lineWidth = 2
-    ctx.strokeRect(elem.x, elem.y, elem.width, elem.height)
-    
-    // 类型标签
-    ctx.fillStyle = 'white'
-    ctx.font = 'bold 10px Arial'
-    ctx.textAlign = 'center'
-    ctx.fillText(elem.type.toUpperCase(), elem.x + elem.width / 2, elem.y + 17)
-    
-    // 名称
-    ctx.fillStyle = '#2c3e50'
-    ctx.font = '12px Arial'
-    ctx.fillText(elem.name, elem.x + elem.width / 2, elem.y + elem.height / 2)
-  }
-  
-  ctx.restore()
+  // 形状分派在 archimateTheme.ts（纯函数，可单独验证）。
+  // 注意：**不再回写 elem.width/height** —— 以前 actor 画完会把尺寸改成 30×50，
+  // 那是绘制副作用，会让命中测试和后续布局都基于被改过的尺寸。
+  archTheme.drawArchimateElement(archimateCtx, elem)
 }
 
-const getLayerColor = (layer: string) => {
-  switch (layer) {
-    case 'business': return '#3498db'
-    case 'application': return '#2ecc71'
-    case 'technology': return '#e67e22'
-    default: return '#95a5a6'
-  }
-}
+const getLayerColor = (layer: string) => archTheme.LAYER_HEAD[layer] || '#95a5a6'
 
-const drawArchimateConnection = (start: any, end: any, type: string) => {
-  if (!archimateCtx) return
-  const ctx = archimateCtx
-  
-  const startX = start.x + start.width / 2
-  const startY = start.y + start.height / 2
-  const endX = end.x + end.width / 2
-  const endY = end.y + end.height / 2
-  
-  ctx.beginPath()
-  ctx.moveTo(startX, startY)
-  ctx.lineTo(endX, endY)
-  ctx.strokeStyle = '#7f8c8d'
-  ctx.lineWidth = 2
-  
-  // 根据关系类型绘制不同箭头
-  if (type === 'association') {
-    ctx.setLineDash([])
-  } else if (type === 'realization') {
-    ctx.setLineDash([5, 5])
-  } else if (type === 'serving') {
-    ctx.setLineDash([10, 3])
-  }
-  
-  ctx.stroke()
-  
-  // 箭头
-  const angle = Math.atan2(endY - startY, endX - startX)
-  const headLen = 12
-  ctx.beginPath()
-  ctx.moveTo(endX, endY)
-  ctx.lineTo(endX - headLen * Math.cos(angle - Math.PI / 6), endY - headLen * Math.sin(angle - Math.PI / 6))
-  ctx.lineTo(endX - headLen * Math.cos(angle + Math.PI / 6), endY - headLen * Math.sin(angle + Math.PI / 6))
-  ctx.closePath()
-  ctx.fillStyle = '#7f8c8d'
-  ctx.fill()
-}
+// 连接绘制已移到 archimateTheme.ts：那里是「9 种关系的线型/箭头/箭头端」的唯一出处，
+// 并且修掉了两个实测缺陷——未知类型沿用上一根线的 setLineDash 状态（状态泄漏）、
+// 箭头画在元素中心被后画的元素盖住（改为画在元素边界上）。
 
 // 命中检测：返回点击位置最上层的 ArchiMate 元素（三击删除复用）
 const hitArchimateElementAt = (x: number, y: number): any | null => {
@@ -5425,6 +5318,9 @@ onMounted(() => {
   initSocket()
   window.addEventListener('keydown', handleKeyboardShortcut)
   checkAuth()
+  // 把 ArchiMate 主题挂到 window：全是纯函数，供自动化验证直接断言
+  // （关系样式表、边界求交、箭头几何——这些不渲染整页也能验，比截图可靠）
+  ;(window as any).__archimate = archTheme
 })
 </script>
 
