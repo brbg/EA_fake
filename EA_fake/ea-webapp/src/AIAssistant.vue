@@ -209,6 +209,8 @@
         <button class="agent-chip" @click="inputMessage = '设计一个智慧农业平台：涵盖农田种植、农机调度、农产品溯源、订单销售'" :disabled="isTyping"><i class="fas fa-wand-magic-sparkles"></i> ⚡ 一键生成架构</button>
         <button class="agent-chip" @click="inputMessage = '先体检当前项目，再按建议自动优化'" :disabled="isTyping"><i class="fas fa-heart-pulse"></i> 体检并优化</button>
         <button class="agent-chip" @click="inputMessage = '给模型添加一个 '" :disabled="isTyping"><i class="fas fa-pen"></i> 帮我改模型</button>
+        <button class="agent-chip" @click="inputMessage = '把当前的 ER 模型生成一整套若依模块'" :disabled="isTyping"><i class="fas fa-cubes"></i> 生成若依模块</button>
+        <button class="agent-chip" @click="inputMessage = '根据当前项目生成需求、测试用例和任务排期'" :disabled="isTyping"><i class="fas fa-list-check"></i> 生成研发条目</button>
       </div>
 
       <div class="agent-box" v-if="aiEnabled">
@@ -246,6 +248,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'refresh-model', p: { relayout: boolean }): void
   (e: 'model-created', p: { id: string; name: string }): void
+  (e: 'model-deleted', p: { id: string }): void
   (e: 'open-project', id: string): void
   (e: 'new-project'): void
   (e: 'delete-project', id: string): void
@@ -503,7 +506,21 @@ const TOOL_LABEL: Record<string, string> = {
   generate_architecture: '生成完整企业架构',
   edit_model: '修改模型',
   get_health: '健康度体检',
-  optimize_from_health: '按体检优化模型'
+  optimize_from_health: '按体检优化模型',
+  rename_project: '重命名项目',
+  delete_project: '删除项目',
+  review_model: '校验模型',
+  generate_code: '生成代码',
+  generate_ruoyi_module: '生成若依模块',
+  reverse_code: '代码反推模型',
+  generate_document: '生成设计文档',
+  version_control: '版本管理',
+  remember: '记住项目约束',
+  dev_list: '查看研发条目',
+  dev_create: '新建研发条目',
+  dev_update: '修改研发条目',
+  dev_delete: '删除研发条目',
+  dev_ai_generate: 'AI 生成研发条目',
 }
 // 工具调用进行时，智能体「说的话」（让用户知道正在做什么）
 const TOOL_SAY: Record<string, string> = {
@@ -511,10 +528,26 @@ const TOOL_SAY: Record<string, string> = {
   generate_architecture: '正在为你生成整套企业架构（UML + ArchiMate + ER）…',
   edit_model: '正在按你的要求修改模型…',
   get_health: '正在体检当前项目…',
-  optimize_from_health: '正在按体检结果优化模型…'
+  optimize_from_health: '正在按体检结果优化模型…',
+  rename_project: '正在重命名项目…',
+  delete_project: '正在删除项目…',
+  review_model: '正在校验模型结构…',
+  generate_code: '正在生成代码…',
+  generate_ruoyi_module: '正在生成若依整套模块…',
+  reverse_code: '正在从代码反推模型…',
+  generate_document: '正在撰写设计文档…',
+  version_control: '正在处理版本…',
+  remember: '好的，我记下来…',
+  dev_list: '正在查看研发条目…',
+  dev_create: '正在新建研发条目…',
+  dev_update: '正在修改研发条目…',
+  dev_delete: '正在删除研发条目…',
+  dev_ai_generate: '正在用 AI 批量生成研发条目…',
 }
-// 会产生写操作（改模型/生成/优化）的工具——事后需刷新前端画布
-const WRITE_TOOLS = ['generate_architecture', 'edit_model', 'optimize_from_health']
+// 会改**架构模型**（三套图）的工具——事后需刷新前端画布。
+// 注意：dev_* 改的是研发条目、不动画布，故不在此列（否则每次都白刷一次画布）。
+const WRITE_TOOLS = ['generate_architecture', 'edit_model', 'optimize_from_health',
+                     'rename_project', 'reverse_code', 'version_control']
 
 // 全面智能体：所有消息都走工具调用循环（不再有普通聊天助手）
 const sendNormalMessage = async (message: string) => {
@@ -545,6 +578,11 @@ const runAgentChatMessage = async (message: string): Promise<void> => {
         // 写操作成功 → 结束后刷新前端画布，保证与后端一致
         if (ev.ok && ev.name && WRITE_TOOLS.includes(ev.name)) sawWrite = true
         if (ev.ok && ev.name === 'generate_architecture') sawGenerate = true
+        // 删除项目是特例：项目没了，刷新画布没有意义——要通知父级清空当前项目、回项目列表
+        if (ev.ok && ev.name === 'delete_project') {
+          sawWrite = false
+          emit('model-deleted', { id: (ev.project && ev.project.project_id) || props.projectId || '' })
+        }
         // 智能体新建/绑定了项目 → 通知父级绑定该项目（无需用户预先打开项目）
         if (ev.ok && ev.project && ev.project.project_id) {
           emit('model-created', { id: ev.project.project_id, name: ev.project.project_name || '' })

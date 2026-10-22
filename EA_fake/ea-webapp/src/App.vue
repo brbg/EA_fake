@@ -4739,6 +4739,26 @@ const openCreatedModel = async (p: { id: string; name: string }) => {
   updateStats()
 }
 
+// 智能体删除了项目 → 清空当前项目并回项目列表。
+// 不能只「刷新画布」：项目已经不存在了，再按 id 去拉会 404。
+const onAgentModelDeleted = async (p: { id: string }) => {
+  if (!p?.id || p.id === currentModelId.value) {
+    currentModelId.value = ''
+    currentModelName.value = ''
+    elements = []
+    connections = []
+    archimateElements = []
+    archimateConnections = []
+    erEntities = []
+    erRelations = []
+    redraw()
+    redrawArchimateCanvas()
+    redrawErCanvas()
+    updateStats()
+  }
+  await loadModels()
+}
+
 // 智能体在后端改了模型 → 重载当前项目，让画布与后端一致
 const reloadCurrentModel = async (p?: { relayout?: boolean }) => {
   if (!currentModelId.value) return
@@ -6104,6 +6124,7 @@ onMounted(() => {
           :user="authUser"
           @refresh-model="reloadCurrentModel"
           @model-created="openCreatedModel"
+          @model-deleted="onAgentModelDeleted"
           @open-project="openModelById"
           @new-project="showCreateModal = true"
           @delete-project="deleteModel"
