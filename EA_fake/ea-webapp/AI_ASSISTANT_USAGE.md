@@ -1,5 +1,47 @@
 # AI助手使用指南
 
+## 智能体能做什么（19 个工具）
+
+主界面就是智能体：直接说一句话，它自己决定调哪些工具。工具清单如下
+（声明在 `backend/agent.py` 的 `TOOL_SPECS`，执行体在 `backend/app.py` 的
+`_agent_tool_executors`）。
+
+| 类别 | 工具 | 说明 |
+|---|---|---|
+| 项目 | `create_project` / `rename_project` / `delete_project` | 建/改名/删（删除需确认） |
+| 架构 | `generate_architecture` / `edit_model` | 一句话出整套图；自然语言增量改某套图 |
+| 质量 | `get_health` / `optimize_from_health` / `review_model` | 体检 / 按体检优化 / 结构校验（含 ArchiMate 白名单与「技术层缺可部署元素」） |
+| 交付物 | `generate_code` / `generate_ruoyi_module` / `reverse_code` / `generate_document` | 生成代码 / 若依整套模块 / 代码反推模型 / 设计文档 |
+| 版本 | `version_control` | `list` 列版本、`save` 存快照、`restore` 回滚（回滚需确认） |
+| 记忆 | `remember` | 记一条项目级长期约束，后续生成会遵循 |
+| 研发管理 | `dev_list` / `dev_create` / `dev_update` / `dev_delete` / `dev_ai_generate` | 5 个通用工具覆盖 4 类实体（需求/测试用例/缺陷/任务）× CRUD + AI 生成（缺陷无 AI 生成） |
+
+**不在列的能力**：撤销/重做/清空/导出图片/手工拖拽这类**纯前端操作**没有后端接口，
+原理上无法由对话触发；协作、后台管理、账号设置也未纳入（避免误操作面过大）。
+
+### 破坏性操作需要二次确认
+
+`delete_project` / `dev_delete` / `version_control(restore)` 是**不可逆**的。
+它们的调用约定是：
+
+1. 模型**先不带 `confirm`** 调用 → 后端**零副作用**，只返回「将影响什么」的待确认信息；
+2. 模型把这个影响**复述给用户**并得到肯定答复；
+3. 再以 `confirm=true` 重调，才真正执行。
+
+`delete_project` 真删前会把模型 JSON 落一份到 `data/deleted/`，误删可人工捞回；
+`version_control(restore)` 回滚前会先存一份当前状态。
+
+> **残余风险（如实说明）**：这依赖模型遵守指令——它有可能直接传 `confirm=true`。
+> 最强保护是「前端审批闸」（智能体发起破坏性调用时前端弹确认、批准后才回传），
+> 需要新增客户端→服务端的审批消息，目前**未实现**。
+
+### 预算
+
+`run_tool_agent(max_steps=12, max_tokens=4096)`；工具结果回喂给模型时截断到 8000 字符
+（大产物工具只回摘要 + 前 1500 字符，不把整篇代码/文档塞回去）。
+
+---
+
 ## 前端接入说明
 
 ### 1. 创建的API调用模块
