@@ -15400,8 +15400,378 @@ def _agent_tool_executors(project_id, user_id):
         save_model(state['pid'], m)
         return True, f"优化结果：{r.get('applied')}（{r.get('summary')}）", {'applied': r.get('applied'), 'project_id': state['pid'], 'project_name': getattr(m, 'name', '')}
 
+    # ================= 以下为「高频业务闭环」新增工具（2026-10） =================
+
+    def f_rename(args):
+        if not state['pid']:
+            return False, '当前未绑定项目，请先新建或打开一个项目', None
+        name = str(args.get('name') or '').strip()
+        if not name:
+            return False, '缺少 name', None
+        m = _load()
+        if m is None:
+            return False, '项目不存在', None
+        old = getattr(m, 'name', '')
+        m.name = name
+        save_model(state['pid'], m)
+        proj = load_projects().get(state['pid'])
+        if proj is not None:
+            proj.name = name
+            save_project(proj)
+        return True, f'项目已重命名为「{name}」（原名「{old}」）', {'project_id': state['pid'], 'project_name': name}
+
+    def f_delete(args):
+        if not state['pid']:
+            return False, '当前未绑定项目，请先新建或打开一个项目', None
+        m = _load()
+        if m is None:
+            return False, '项目不存在', None
+        name = getattr(m, 'name', '')
+        pid = state['pid']
+        # 破坏性操作守卫：不带 confirm 时**零副作用**，只回待确认信息
+        if args.get('confirm') is not True:
+            return True, (f'需确认：将**永久删除**项目「{name}」（含三套图、版本历史与研发条目），不可撤销。'
+                          f'请先向用户复述影响并得到肯定答复，再以 confirm=true 重新调用。'), {
+                'needs_confirmation': True, 'project_id': pid, 'project_name': name}
+        # 删除前把模型 JSON 落一份到 data/deleted/：万一误删还能人工捞回来
+        backup = ''
+        try:
+            d = os.path.join('..', 'data', 'deleted')
+            os.makedirs(d, exist_ok=True)
+            backup = os.path.join(d, f'{pid}-{int(datetime.datetime.now().timestamp())}.json')
+            with open(backup, 'w', encoding='utf-8') as fh:
+                json.dump(m.to_dict(), fh, ensure_ascii=False)
+        except Exception:
+            backup = ''
+        models_cache.pop(pid, None)
+        db.delete(f'model:{pid}')
+        db.delete(f'project:{pid}')
+        db.delete(f'comments:{pid}')
+        state['pid'] = ''
+        tail = f'（已留备份 {os.path.basename(backup)}）' if backup else ''
+        return True, f'已删除项目「{name}」{tail}', {
+            'deleted': True, 'project_id': pid, 'project_name': name}
+
+    def f_review(args):
+        if not state['pid']:
+            return False, '当前未绑定项目，请先新建或打开一个项目', None
+        m = _load()
+        if m is None:
+            return False, '项目不存在', None
+        kind = str(args.get('kind') or 'all').strip().lower()
+        out, total = {}, 0
+        if kind in ('uml', 'all'):
+            r = validate_uml_model(m, use_ai=False)
+            n = len(r.get('errors') or []) + len(r.get('warnings') or [])
+            total += n
+            out['uml'] = {'issues': n, 'errors': len(r.get('errors') or []),
+                          'warnings': len(r.get('warnings') or []),
+                          'detail': [i.get('message') for i in (r.get('errors') or [])[:5]]}
+        if kind in ('archimate', 'all'):
+            r = review_archimate_model(m, use_ai=False)
+            n = len(r.get('errors') or []) + len(r.get('warnings') or [])
+            total += n
+            out['archimate'] = {'issues': n, 'errors': len(r.get('errors') or []),
+                                'warnings': len(r.get('warnings') or []),
+                                'detail': [i.get('message') for i in (r.get('errors') or [])[:5]]}
+        if kind in ('er', 'all'):
+            view = ai_quality.er_view_shim(m.er_entities, m.er_relations)
+            issues = []
+            for chk in (check_normal_forms, check_indexes, check_data_types, check_naming_conventions):
+                try:
+                    issues += chk(view)
+                except Exception:
+                    pass
+            total += len(issues)
+            out['er'] = {'issues': len(issues),
+                         'detail': [i.get('message') for i in issues[:5]]}
+        return True, f'评审完成：共 {total} 个问题', out
+
+    def f_code(args):
+        if not state['pid']:
+            return False, '当前未绑定项目，请先新建或打开一个项目', None
+        m = _load()
+        if m is None:
+            return False, '项目不存在', None
+        lang = str(args.get('language') or 'java').strip().lower()
+        out_type = str(args.get('output_type') or 'entity').strip().lower()
+        source = str(args.get('source') or 'uml').strip().lower()
+        fw = str(args.get('framework') or '').strip()
+        desc = _describe_model_for_code(source, m.elements, m.er_entities, m.er_relations, m.relationships)
+        code = _ai_generate_code(desc, lang, fw, out_type)
+        if not code:
+            return False, 'AI 服务不可用或未能生成代码', None
+        # 只回摘要 + 前若干字符：整篇代码会撑爆工具结果（虽已放宽到 8000，但没必要）
+        return True, f'已生成 {lang}/{out_type} 代码（{len(code)} 字符）', {
+            'language': lang, 'output_type': out_type, 'chars': len(code),
+            'code_head': code[:1500]}
+
+    def f_ruoyi(args):
+        if not state['pid']:
+            return False, '当前未绑定项目，请先新建或打开一个项目', None
+        m = _load()
+        if m is None:
+            return False, '项目不存在', None
+        if not m.er_entities:
+            return False, '当前项目没有 ER 模型，请先生成或绘制数据模型', None
+        raw = {'packageBase': args.get('package_base') or 'com.ruoyi',
+               'moduleName': args.get('module_name') or 'business',
+               'tablePrefix': args.get('table_prefix') or '',
+               'parentMenuId': 3, 'dbType': 'mysql', 'servletApi': 'jakarta'}
+        cfg, err = ruoyi_gen.normalize_config(raw)
+        if err:
+            return False, f'配置不合法：{err}', None
+        res = ruoyi_gen.generate_ruoyi_module(m.er_entities, m.er_relations, cfg, annotation=None)
+        files, meta = res['files'], res['meta']
+        return True, (f"已生成若依模块 {meta.get('fileCount')} 个文件"
+                      f"（{len(meta.get('tables') or [])} 张表），接入步骤见包内 INTEGRATION.md"), {
+            'fileCount': meta.get('fileCount'), 'tables': [t.get('tableName') for t in (meta.get('tables') or [])],
+            'files': [f.get('path') for f in files][:40], 'warnings': (meta.get('warnings') or [])[:5]}
+
+    def f_reverse(args):
+        if not state['pid']:
+            return False, '当前未绑定项目，请先新建或打开一个项目', None
+        m = _load()
+        if m is None:
+            return False, '项目不存在', None
+        target = str(args.get('target') or 'uml').strip().lower()
+        code = str(args.get('code') or '')
+        if target not in ('uml', 'er'):
+            return False, 'target 必须是 uml 或 er', None
+        if not code.strip():
+            return False, '缺少 code', None
+        result = reverse_code_to_model(code, 'java', target)
+        if result is None:
+            return False, 'AI 服务不可用或未能解析代码', None
+        if target == 'uml':
+            raw_e, raw_r = result.get('elements'), result.get('relationships')
+            if not isinstance(raw_e, list) or not raw_e:
+                return False, '未能从代码中提取出类结构', None
+            if not isinstance(raw_r, list):
+                raw_r = []
+            has_layout = all(isinstance(e.get('x'), (int, float)) and isinstance(e.get('y'), (int, float))
+                             for e in raw_e)
+            if has_layout:
+                els, rels = _keep_meta_layout(raw_e, raw_r)
+            else:
+                els, rels = _layout_ai_elements(raw_e, raw_r, 'class')
+            els, rels = _uuid_elements_to_canvas(els, rels)
+            m.elements, m.relationships = els, rels
+            save_model(state['pid'], m)
+            return True, f'已反推并写入 UML：{len(els)} 个元素 / {len(rels)} 条关系', {
+                'project_id': state['pid'], 'elements': len(els), 'relationships': len(rels)}
+        ents_raw = result.get('entities')
+        if not isinstance(ents_raw, list) or not ents_raw:
+            return False, '未能从代码中提取出实体', None
+        ents, rels = _layout_ai_er(ents_raw, result.get('relationships') or [])
+        m.er_entities, m.er_relations = ents, rels
+        save_model(state['pid'], m)
+        return True, f'已反推并写入 ER：{len(ents)} 张表 / {len(rels)} 条关系', {
+            'project_id': state['pid'], 'entities': len(ents), 'relations': len(rels)}
+
+    def f_document(args):
+        if not state['pid']:
+            return False, '当前未绑定项目，请先新建或打开一个项目', None
+        m = _load()
+        if m is None:
+            return False, '项目不存在', None
+        doc_type = str(args.get('doc_type') or 'architecture').strip().lower()
+        fmt = str(args.get('format') or 'markdown').strip().lower()
+        desc = _describe_model_for_code('uml', m.elements, m.er_entities, m.er_relations, m.relationships)
+        content = _ai_generate_document(desc, doc_type, fmt)
+        if not content:
+            return False, 'AI 服务不可用或未能生成文档', None
+        return True, f'已生成{fmt} 文档（{len(content)} 字符）', {
+            'doc_type': doc_type, 'format': fmt, 'chars': len(content), 'content_head': content[:1500]}
+
+    def f_version(args):
+        if not state['pid']:
+            return False, '当前未绑定项目，请先新建或打开一个项目', None
+        m = _load()
+        if m is None:
+            return False, '项目不存在', None
+        action = str(args.get('action') or 'list').strip().lower()
+        # 注意属性名是 history（不是 versions）——save_version 追加到 self.history，
+        # restore_version 也读它。写错会表现为「保存了但列表还是 0 个」。
+        versions = getattr(m, 'history', None) or []
+        if action == 'list':
+            return True, f'共 {len(versions)} 个版本', {
+                'versions': [{'index': i, 'comment': (v or {}).get('comment', ''),
+                              'version': (v or {}).get('version', ''),
+                              'time': (v or {}).get('timestamp') or (v or {}).get('created_at', '')}
+                             for i, v in enumerate(versions)]}
+        if action == 'save':
+            m.save_version(str(args.get('comment') or 'AI 保存'))
+            save_model(state['pid'], m)
+            return True, f"已保存版本（共 {len(getattr(m, 'history', []) or [])} 个）", {'project_id': state['pid']}
+        if action == 'restore':
+            idx = args.get('index')
+            if not isinstance(idx, int) or not (0 <= idx < len(versions)):
+                return False, f'版本序号无效（当前共 {len(versions)} 个，请先用 action=list 查）', None
+            if args.get('confirm') is not True:
+                return True, (f'需确认：回滚到版本 #{idx}（{(versions[idx] or {}).get("comment", "")}）'
+                              f'会**覆盖当前模型**，未保存的改动会丢失。请先向用户复述并得到肯定答复，'
+                              f'再以 confirm=true 重新调用。'), {'needs_confirmation': True, 'index': idx}
+            # 回滚前先存一份当前状态，万一回滚错了还能回去
+            try:
+                m.save_version('回滚前快照')
+            except Exception:
+                pass
+            ok = m.restore_version(idx)
+            save_model(state['pid'], m)
+            return (True, f'已回滚到版本 #{idx}', {'project_id': state['pid']}) if ok else \
+                   (False, '回滚失败', None)
+        return False, f'未知 action「{action}」（只支持 list/save/restore）', None
+
+    def f_remember(args):
+        if not state['pid']:
+            return False, '当前未绑定项目，请先新建或打开一个项目', None
+        text = str(args.get('text') or '').strip()
+        if not text:
+            return False, '缺少 text', None
+        entries = _get_memories(state['pid'])
+        entries.append({'id': str(uuid.uuid4())[:8], 'content': text,
+                        'created_at': datetime.datetime.now().isoformat()})
+        db.set(f'memory:{state["pid"]}', {'entries': entries})
+        return True, f'已记住（当前共 {len(entries)} 条）', {'project_id': state['pid'], 'count': len(entries)}
+
+    # ---- 研发管理：5 个通用工具覆盖 4 类实体 × CRUD + AI 生成 ----
+    DEV_KINDS = {'requirement': 'req', 'testcase': 'tc', 'defect': 'def', 'task': 'task'}
+    DEV_FIELDS = {
+        'req': ('name', 'description', 'type', 'priority', 'status'),
+        'tc': ('name', 'description', 'level', 'req_id'),
+        'def': ('name', 'description', 'level', 'status'),
+        'task': ('name', 'description', 'type', 'priority', 'status', 'work_hours', 'req_id'),
+    }
+
+    def _dev_key(args):
+        k = str(args.get('kind') or '').strip().lower()
+        return DEV_KINDS.get(k), k
+
+    def f_dev_list(args):
+        if not state['pid']:
+            return False, '当前未绑定项目，请先新建或打开一个项目', None
+        key, raw = _dev_key(args)
+        if not key:
+            return False, f'kind 必须是 {" / ".join(DEV_KINDS)}', None
+        items = _load_dev_entries(key, state['pid'])
+        return True, f'{raw} 共 {len(items)} 条', {
+            'kind': raw, 'count': len(items),
+            'items': [{'id': i.get('id'), 'name': i.get('name'),
+                       'status': i.get('status'), 'priority': i.get('priority')} for i in items[:20]]}
+
+    def f_dev_create(args):
+        if not state['pid']:
+            return False, '当前未绑定项目，请先新建或打开一个项目', None
+        key, raw = _dev_key(args)
+        if not key:
+            return False, f'kind 必须是 {" / ".join(DEV_KINDS)}', None
+        fields = args.get('fields') if isinstance(args.get('fields'), dict) else {}
+        name = str(fields.get('name') or '').strip()
+        if not name:
+            return False, 'fields 里必须有 name', None
+        ctor = {'req': Requirement, 'tc': TestCase, 'def': Defect, 'task': Task}[key]
+        if key == 'req':
+            obj = ctor(state['pid'], name, str(fields.get('description') or ''),
+                       str(fields.get('type') or 'functional'))
+        elif key == 'tc':
+            obj = ctor(state['pid'], name, str(fields.get('description') or ''),
+                       str(fields.get('level') or 'normal'))
+        elif key == 'def':
+            obj = ctor(state['pid'], name, str(fields.get('description') or ''),
+                       str(fields.get('level') or 'medium'))
+        else:
+            obj = ctor(state['pid'], name, str(fields.get('description') or ''),
+                       str(fields.get('type') or 'development'))
+        # 只接受该类型的白名单字段（模型编的多余键一律忽略）
+        for f in DEV_FIELDS[key]:
+            if f in fields and f != 'name' and hasattr(obj, f):
+                setattr(obj, f, fields[f])
+        items = _load_dev_entries(key, state['pid'])
+        items.append(obj.to_dict())
+        _save_dev_entries(key, state['pid'], items)
+        return True, f'已新建 {raw}「{name}」（id={obj.id}）', {
+            'kind': raw, 'id': obj.id, 'project_id': state['pid']}
+
+    def f_dev_update(args):
+        if not state['pid']:
+            return False, '当前未绑定项目，请先新建或打开一个项目', None
+        key, raw = _dev_key(args)
+        if not key:
+            return False, f'kind 必须是 {" / ".join(DEV_KINDS)}', None
+        rid = str(args.get('id') or '').strip()
+        fields = args.get('fields') if isinstance(args.get('fields'), dict) else {}
+        items = _load_dev_entries(key, state['pid'])
+        hit = next((i for i in items if str(i.get('id')) == rid), None)
+        if hit is None:
+            return False, f'找不到 {raw} id={rid}（先用 dev_list 查）', None
+        changed = []
+        for f in DEV_FIELDS[key]:
+            if f in fields:
+                hit[f] = fields[f]
+                changed.append(f)
+        if not changed:
+            return False, 'fields 里没有该类型支持的字段，未改动', None
+        _save_dev_entries(key, state['pid'], items)
+        return True, f'已修改 {raw}（{("、".join(changed))}）', {'kind': raw, 'id': rid}
+
+    def f_dev_delete(args):
+        if not state['pid']:
+            return False, '当前未绑定项目，请先新建或打开一个项目', None
+        key, raw = _dev_key(args)
+        if not key:
+            return False, f'kind 必须是 {" / ".join(DEV_KINDS)}', None
+        rid = str(args.get('id') or '').strip()
+        items = _load_dev_entries(key, state['pid'])
+        hit = next((i for i in items if str(i.get('id')) == rid), None)
+        if hit is None:
+            return False, f'找不到 {raw} id={rid}', None
+        if args.get('confirm') is not True:
+            return True, (f'需确认：将删除 {raw}「{hit.get("name")}」（id={rid}），不可撤销。'
+                          f'请先向用户复述并得到肯定答复，再以 confirm=true 重新调用。'), {
+                'needs_confirmation': True, 'kind': raw, 'id': rid, 'name': hit.get('name')}
+        _save_dev_entries(key, state['pid'], [i for i in items if str(i.get('id')) != rid])
+        return True, f'已删除 {raw}「{hit.get("name")}」', {'kind': raw, 'id': rid}
+
+    def f_dev_ai(args):
+        if not state['pid']:
+            return False, '当前未绑定项目，请先新建或打开一个项目', None
+        raw = str(args.get('kind') or '').strip().lower()
+        if raw == 'defect':
+            return False, '缺陷没有 AI 生成（只有需求/测试用例/任务支持）', None
+        if raw not in ('requirement', 'testcase', 'task'):
+            return False, 'kind 必须是 requirement / testcase / task', None
+        # 直接复用 dev_routes 的生成实现（不发起内部 HTTP）。
+        # 签名注意：这三个函数的参数是「文本/条目」，不是模型对象。
+        from dev_routes import ai_generate_requirements, ai_generate_test_cases, ai_plan_tasks
+        m = _load()
+        if m is None:
+            return False, '项目不存在', None
+        pid = state['pid']
+        text = str(args.get('text') or '').strip() or f"{getattr(m, 'name', '')} 的业务需求"
+        reqs = _load_dev_entries('req', pid)
+        if raw == 'requirement':
+            objs, key = ai_generate_requirements(pid, text), 'req'
+        elif raw == 'testcase':
+            objs, key = ai_generate_test_cases(pid, reqs[0].get('id') if reqs else None, text), 'tc'
+        else:
+            objs, key = ai_plan_tasks(pid, reqs), 'task'
+        if not objs:
+            return False, 'AI 未能生成条目（服务未启用或调用失败）', None
+        # 与对应 API 相同的落库方式
+        entries = _load_dev_entries(key, pid)
+        for o in objs:
+            entries.append(o.to_dict())
+        _save_dev_entries(key, pid, entries)
+        return True, f'AI 已生成 {len(objs)} 条 {raw}', {'kind': raw, 'count': len(objs), 'project_id': pid}
+
     return {'create_project': f_create, 'generate_architecture': f_generate, 'edit_model': f_edit,
-            'get_health': f_health, 'optimize_from_health': f_optimize}
+            'get_health': f_health, 'optimize_from_health': f_optimize,
+            'rename_project': f_rename, 'delete_project': f_delete, 'review_model': f_review,
+            'generate_code': f_code, 'generate_ruoyi_module': f_ruoyi, 'reverse_code': f_reverse,
+            'generate_document': f_document, 'version_control': f_version, 'remember': f_remember,
+            'dev_list': f_dev_list, 'dev_create': f_dev_create, 'dev_update': f_dev_update,
+            'dev_delete': f_dev_delete, 'dev_ai_generate': f_dev_ai}
 
 
 @app.route('/api/v1/ai/agent/run', methods=['POST'])
